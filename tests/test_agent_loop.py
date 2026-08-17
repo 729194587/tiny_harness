@@ -1,4 +1,6 @@
 import copy
+import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -115,6 +117,58 @@ class AgentLoopTest(unittest.TestCase):
         self.assertEqual(tool_message["role"], "tool")
         self.assertEqual(tool_message["tool_call_id"], "call-1")
         self.assertTrue(tool_message["content"].startswith("Error: FileNotFoundError:"))
+
+    def test_multiple_tools_receive_independent_permission_decisions(self) -> None:
+        command = (
+            f'"{sys.executable}" -c '
+            '"from pathlib import Path; Path(\'blocked.txt\').write_text(\'bad\')"'
+        )
+        provider = FakeProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [
+                        ToolCall(
+                            "write-call",
+                            "write_file",
+                            '{"path":"allowed.txt","content":"ok"}',
+                        ),
+                        ToolCall(
+                            "bash-call",
+                            "bash",
+                            json.dumps({"command": command}),
+                        ),
+                    ],
+                    "tool_calls",
+                ),
+                ModelResponse("continued after denial", None, [], "stop"),
+            ]
+        )
+        messages = [{"role": "user", "content": "run both"}]
+
+        answer = agent_loop(
+            provider,
+            self.workspace,
+            messages,
+            permission_prompt=lambda *_: False,
+        )
+
+        self.assertEqual(answer, "continued after denial")
+        self.assertEqual(
+            (self.workspace / "allowed.txt").read_text(encoding="utf-8"),
+            "ok",
+        )
+        self.assertFalse((self.workspace / "blocked.txt").exists())
+        tool_messages = provider.calls[1]["messages"][-2:]
+        self.assertEqual(
+            [message["tool_call_id"] for message in tool_messages],
+            ["write-call", "bash-call"],
+        )
+        self.assertEqual(
+            tool_messages[1]["content"],
+            "Error: Permission denied for tool bash",
+        )
 
     def test_passes_all_registered_tool_schemas(self) -> None:
         provider = FakeProvider([ModelResponse("done", None, [], "stop")])

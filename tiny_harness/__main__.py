@@ -1,9 +1,11 @@
 """Command-line entry point for TinyHarness."""
 
 import argparse
+import json
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from tiny_harness.agent.loop import agent_loop
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
@@ -40,6 +42,20 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _ask_permission(tool_name: str, arguments: Mapping[str, Any]) -> bool:
+    """Ask the CLI user to approve one tool call; default to denial."""
+
+    print("\nPermission required:")
+    print(f"Tool: {tool_name}")
+    print("Arguments:")
+    print(json.dumps(arguments, ensure_ascii=False, indent=2))
+    try:
+        choice = input("Allow this tool call? [y/N]: ").strip().lower()
+    except EOFError:
+        return False
+    return choice in {"y", "yes"}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse CLI arguments, run one task, and print the final answer."""
 
@@ -74,6 +90,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         workspace,
         messages,
         max_turns=args.max_turns,
+        permission_prompt=_ask_permission,
     )
     print(answer)
     return 0

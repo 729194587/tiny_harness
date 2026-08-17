@@ -1,4 +1,4 @@
-"""Minimal registration and dispatch for Phase 1 tools."""
+"""Minimal registration and permission-aware dispatch for tools."""
 
 import json
 from collections.abc import Callable
@@ -6,6 +6,13 @@ from pathlib import Path
 from typing import Any
 
 from tiny_harness.agent.messages import ToolCall, ToolResult
+from tiny_harness.runtime.permissions import (
+    DEFAULT_PERMISSION_POLICY,
+    PermissionDecision,
+    PermissionPolicy,
+    PermissionPrompt,
+    resolve_permission,
+)
 from tiny_harness.tools.filesystem import edit_file, list_files, read_file, write_file
 from tiny_harness.tools.shell import bash
 
@@ -73,7 +80,7 @@ _TOOL_REGISTRY: dict[str, ToolEntry] = {
 
 
 def tool_schemas() -> list[dict[str, Any]]:
-    """Return all registered tools in DeepSeek's function-tool format."""
+    """Return all registered tools in Chat Completions function-tool format."""
 
     return [
         {
@@ -88,8 +95,14 @@ def tool_schemas() -> list[dict[str, Any]]:
     ]
 
 
-def dispatch(workspace: Path, call: ToolCall) -> ToolResult:
-    """Execute one tool call, converting every ordinary failure to text."""
+def dispatch(
+    workspace: Path,
+    call: ToolCall,
+    *,
+    permission_policy: PermissionPolicy = DEFAULT_PERMISSION_POLICY,
+    permission_prompt: PermissionPrompt | None = None,
+) -> ToolResult:
+    """Authorize and execute one tool call, converting failures to text."""
 
     try:
         entry = _TOOL_REGISTRY.get(call.name)
@@ -99,6 +112,18 @@ def dispatch(workspace: Path, call: ToolCall) -> ToolResult:
         arguments = json.loads(call.arguments_json)
         if not isinstance(arguments, dict):
             raise ValueError("Tool arguments must be a JSON object")
+
+        permission = resolve_permission(
+            permission_policy,
+            call.name,
+            arguments,
+            permission_prompt,
+        )
+        if permission is PermissionDecision.DENY:
+            return ToolResult(
+                tool_call_id=call.id,
+                content=f"Error: Permission denied for tool {call.name}",
+            )
 
         handler = entry[2]
         content = handler(workspace, **arguments)

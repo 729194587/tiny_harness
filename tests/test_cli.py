@@ -6,7 +6,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tiny_harness.__main__ import DEFAULT_BASE_URL, DEFAULT_MODEL, main
+from tiny_harness.__main__ import (
+    DEFAULT_BASE_URL,
+    DEFAULT_MODEL,
+    _ask_permission,
+    main,
+)
 
 
 class CliTest(unittest.TestCase):
@@ -52,7 +57,8 @@ class CliTest(unittest.TestCase):
             positional[2][1],
             {"role": "user", "content": "create a file"},
         )
-        self.assertEqual(loop.call_args.kwargs, {"max_turns": 7})
+        self.assertEqual(loop.call_args.kwargs["max_turns"], 7)
+        self.assertIs(loop.call_args.kwargs["permission_prompt"], _ask_permission)
 
     @patch("tiny_harness.__main__.agent_loop", return_value="done")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")
@@ -102,6 +108,24 @@ class CliTest(unittest.TestCase):
                 main(["task", "--max-turns", "0"])
 
         self.assertIn("must be at least 1", stderr.getvalue())
+
+    def test_permission_prompt_accepts_yes_and_displays_arguments(self) -> None:
+        stdout = io.StringIO()
+
+        with patch("builtins.input", return_value="yes"):
+            with contextlib.redirect_stdout(stdout):
+                allowed = _ask_permission("bash", {"command": "echo hello"})
+
+        self.assertTrue(allowed)
+        self.assertIn("Permission required", stdout.getvalue())
+        self.assertIn('"command": "echo hello"', stdout.getvalue())
+
+    def test_permission_prompt_defaults_to_denial(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            with patch("builtins.input", return_value=""):
+                self.assertFalse(_ask_permission("bash", {"command": "echo no"}))
+            with patch("builtins.input", side_effect=EOFError):
+                self.assertFalse(_ask_permission("bash", {"command": "echo no"}))
 
 
 if __name__ == "__main__":

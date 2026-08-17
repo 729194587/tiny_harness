@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from tiny_harness.agent.messages import ToolCall
+from tiny_harness.runtime.permissions import PermissionDecision
 from tiny_harness.tools.registry import dispatch, tool_schemas
 
 
@@ -17,10 +18,11 @@ class ToolRegistryTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def call(self, call_id: str, name: str, arguments: object):
+    def call(self, call_id: str, name: str, arguments: object, **dispatch_options):
         return dispatch(
             self.workspace,
             ToolCall(call_id, name, json.dumps(arguments)),
+            **dispatch_options,
         )
 
     def test_schemas_contain_exactly_the_phase_one_tools(self) -> None:
@@ -50,10 +52,73 @@ class ToolRegistryTest(unittest.TestCase):
     def test_dispatches_bash_in_workspace(self) -> None:
         command = f'"{sys.executable}" -c "from pathlib import Path; print(Path.cwd().name)"'
 
-        result = self.call("bash-1", "bash", {"command": command})
+        result = self.call(
+            "bash-1",
+            "bash",
+            {"command": command},
+            permission_prompt=lambda *_: True,
+        )
 
         self.assertEqual(result.tool_call_id, "bash-1")
         self.assertEqual(result.content, "workspace")
+
+    def test_denied_bash_is_not_executed_and_preserves_call_id(self) -> None:
+        command = (
+            f'"{sys.executable}" -c '
+            '"from pathlib import Path; Path(\'blocked.txt\').write_text(\'bad\')"'
+        )
+
+        result = self.call(
+            "bash-denied",
+            "bash",
+            {"command": command},
+            permission_prompt=lambda *_: False,
+        )
+
+        self.assertEqual(result.tool_call_id, "bash-denied")
+        self.assertEqual(result.content, "Error: Permission denied for tool bash")
+        self.assertFalse((self.workspace / "blocked.txt").exists())
+
+    def test_bash_without_prompt_is_denied(self) -> None:
+        result = self.call("bash-no-prompt", "bash", {"command": "echo no"})
+
+        self.assertEqual(result.content, "Error: Permission denied for tool bash")
+
+    def test_explicit_deny_does_not_execute_handler(self) -> None:
+        class DenyPolicy:
+            def decide(self, tool_name, arguments):
+                return PermissionDecision.DENY
+
+        result = self.call(
+            "write-denied",
+            "write_file",
+            {"path": "blocked.txt", "content": "bad"},
+            permission_policy=DenyPolicy(),
+        )
+
+        self.assertEqual(result.tool_call_id, "write-denied")
+        self.assertEqual(
+            result.content,
+            "Error: Permission denied for tool write_file",
+        )
+        self.assertFalse((self.workspace / "blocked.txt").exists())
+
+    def test_file_tools_do_not_prompt(self) -> None:
+        def unexpected_prompt(tool_name, arguments):
+            raise AssertionError("file tool should not prompt")
+
+        result = self.call(
+            "write-allowed",
+            "write_file",
+            {"path": "allowed.txt", "content": "ok"},
+            permission_prompt=unexpected_prompt,
+        )
+
+        self.assertEqual(result.content, "Wrote 2 bytes to allowed.txt")
+        self.assertEqual(
+            (self.workspace / "allowed.txt").read_text(encoding="utf-8"),
+            "ok",
+        )
 
     def test_invalid_json_becomes_tool_result(self) -> None:
         result = dispatch(

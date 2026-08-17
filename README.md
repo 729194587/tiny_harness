@@ -2,13 +2,14 @@
 
 TinyHarness 是一个面向 Coding Agent Harness Reliability 研究的轻量 Python 项目。
 
-当前完成的是 Phase 1：以尽可能少的机制打通一个可运行的 Agent 链路：
+Phase 1 已冻结为最小可运行 Agent 基线。当前 Phase 2 在该链路中加入了最小 Permission Gate：
 
 ```text
 CLI
 → Chat Completions Model Provider
 → Agent Loop
 → Tool Calls
+→ Permission Gate
 → Tool Registry / Runtime
 → Tool Results
 → Model
@@ -17,7 +18,7 @@ CLI
 
 DeepSeek 是当前默认模型服务，但模型适配器通过 `api_key`、`base_url` 和 `model` 配置，可用于使用相同 Chat Completions 工具调用格式的服务。`reasoning_content` 作为可选兼容字段保留。
 
-## Phase 1 功能
+## Phase 1 基线功能
 
 - 一个同步的 `ChatCompletionsProvider`
 - 一个短小、串行的 Agent Loop
@@ -36,6 +37,28 @@ DeepSeek 是当前默认模型服务，但模型适配器通过 `api_key`、`bas
 - 一次性任务 CLI
 
 Phase 1 的完整范围、验收记录和已知限制见 [PHASE1_BASELINE.md](PHASE1_BASELINE.md)。
+
+## Phase 2：最小 Permission Gate
+
+Phase 2 默认策略为：
+
+| 工具 | 默认权限 |
+|---|---|
+| `read_file` | ALLOW |
+| `list_files` | ALLOW |
+| `write_file` | ALLOW |
+| `edit_file` | ALLOW |
+| `bash` | ASK |
+
+`bash` 执行前，CLI 会显示工具参数并询问：
+
+```text
+Allow this tool call? [y/N]:
+```
+
+只有 `y` 或 `yes` 会放行。空输入、其他输入、EOF、缺少交互 prompt 或权限组件异常都会默认拒绝。拒绝结果作为关联原 tool call ID 的 `ToolResult` 回填模型，Agent Loop 可以继续运行。
+
+Phase 2 的设计、测试状态和待验收项目见 [PHASE2.md](PHASE2.md)。
 
 ## 环境要求
 
@@ -116,6 +139,12 @@ Phase 1 冻结时的基线：
 - 34 项通过
 - 1 项跳过：当前 Windows 用户没有创建符号链接的权限
 
+当前 Phase 2 离线测试：
+
+- 50 项测试被执行
+- 49 项通过
+- 1 项跳过：同一个 Windows 符号链接权限限制
+
 ## 项目结构
 
 ```text
@@ -133,16 +162,18 @@ tinyharness/
 │  │  ├─ registry.py
 │  │  └─ shell.py
 │  └─ runtime/
+│     └─ permissions.py
 ├─ tests/
 ├─ PHASE1_BASELINE.md
+├─ PHASE2.md
 └─ pyproject.toml
 ```
 
-`runtime/` 和 `agent/session.py` 目前仍是空占位文件，没有接入 Phase 1。
+`runtime/permissions.py` 已在 Phase 2 接入。`runtime/` 中其他文件和 `agent/session.py` 仍是空占位文件。
 
 ## 当前边界
 
-Phase 1 没有 Permission、Context Management、Event Log、Session Resume、Artifact Store、Memory、MCP、Subagent、Agent Teams 或 Workflow。工具顺序执行，CLI 只打印最终答案。
+当前只实现了非持久化的 ALLOW / DENY / ASK。仍没有权限规则文件、命令分析、Context Management、Event Log、Session Resume、Artifact Store、Memory、MCP、Subagent、Agent Teams 或 Workflow。工具顺序执行，除 ASK 交互外，CLI 只打印最终答案。
 
 这些限制是后续可靠性研究的基线，不应被误认为已经实现但未启用的功能。
 

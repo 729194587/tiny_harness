@@ -1,9 +1,14 @@
-"""The minimal Phase 1 agent loop."""
+"""The minimal TinyHarness agent loop."""
 
 from pathlib import Path
 from typing import Any
 
 from tiny_harness.models.base import ModelProvider
+from tiny_harness.runtime.permissions import (
+    DEFAULT_PERMISSION_POLICY,
+    PermissionPolicy,
+    PermissionPrompt,
+)
 from tiny_harness.tools.registry import dispatch, tool_schemas
 
 
@@ -13,6 +18,8 @@ def agent_loop(
     messages: list[dict[str, Any]],
     *,
     max_turns: int = 20,
+    permission_policy: PermissionPolicy = DEFAULT_PERMISSION_POLICY,
+    permission_prompt: PermissionPrompt | None = None,
 ) -> str:
     """Call the model and tools until a final text response is returned."""
 
@@ -51,7 +58,12 @@ def agent_loop(
             return response.content or ""
 
         for call in response.tool_calls:
-            result = dispatch(workspace, call)
+            result = dispatch(
+                workspace,
+                call,
+                permission_policy=permission_policy,
+                permission_prompt=permission_prompt,
+            )
             messages.append(
                 {
                     "role": "tool",
