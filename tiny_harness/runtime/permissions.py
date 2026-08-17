@@ -29,7 +29,7 @@ PermissionPrompt = Callable[[str, Mapping[str, Any]], bool]
 
 
 class DefaultPermissionPolicy:
-    """Allow file/planning tools and ask before every shell command."""
+    """Allow file/planning/delegation tools and ask before shell commands."""
 
     _ALLOWED_TOOLS = frozenset(
         {
@@ -38,6 +38,7 @@ class DefaultPermissionPolicy:
             "edit_file",
             "list_files",
             "todo_write",
+            "task",
         }
     )
 

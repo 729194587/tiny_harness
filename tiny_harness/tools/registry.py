@@ -29,6 +29,7 @@ from tiny_harness.runtime.permissions import (
 from tiny_harness.runtime.todos import TodoManager
 from tiny_harness.tools.filesystem import edit_file, list_files, read_file, write_file
 from tiny_harness.tools.shell import bash
+from tiny_harness.tools.task import SubagentRunner, task
 from tiny_harness.tools.todo import todo_write
 
 ToolEntry = tuple[str, dict[str, Any], Callable[..., str]]
@@ -122,10 +123,22 @@ _TOOL_REGISTRY: dict[str, ToolEntry] = {
         },
         todo_write,
     ),
+    "task": (
+        "Run a subagent with fresh context and return its final text.",
+        {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "minLength": 1},
+            },
+            "required": ["prompt"],
+            "additionalProperties": False,
+        },
+        task,
+    ),
 }
 
 
-def tool_schemas() -> list[dict[str, Any]]:
+def tool_schemas(*, include_task: bool = True) -> list[dict[str, Any]]:
     """Return all registered tools in Chat Completions function-tool format."""
 
     return [
@@ -138,6 +151,7 @@ def tool_schemas() -> list[dict[str, Any]]:
             },
         }
         for name, (description, parameters, _) in _TOOL_REGISTRY.items()
+        if include_task or name != "task"
     ]
 
 
@@ -150,12 +164,13 @@ def dispatch(
     event_logger: EventLogger = NULL_EVENT_LOGGER,
     tool_hooks: ToolHooks | None = None,
     todo_manager: TodoManager | None = None,
+    subagent_runner: SubagentRunner | None = None,
 ) -> ToolResult:
     """Authorize and execute one tool call, converting failures to text."""
 
     try:
         entry = _TOOL_REGISTRY.get(call.name)
-        if entry is None:
+        if entry is None or (call.name == "task" and subagent_runner is None):
             raise ValueError(f"Unknown tool: {call.name}")
 
         arguments = json.loads(call.arguments_json)
@@ -246,6 +261,8 @@ def dispatch(
             if todo_manager is None:
                 raise RuntimeError("todo_write requires a TodoManager")
             content = handler(todo_manager, **arguments)
+        elif call.name == "task":
+            content = handler(subagent_runner, call.id, **arguments)
         else:
             content = handler(workspace, **arguments)
         outcome = "returned"

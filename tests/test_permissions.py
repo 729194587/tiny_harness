@@ -21,13 +21,14 @@ class RaisingPolicy:
 
 
 class PermissionTest(unittest.TestCase):
-    def test_default_policy_allows_file_and_planning_tools(self) -> None:
+    def test_default_policy_allows_non_shell_tools(self) -> None:
         for tool_name in (
             "read_file",
             "write_file",
             "edit_file",
             "list_files",
             "todo_write",
+            "task",
         ):
             with self.subTest(tool_name=tool_name):
                 self.assertIs(

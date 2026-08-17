@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from tiny_harness.agent.loop import agent_loop
+from tiny_harness.agent.loop import DEFAULT_SUBAGENT_MAX_TURNS, agent_loop
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, JsonlEventLogger
 
@@ -49,6 +49,15 @@ def _parser() -> argparse.ArgumentParser:
         "--max-context-chars",
         type=_positive_int,
         help="Maximum compact-JSON characters sent as model context",
+    )
+    parser.add_argument(
+        "--subagent-max-turns",
+        type=_positive_int,
+        default=DEFAULT_SUBAGENT_MAX_TURNS,
+        help=(
+            "Maximum model calls for each synchronous subagent "
+            f"(default: {DEFAULT_SUBAGENT_MAX_TURNS})"
+        ),
     )
     return parser
 
@@ -98,7 +107,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"You are a coding agent working in {workspace}. "
                 "Use the available tools to complete the user's task. "
                 "Before starting a multi-step task, use todo_write to plan "
-                "the steps and update their status as you work."
+                "the steps and update their status as you work. Use task for "
+                "focused exploration or a self-contained delegated subtask."
             ),
         },
         {"role": "user", "content": args.task},
@@ -111,6 +121,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         permission_prompt=_ask_permission,
         event_logger=event_logger,
         max_context_chars=args.max_context_chars,
+        subagent_max_turns=args.subagent_max_turns,
     )
     print(answer)
     return 0

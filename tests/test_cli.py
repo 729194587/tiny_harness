@@ -12,6 +12,7 @@ from tiny_harness.__main__ import (
     _ask_permission,
     main,
 )
+from tiny_harness.agent.loop import DEFAULT_SUBAGENT_MAX_TURNS
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, JsonlEventLogger
 
 
@@ -63,6 +64,10 @@ class CliTest(unittest.TestCase):
         self.assertIs(loop.call_args.kwargs["permission_prompt"], _ask_permission)
         self.assertIs(loop.call_args.kwargs["event_logger"], NULL_EVENT_LOGGER)
         self.assertIsNone(loop.call_args.kwargs["max_context_chars"])
+        self.assertEqual(
+            loop.call_args.kwargs["subagent_max_turns"],
+            DEFAULT_SUBAGENT_MAX_TURNS,
+        )
 
     @patch("tiny_harness.__main__.agent_loop", return_value="done")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")
@@ -116,10 +121,13 @@ class CliTest(unittest.TestCase):
                         str(self.workspace),
                         "--max-context-chars",
                         "9000",
+                        "--subagent-max-turns",
+                        "4",
                     ]
                 )
 
         self.assertEqual(loop.call_args.kwargs["max_context_chars"], 9000)
+        self.assertEqual(loop.call_args.kwargs["subagent_max_turns"], 4)
 
     def test_requires_api_key(self) -> None:
         stderr = io.StringIO()
@@ -157,6 +165,15 @@ class CliTest(unittest.TestCase):
         with contextlib.redirect_stderr(stderr):
             with self.assertRaisesRegex(SystemExit, "2"):
                 main(["task", "--max-context-chars", "0"])
+
+        self.assertIn("must be at least 1", stderr.getvalue())
+
+    def test_rejects_non_positive_subagent_turns(self) -> None:
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaisesRegex(SystemExit, "2"):
+                main(["task", "--subagent-max-turns", "0"])
 
         self.assertIn("must be at least 1", stderr.getvalue())
 

@@ -10,6 +10,7 @@ from tiny_harness.runtime.events import (
     EventLogError,
     EventLogger,
     EventType,
+    ScopedEventLogger,
 )
 from tiny_harness.runtime.hooks import ToolHooks
 from tiny_harness.runtime.permissions import (
@@ -19,8 +20,10 @@ from tiny_harness.runtime.permissions import (
 )
 from tiny_harness.runtime.todos import TodoManager
 from tiny_harness.tools.registry import dispatch, tool_schemas
+from tiny_harness.tools.task import SubagentRunner
 
 TODO_REMINDER_ROUNDS = 3
+DEFAULT_SUBAGENT_MAX_TURNS = 10
 
 
 def agent_loop(
@@ -34,6 +37,8 @@ def agent_loop(
     event_logger: EventLogger = NULL_EVENT_LOGGER,
     max_context_chars: int | None = None,
     tool_hooks: ToolHooks | None = None,
+    subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS,
+    allow_subagent: bool = True,
 ) -> str:
     """Call the model and tools until a final text response is returned."""
 
@@ -41,15 +46,64 @@ def agent_loop(
         raise ValueError("max_turns must be at least 1")
     if max_context_chars is not None and max_context_chars < 1:
         raise ValueError("max_context_chars must be at least 1")
+    if subagent_max_turns < 1:
+        raise ValueError("subagent_max_turns must be at least 1")
 
-    tools = tool_schemas()
+    tools = tool_schemas(include_task=allow_subagent)
     todo_manager = TodoManager()
     rounds_since_todo = 0
     current_turn = 0
     run_data = {"max_turns": max_turns}
+    if allow_subagent:
+        run_data["subagent_max_turns"] = subagent_max_turns
     if max_context_chars is not None:
         run_data["max_context_chars"] = max_context_chars
     event_logger.emit(EventType.RUN_STARTED, run_data)
+
+    subagent_runner: SubagentRunner | None = None
+    if allow_subagent:
+
+        def run_subagent(prompt: str, parent_tool_call_id: str) -> str:
+            print("\n[Subagent started]")
+            child_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        f"You are a coding subagent working in {workspace}. "
+                        "Complete only the delegated task and return a concise "
+                        "final answer. Use todo_write for multi-step work."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ]
+            child_logger = ScopedEventLogger(
+                event_logger,
+                {
+                    "agent_scope": "subagent",
+                    "parent_tool_call_id": parent_tool_call_id,
+                },
+            )
+            try:
+                answer = agent_loop(
+                    provider,
+                    workspace,
+                    child_messages,
+                    max_turns=subagent_max_turns,
+                    permission_policy=permission_policy,
+                    permission_prompt=permission_prompt,
+                    event_logger=child_logger,
+                    max_context_chars=max_context_chars,
+                    tool_hooks=tool_hooks,
+                    subagent_max_turns=subagent_max_turns,
+                    allow_subagent=False,
+                )
+            except Exception:
+                print("[Subagent failed]")
+                raise
+            print("[Subagent done]")
+            return answer or "(no summary)"
+
+        subagent_runner = run_subagent
 
     try:
         for current_turn in range(1, max_turns + 1):
@@ -129,6 +183,7 @@ def agent_loop(
                     event_logger=event_logger,
                     tool_hooks=tool_hooks,
                     todo_manager=todo_manager,
+                    subagent_runner=subagent_runner,
                 )
                 messages.append(
                     {

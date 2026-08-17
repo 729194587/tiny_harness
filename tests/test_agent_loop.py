@@ -190,6 +190,7 @@ class AgentLoopTest(unittest.TestCase):
                 "list_files",
                 "bash",
                 "todo_write",
+                "task",
             ],
         )
 

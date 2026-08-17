@@ -68,6 +68,27 @@ class NullEventLogger:
 NULL_EVENT_LOGGER = NullEventLogger()
 
 
+class ScopedEventLogger:
+    """Attach fixed correlation metadata to every delegated event."""
+
+    def __init__(
+        self,
+        logger: EventLogger,
+        metadata: Mapping[str, Any],
+    ) -> None:
+        self._logger = logger
+        self._metadata = dict(metadata)
+
+    def emit(
+        self,
+        event_type: EventType,
+        data: Mapping[str, Any] | None = None,
+    ) -> None:
+        merged = dict(data or {})
+        merged.update(self._metadata)
+        self._logger.emit(event_type, merged)
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 

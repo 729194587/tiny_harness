@@ -28,7 +28,7 @@ class ToolRegistryTest(unittest.TestCase):
             **dispatch_options,
         )
 
-    def test_schemas_contain_all_phase_six_tools(self) -> None:
+    def test_schemas_contain_all_phase_seven_tools(self) -> None:
         schemas = tool_schemas()
 
         self.assertEqual(
@@ -40,14 +40,72 @@ class ToolRegistryTest(unittest.TestCase):
                 "list_files",
                 "bash",
                 "todo_write",
+                "task",
             ],
         )
         for schema in schemas:
             self.assertEqual(schema["type"], "function")
             self.assertEqual(schema["function"]["parameters"]["type"], "object")
 
-        todo_parameters = schemas[-1]["function"]["parameters"]
+        todo_schema = next(
+            schema
+            for schema in schemas
+            if schema["function"]["name"] == "todo_write"
+        )
+        todo_parameters = todo_schema["function"]["parameters"]
         self.assertEqual(todo_parameters["properties"]["todos"]["maxItems"], 20)
+
+        child_names = [
+            schema["function"]["name"]
+            for schema in tool_schemas(include_task=False)
+        ]
+        self.assertNotIn("task", child_names)
+
+    def test_dispatches_task_through_injected_runner(self) -> None:
+        observed = []
+
+        result = self.call(
+            "task-1",
+            "task",
+            {"prompt": " inspect the project "},
+            subagent_runner=lambda prompt, call_id: (
+                observed.append((prompt, call_id)) or "child summary"
+            ),
+        )
+
+        self.assertEqual(observed, [("inspect the project", "task-1")])
+        self.assertEqual(result.tool_call_id, "task-1")
+        self.assertEqual(result.content, "child summary")
+
+    def test_task_without_runner_is_unknown(self) -> None:
+        result = self.call(
+            "task-1",
+            "task",
+            {"prompt": "inspect"},
+        )
+
+        self.assertEqual(
+            result.content,
+            "Error: ValueError: Unknown tool: task",
+        )
+
+    def test_empty_task_prompt_does_not_call_runner(self) -> None:
+        observed = []
+
+        result = self.call(
+            "task-1",
+            "task",
+            {"prompt": "   "},
+            subagent_runner=lambda prompt, call_id: observed.append(
+                (prompt, call_id)
+            ),
+        )
+
+        self.assertEqual(observed, [])
+        self.assertEqual(
+            result.content,
+            "Error: ValueError: prompt must be a non-empty string",
+        )
 
     def test_dispatches_todo_write_with_run_scoped_manager(self) -> None:
         manager = TodoManager()
