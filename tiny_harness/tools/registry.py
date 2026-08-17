@@ -6,6 +6,12 @@ from pathlib import Path
 from typing import Any
 
 from tiny_harness.agent.messages import ToolCall, ToolResult
+from tiny_harness.runtime.events import (
+    NULL_EVENT_LOGGER,
+    EventLogError,
+    EventLogger,
+    EventType,
+)
 from tiny_harness.runtime.permissions import (
     DEFAULT_PERMISSION_POLICY,
     PermissionDecision,
@@ -101,6 +107,7 @@ def dispatch(
     *,
     permission_policy: PermissionPolicy = DEFAULT_PERMISSION_POLICY,
     permission_prompt: PermissionPrompt | None = None,
+    event_logger: EventLogger = NULL_EVENT_LOGGER,
 ) -> ToolResult:
     """Authorize and execute one tool call, converting failures to text."""
 
@@ -120,14 +127,48 @@ def dispatch(
             permission_prompt,
         )
         if permission is PermissionDecision.DENY:
+            event_logger.emit(
+                EventType.TOOL_DENIED,
+                {
+                    "tool_call_id": call.id,
+                    "tool_name": call.name,
+                },
+            )
             return ToolResult(
                 tool_call_id=call.id,
                 content=f"Error: Permission denied for tool {call.name}",
             )
 
+        event_logger.emit(
+            EventType.TOOL_STARTED,
+            {
+                "tool_call_id": call.id,
+                "tool_name": call.name,
+            },
+        )
         handler = entry[2]
         content = handler(workspace, **arguments)
+        event_logger.emit(
+            EventType.TOOL_FINISHED,
+            {
+                "tool_call_id": call.id,
+                "tool_name": call.name,
+                "outcome": "returned",
+                "content_length": len(content),
+            },
+        )
+    except EventLogError:
+        raise
     except Exception as error:
         content = f"Error: {type(error).__name__}: {error}"
+        event_logger.emit(
+            EventType.TOOL_FINISHED,
+            {
+                "tool_call_id": call.id,
+                "tool_name": call.name,
+                "outcome": "error",
+                "content_length": len(content),
+            },
+        )
 
     return ToolResult(tool_call_id=call.id, content=content)

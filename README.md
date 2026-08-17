@@ -2,7 +2,7 @@
 
 TinyHarness 是一个面向 Coding Agent Harness Reliability 研究的轻量 Python 项目。
 
-Phase 1 已冻结为最小可运行 Agent 基线。当前 Phase 2 在该链路中加入了最小 Permission Gate：
+Phase 1 已冻结为最小可运行 Agent 基线，Phase 2 加入了 Permission Gate。当前 Phase 3 在该链路中加入可选的执行事件日志：
 
 ```text
 CLI
@@ -14,6 +14,7 @@ CLI
 → Tool Results
 → Model
 → Final Answer
+→ JSONL Event Log
 ```
 
 DeepSeek 是当前默认模型服务，但模型适配器通过 `api_key`、`base_url` 和 `model` 配置，可用于使用相同 Chat Completions 工具调用格式的服务。`reasoning_content` 作为可选兼容字段保留。
@@ -59,6 +60,36 @@ Allow this tool call? [y/N]:
 只有 `y` 或 `yes` 会放行。空输入、其他输入、EOF、缺少交互 prompt 或权限组件异常都会默认拒绝。拒绝结果作为关联原 tool call ID 的 `ToolResult` 回填模型，Agent Loop 可以继续运行。
 
 Phase 2 的设计、测试状态和待验收项目见 [PHASE2.md](PHASE2.md)。
+
+## Phase 3：最小执行事件日志
+
+指定 `--event-log` 后，TinyHarness 将控制流元数据追加到 JSON Lines 文件：
+
+```powershell
+python -m tiny_harness `
+  "列出 workspace 中的文件" `
+  --workspace D:\learn-claude-code\tinyharness `
+  --event-log D:\tinyharness-logs\events.jsonl
+```
+
+事件包括：
+
+- `run_started`
+- `model_requested`
+- `model_responded`
+- `tool_started`
+- `tool_denied`
+- `tool_finished`
+- `run_finished`
+- `run_failed`
+
+每条事件包含 run ID、递增 sequence、UTC 时间、事件类型和最小 metadata。日志不保存 prompt、`reasoning_content`、工具参数、文件内容、完整工具输出或最终答案正文。
+
+为了让日志独立于 `write_file` / `edit_file` 的 workspace 文件访问范围，建议把日志路径放在 Agent workspace 外部。Event Log 是 observability trace，不是不可篡改的 audit log；Phase 2 没有 OS 级沙箱，用户批准的 `bash` 命令仍可能访问 workspace 外部路径。
+
+未指定 `--event-log` 时使用 no-op logger，Phase 2 行为不变。指定日志后，写入失败会明确终止执行，不会静默丢失事件。
+
+Phase 3 的设计、测试状态和真实 API 验收结果见 [PHASE3.md](PHASE3.md)。
 
 ## 环境要求
 
@@ -145,6 +176,12 @@ Phase 1 冻结时的基线：
 - 49 项通过
 - 1 项跳过：同一个 Windows 符号链接权限限制
 
+当前 Phase 3 离线测试：
+
+- 65 项测试被执行
+- 64 项通过
+- 1 项跳过：同一个 Windows 符号链接权限限制
+
 ## 项目结构
 
 ```text
@@ -162,10 +199,12 @@ tinyharness/
 │  │  ├─ registry.py
 │  │  └─ shell.py
 │  └─ runtime/
+│     ├─ events.py
 │     └─ permissions.py
 ├─ tests/
 ├─ PHASE1_BASELINE.md
 ├─ PHASE2.md
+├─ PHASE3.md
 └─ pyproject.toml
 ```
 
@@ -173,7 +212,7 @@ tinyharness/
 
 ## 当前边界
 
-当前只实现了非持久化的 ALLOW / DENY / ASK。仍没有权限规则文件、命令分析、Context Management、Event Log、Session Resume、Artifact Store、Memory、MCP、Subagent、Agent Teams 或 Workflow。工具顺序执行，除 ASK 交互外，CLI 只打印最终答案。
+当前实现了非持久化的 ALLOW / DENY / ASK，以及显式启用的控制流 metadata JSONL 日志。仍没有权限规则文件、命令分析、完整消息日志、Event Replay、Context Management、Session Resume、Artifact Store、Memory、MCP、Subagent、Agent Teams 或 Workflow。工具顺序执行，除 ASK 交互外，CLI 只打印最终答案。
 
 这些限制是后续可靠性研究的基线，不应被误认为已经实现但未启用的功能。
 

@@ -9,6 +9,7 @@ from typing import Any
 
 from tiny_harness.agent.loop import agent_loop
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
+from tiny_harness.runtime.events import NULL_EVENT_LOGGER, JsonlEventLogger
 
 DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
@@ -38,6 +39,11 @@ def _parser() -> argparse.ArgumentParser:
         type=_positive_int,
         default=20,
         help="Maximum model calls (default: 20)",
+    )
+    parser.add_argument(
+        "--event-log",
+        type=Path,
+        help="Append lifecycle events to a JSONL file",
     )
     return parser
 
@@ -75,6 +81,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         model=os.getenv("TINYHARNESS_MODEL", DEFAULT_MODEL),
         base_url=os.getenv("TINYHARNESS_BASE_URL", DEFAULT_BASE_URL),
     )
+    event_logger = (
+        JsonlEventLogger(args.event_log)
+        if args.event_log is not None
+        else NULL_EVENT_LOGGER
+    )
     messages = [
         {
             "role": "system",
@@ -91,6 +102,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         messages,
         max_turns=args.max_turns,
         permission_prompt=_ask_permission,
+        event_logger=event_logger,
     )
     print(answer)
     return 0

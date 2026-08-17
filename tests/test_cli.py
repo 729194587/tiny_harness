@@ -12,6 +12,7 @@ from tiny_harness.__main__ import (
     _ask_permission,
     main,
 )
+from tiny_harness.runtime.events import NULL_EVENT_LOGGER, JsonlEventLogger
 
 
 class CliTest(unittest.TestCase):
@@ -59,6 +60,7 @@ class CliTest(unittest.TestCase):
         )
         self.assertEqual(loop.call_args.kwargs["max_turns"], 7)
         self.assertIs(loop.call_args.kwargs["permission_prompt"], _ask_permission)
+        self.assertIs(loop.call_args.kwargs["event_logger"], NULL_EVENT_LOGGER)
 
     @patch("tiny_harness.__main__.agent_loop", return_value="done")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")
@@ -78,6 +80,27 @@ class CliTest(unittest.TestCase):
             model="custom-model",
             base_url="https://example.test",
         )
+
+    @patch("tiny_harness.__main__.agent_loop", return_value="done")
+    @patch("tiny_harness.__main__.ChatCompletionsProvider")
+    def test_passes_jsonl_logger_when_event_log_is_set(self, _, loop) -> None:
+        log_path = self.workspace / "logs" / "run.jsonl"
+
+        with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
+            with contextlib.redirect_stdout(io.StringIO()):
+                main(
+                    [
+                        "task",
+                        "--workspace",
+                        str(self.workspace),
+                        "--event-log",
+                        str(log_path),
+                    ]
+                )
+
+        logger = loop.call_args.kwargs["event_logger"]
+        self.assertIsInstance(logger, JsonlEventLogger)
+        self.assertEqual(logger.path, log_path.resolve())
 
     def test_requires_api_key(self) -> None:
         stderr = io.StringIO()

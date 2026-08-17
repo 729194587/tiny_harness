@@ -1,1 +1,107 @@
+"""Minimal synchronous event logging for TinyHarness runs."""
 
+import json
+from collections.abc import Callable, Mapping
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from enum import Enum
+from pathlib import Path
+from typing import Any, Protocol
+from uuid import uuid4
+
+
+class EventType(str, Enum):
+    """Lifecycle events recorded by the Phase 3 harness."""
+
+    RUN_STARTED = "run_started"
+    MODEL_REQUESTED = "model_requested"
+    MODEL_RESPONDED = "model_responded"
+    TOOL_STARTED = "tool_started"
+    TOOL_DENIED = "tool_denied"
+    TOOL_FINISHED = "tool_finished"
+    RUN_FINISHED = "run_finished"
+    RUN_FAILED = "run_failed"
+
+
+@dataclass(frozen=True)
+class Event:
+    """One ordered event in a single agent run."""
+
+    run_id: str
+    sequence: int
+    timestamp: str
+    event_type: str
+    data: dict[str, Any]
+
+
+class EventLogError(RuntimeError):
+    """Raised when an enabled event log cannot be written."""
+
+
+class EventLogger(Protocol):
+    """Synchronous event sink used by the agent and tool runtime."""
+
+    def emit(
+        self,
+        event_type: EventType,
+        data: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Persist one event or raise EventLogError."""
+        ...
+
+
+class NullEventLogger:
+    """No-op logger used when event logging is disabled."""
+
+    def emit(
+        self,
+        event_type: EventType,
+        data: Mapping[str, Any] | None = None,
+    ) -> None:
+        del event_type, data
+
+
+NULL_EVENT_LOGGER = NullEventLogger()
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class JsonlEventLogger:
+    """Append ordered events to a JSON Lines file."""
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        run_id: str | None = None,
+        clock: Callable[[], datetime] = _utc_now,
+    ) -> None:
+        self.path = path.resolve()
+        self.run_id = run_id or uuid4().hex
+        self._clock = clock
+        self._sequence = 0
+
+    def emit(
+        self,
+        event_type: EventType,
+        data: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._sequence += 1
+        timestamp = self._clock().astimezone(timezone.utc).isoformat()
+        event = Event(
+            run_id=self.run_id,
+            sequence=self._sequence,
+            timestamp=timestamp,
+            event_type=event_type.value,
+            data=dict(data or {}),
+        )
+
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as event_file:
+                event_file.write(json.dumps(asdict(event), ensure_ascii=False) + "\n")
+                event_file.flush()
+        except (OSError, TypeError, ValueError) as error:
+            raise EventLogError(f"Failed to write event log: {self.path}") from error
