@@ -2,7 +2,7 @@
 
 TinyHarness 是一个面向 Coding Agent Harness Reliability 研究的轻量 Python 项目。
 
-Phase 1 已冻结为最小可运行 Agent 基线，Phase 2 加入 Permission Gate，Phase 3 加入执行事件日志。当前 Phase 4 在模型调用前加入可选的确定性 Context Guard：
+Phase 1 已冻结为最小可运行 Agent 基线，Phase 2 加入 Permission Gate，Phase 3、4 分别加入 Event Log 和 Context Guard。当前 Phase 5 在工具执行前后加入 run-scoped Tool Hooks：
 
 ```text
 CLI
@@ -10,8 +10,10 @@ CLI
 → Context Guard
 → Chat Completions Model Provider
 → Tool Calls
+→ PreToolUse Hooks
 → Permission Gate
 → Tool Registry / Runtime
+→ PostToolUse Hooks
 → Tool Results
 → Model
 → Final Answer
@@ -111,6 +113,32 @@ python -m tiny_harness `
 
 发生裁剪时，Event Log 增加不含消息正文的 `context_trimmed` 事件。详细设计与真实 API 验收结果见 [PHASE4.md](PHASE4.md)。
 
+## Phase 5：Minimal Tool Hooks
+
+TinyHarness 的 Python API 可以为一次 Agent Run 注册有序的 PreToolUse 和 PostToolUse Hooks：
+
+```python
+from tiny_harness.runtime.hooks import HookBlock, ToolHooks
+
+hooks = ToolHooks()
+hooks.register_pre(
+    lambda context: (
+        HookBlock("write disabled")
+        if context.tool_name == "write_file"
+        else None
+    )
+)
+hooks.register_post(
+    lambda context, result: print(context.tool_name, len(result.content))
+)
+```
+
+Pre Hook 位于参数解析之后、Permission Gate 之前。返回 `HookBlock` 会阻止本次调用，但仍生成关联原 call ID 的 ToolResult。Post Hook 在 handler 已经产生 ToolResult 后运行，只观察结果，不能修改实际回填内容。
+
+Hook 按注册顺序同步执行。Hook 异常包装成 `HookExecutionError` 并明确终止 run；Pre Hook 异常发生在 handler 前，Post Hook 异常可能发生在工具已经产生副作用之后。
+
+主 CLI 暂不增加 Hook 配置参数。真实 API 演示通过 `python -m examples.hooks_demo` 运行。完整设计和真实 API 验收结果见 [PHASE5.md](PHASE5.md)。
+
 ## 环境要求
 
 - Python 3.10 或更高版本
@@ -208,6 +236,12 @@ Phase 1 冻结时的基线：
 - 79 项通过
 - 1 项跳过：同一个 Windows 符号链接权限限制
 
+当前 Phase 5 离线测试：
+
+- 91 项测试被执行
+- 90 项通过
+- 1 项跳过：同一个 Windows 符号链接权限限制
+
 ## 项目结构
 
 ```text
@@ -225,21 +259,26 @@ tinyharness/
 │  │  ├─ registry.py
 │  │  └─ shell.py
 │  └─ runtime/
+│     ├─ context.py
 │     ├─ events.py
+│     ├─ hooks.py
 │     └─ permissions.py
+├─ examples/
+│  └─ hooks_demo.py
 ├─ tests/
 ├─ PHASE1_BASELINE.md
 ├─ PHASE2.md
 ├─ PHASE3.md
 ├─ PHASE4.md
+├─ PHASE5.md
 └─ pyproject.toml
 ```
 
-`runtime/permissions.py`、`runtime/events.py` 和 `runtime/context.py` 已分别在 Phase 2、3、4 接入。`runtime/goal.py` 和 `agent/session.py` 仍是空占位文件。
+`runtime/permissions.py`、`runtime/events.py`、`runtime/context.py` 和 `runtime/hooks.py` 已分别在 Phase 2–5 接入。`runtime/goal.py` 和 `agent/session.py` 仍是空占位文件。
 
 ## 当前边界
 
-当前实现了非持久化的 ALLOW / DENY / ASK、显式启用的控制流 metadata JSONL 日志，以及可选的确定性 context 字符预算和完整交互块裁剪。仍没有精确 token 预算、摘要压缩、权限规则文件、完整消息日志、Event Replay、Session Resume、Artifact Store、Memory、MCP、Subagent、Agent Teams 或 Workflow。工具顺序执行，除 ASK 交互外，CLI 只打印最终答案。
+当前实现了非持久化的 ALLOW / DENY / ASK、显式启用的控制流 metadata JSONL 日志、可选的确定性 context 字符预算，以及通过 Python API 注入的同步 Pre/Post Tool Hooks。仍没有 Hook 配置文件、Prompt/Stop Hooks、精确 token 预算、摘要压缩、Session Resume、Artifact Store、Memory、MCP、Subagent、Agent Teams 或 Workflow。工具顺序执行，除 ASK 交互外，主 CLI 只打印最终答案。
 
 这些限制是后续可靠性研究的基线，不应被误认为已经实现但未启用的功能。
 
@@ -251,3 +290,5 @@ Phase 1 选择性参考了：
 - `learn-claude-code-main/s02_tool_use`
 
 参考内容仅限核心控制流、工具 schema、分发和 workspace 路径边界。TinyHarness 根据自身 Phase 1 目标重新实现，没有直接移植 integrated harness 或后续阶段机制。
+
+Phase 2 选择性参考了 `s03_permission` 的执行前权限控制流。Phase 5 选择性参考了 `s04_hooks` 的有序注册、PreToolUse 阻止和 PostToolUse 观察概念，但保留了 TinyHarness 独立的 Permission Gate，只实现 Tool Hooks。Phase 3、4 是 TinyHarness 的可靠性扩展。没有查看 Claude Code 产品源码。

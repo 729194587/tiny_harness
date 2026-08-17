@@ -1,8 +1,10 @@
 """Minimal registration and permission-aware dispatch for tools."""
 
+import copy
 import json
 from collections.abc import Callable
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from tiny_harness.agent.messages import ToolCall, ToolResult
@@ -11,6 +13,11 @@ from tiny_harness.runtime.events import (
     EventLogError,
     EventLogger,
     EventType,
+)
+from tiny_harness.runtime.hooks import (
+    HookExecutionError,
+    ToolHookContext,
+    ToolHooks,
 )
 from tiny_harness.runtime.permissions import (
     DEFAULT_PERMISSION_POLICY,
@@ -108,6 +115,7 @@ def dispatch(
     permission_policy: PermissionPolicy = DEFAULT_PERMISSION_POLICY,
     permission_prompt: PermissionPrompt | None = None,
     event_logger: EventLogger = NULL_EVENT_LOGGER,
+    tool_hooks: ToolHooks | None = None,
 ) -> ToolResult:
     """Authorize and execute one tool call, converting failures to text."""
 
@@ -119,44 +127,6 @@ def dispatch(
         arguments = json.loads(call.arguments_json)
         if not isinstance(arguments, dict):
             raise ValueError("Tool arguments must be a JSON object")
-
-        permission = resolve_permission(
-            permission_policy,
-            call.name,
-            arguments,
-            permission_prompt,
-        )
-        if permission is PermissionDecision.DENY:
-            event_logger.emit(
-                EventType.TOOL_DENIED,
-                {
-                    "tool_call_id": call.id,
-                    "tool_name": call.name,
-                },
-            )
-            return ToolResult(
-                tool_call_id=call.id,
-                content=f"Error: Permission denied for tool {call.name}",
-            )
-
-        event_logger.emit(
-            EventType.TOOL_STARTED,
-            {
-                "tool_call_id": call.id,
-                "tool_name": call.name,
-            },
-        )
-        handler = entry[2]
-        content = handler(workspace, **arguments)
-        event_logger.emit(
-            EventType.TOOL_FINISHED,
-            {
-                "tool_call_id": call.id,
-                "tool_name": call.name,
-                "outcome": "returned",
-                "content_length": len(content),
-            },
-        )
     except EventLogError:
         raise
     except Exception as error:
@@ -170,5 +140,107 @@ def dispatch(
                 "content_length": len(content),
             },
         )
+        return ToolResult(tool_call_id=call.id, content=content)
 
-    return ToolResult(tool_call_id=call.id, content=content)
+    hook_context = ToolHookContext(
+        tool_call_id=call.id,
+        tool_name=call.name,
+        arguments=MappingProxyType(copy.deepcopy(arguments)),
+    )
+    if tool_hooks is not None:
+        try:
+            blocked = tool_hooks.run_pre(hook_context)
+        except HookExecutionError as error:
+            event_logger.emit(
+                EventType.TOOL_HOOK_FAILED,
+                {
+                    "tool_call_id": call.id,
+                    "tool_name": call.name,
+                    "stage": error.stage,
+                    "hook_index": error.hook_index,
+                    "error_type": error.error_type,
+                },
+            )
+            raise
+        if blocked is not None:
+            hook_index, decision = blocked
+            event_logger.emit(
+                EventType.TOOL_HOOK_BLOCKED,
+                {
+                    "tool_call_id": call.id,
+                    "tool_name": call.name,
+                    "hook_index": hook_index,
+                },
+            )
+            return ToolResult(
+                tool_call_id=call.id,
+                content=(
+                    "Error: Tool call blocked by PreToolUse hook: "
+                    f"{decision.reason}"
+                ),
+            )
+
+    permission = resolve_permission(
+        permission_policy,
+        call.name,
+        arguments,
+        permission_prompt,
+    )
+    if permission is PermissionDecision.DENY:
+        event_logger.emit(
+            EventType.TOOL_DENIED,
+            {
+                "tool_call_id": call.id,
+                "tool_name": call.name,
+            },
+        )
+        return ToolResult(
+            tool_call_id=call.id,
+            content=f"Error: Permission denied for tool {call.name}",
+        )
+
+    event_logger.emit(
+        EventType.TOOL_STARTED,
+        {
+            "tool_call_id": call.id,
+            "tool_name": call.name,
+        },
+    )
+    handler = entry[2]
+    try:
+        content = handler(workspace, **arguments)
+        outcome = "returned"
+    except EventLogError:
+        raise
+    except Exception as error:
+        content = f"Error: {type(error).__name__}: {error}"
+        outcome = "error"
+
+    result = ToolResult(tool_call_id=call.id, content=content)
+    event_logger.emit(
+        EventType.TOOL_FINISHED,
+        {
+            "tool_call_id": call.id,
+            "tool_name": call.name,
+            "outcome": outcome,
+            "content_length": len(content),
+        },
+    )
+
+    if tool_hooks is not None:
+        try:
+            tool_hooks.run_post(hook_context, result)
+        except HookExecutionError as error:
+            event_logger.emit(
+                EventType.TOOL_HOOK_FAILED,
+                {
+                    "tool_call_id": call.id,
+                    "tool_name": call.name,
+                    "stage": error.stage,
+                    "hook_index": error.hook_index,
+                    "error_type": error.error_type,
+                },
+            )
+            raise
+
+    return result

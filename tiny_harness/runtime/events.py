@@ -17,6 +17,8 @@ class EventType(str, Enum):
     CONTEXT_TRIMMED = "context_trimmed"
     MODEL_REQUESTED = "model_requested"
     MODEL_RESPONDED = "model_responded"
+    TOOL_HOOK_BLOCKED = "tool_hook_blocked"
+    TOOL_HOOK_FAILED = "tool_hook_failed"
     TOOL_STARTED = "tool_started"
     TOOL_DENIED = "tool_denied"
     TOOL_FINISHED = "tool_finished"

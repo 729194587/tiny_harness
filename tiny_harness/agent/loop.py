@@ -11,6 +11,7 @@ from tiny_harness.runtime.events import (
     EventLogger,
     EventType,
 )
+from tiny_harness.runtime.hooks import ToolHooks
 from tiny_harness.runtime.permissions import (
     DEFAULT_PERMISSION_POLICY,
     PermissionPolicy,
@@ -29,6 +30,7 @@ def agent_loop(
     permission_prompt: PermissionPrompt | None = None,
     event_logger: EventLogger = NULL_EVENT_LOGGER,
     max_context_chars: int | None = None,
+    tool_hooks: ToolHooks | None = None,
 ) -> str:
     """Call the model and tools until a final text response is returned."""
 
@@ -119,6 +121,7 @@ def agent_loop(
                     permission_policy=permission_policy,
                     permission_prompt=permission_prompt,
                     event_logger=event_logger,
+                    tool_hooks=tool_hooks,
                 )
                 messages.append(
                     {
