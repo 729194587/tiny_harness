@@ -61,6 +61,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(loop.call_args.kwargs["max_turns"], 7)
         self.assertIs(loop.call_args.kwargs["permission_prompt"], _ask_permission)
         self.assertIs(loop.call_args.kwargs["event_logger"], NULL_EVENT_LOGGER)
+        self.assertIsNone(loop.call_args.kwargs["max_context_chars"])
 
     @patch("tiny_harness.__main__.agent_loop", return_value="done")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")
@@ -102,6 +103,23 @@ class CliTest(unittest.TestCase):
         self.assertIsInstance(logger, JsonlEventLogger)
         self.assertEqual(logger.path, log_path.resolve())
 
+    @patch("tiny_harness.__main__.agent_loop", return_value="done")
+    @patch("tiny_harness.__main__.ChatCompletionsProvider")
+    def test_passes_context_budget_when_configured(self, _, loop) -> None:
+        with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
+            with contextlib.redirect_stdout(io.StringIO()):
+                main(
+                    [
+                        "task",
+                        "--workspace",
+                        str(self.workspace),
+                        "--max-context-chars",
+                        "9000",
+                    ]
+                )
+
+        self.assertEqual(loop.call_args.kwargs["max_context_chars"], 9000)
+
     def test_requires_api_key(self) -> None:
         stderr = io.StringIO()
 
@@ -129,6 +147,15 @@ class CliTest(unittest.TestCase):
         with contextlib.redirect_stderr(stderr):
             with self.assertRaisesRegex(SystemExit, "2"):
                 main(["task", "--max-turns", "0"])
+
+        self.assertIn("must be at least 1", stderr.getvalue())
+
+    def test_rejects_non_positive_context_budget(self) -> None:
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaisesRegex(SystemExit, "2"):
+                main(["task", "--max-context-chars", "0"])
 
         self.assertIn("must be at least 1", stderr.getvalue())
 

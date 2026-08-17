@@ -45,6 +45,11 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="Append lifecycle events to a JSONL file",
     )
+    parser.add_argument(
+        "--max-context-chars",
+        type=_positive_int,
+        help="Maximum compact-JSON characters sent as model context",
+    )
     return parser
 
 
@@ -103,6 +108,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_turns=args.max_turns,
         permission_prompt=_ask_permission,
         event_logger=event_logger,
+        max_context_chars=args.max_context_chars,
     )
     print(answer)
     return 0

@@ -2,12 +2,13 @@
 
 TinyHarness 是一个面向 Coding Agent Harness Reliability 研究的轻量 Python 项目。
 
-Phase 1 已冻结为最小可运行 Agent 基线，Phase 2 加入了 Permission Gate。当前 Phase 3 在该链路中加入可选的执行事件日志：
+Phase 1 已冻结为最小可运行 Agent 基线，Phase 2 加入 Permission Gate，Phase 3 加入执行事件日志。当前 Phase 4 在模型调用前加入可选的确定性 Context Guard：
 
 ```text
 CLI
-→ Chat Completions Model Provider
 → Agent Loop
+→ Context Guard
+→ Chat Completions Model Provider
 → Tool Calls
 → Permission Gate
 → Tool Registry / Runtime
@@ -91,6 +92,25 @@ python -m tiny_harness `
 
 Phase 3 的设计、测试状态和真实 API 验收结果见 [PHASE3.md](PHASE3.md)。
 
+## Phase 4：Minimal Context Guard
+
+指定 `--max-context-chars` 后，每次模型调用前都会按照紧凑 JSON 的 `{messages, tools}` 计算字符数：
+
+```powershell
+python -m tiny_harness `
+  "列出 workspace 中的文件" `
+  --workspace D:\learn-claude-code\tinyharness `
+  --max-context-chars 100000
+```
+
+预算内的 context 原样复制给 Provider。超出预算时，Context Guard 从最旧的完整 assistant/tool 交互块开始删除，同时始终保留初始消息和最新一个完整交互块。一次 assistant 返回的多个 tool calls 及其全部 tool results 不会被拆开。
+
+如果必保留内容和 tool schemas 本身已经超过预算，会在调用模型 API 前抛出 `ContextLimitError`。协议中存在孤立、缺失或顺序错误的 tool result 时，会在 API 调用前抛出 `ContextProtocolError`。
+
+字符预算是 TinyHarness 的确定性本地计数，不等于模型 token 数，也不保证与某个厂商的 context window 精确对应。未指定该参数时，Phase 3 行为不变。
+
+发生裁剪时，Event Log 增加不含消息正文的 `context_trimmed` 事件。详细设计与真实 API 验收结果见 [PHASE4.md](PHASE4.md)。
+
 ## 环境要求
 
 - Python 3.10 或更高版本
@@ -141,7 +161,7 @@ tinyharness "列出 workspace 中的文件" `
   --workspace D:\learn-claude-code\tinyharness
 ```
 
-`--workspace` 默认为当前目录，`--max-turns` 默认为 20。
+`--workspace` 默认为当前目录，`--max-turns` 默认为 20。`--max-context-chars` 默认不启用。
 
 ## 工具行为
 
@@ -182,6 +202,12 @@ Phase 1 冻结时的基线：
 - 64 项通过
 - 1 项跳过：同一个 Windows 符号链接权限限制
 
+当前 Phase 4 离线测试：
+
+- 80 项测试被执行
+- 79 项通过
+- 1 项跳过：同一个 Windows 符号链接权限限制
+
 ## 项目结构
 
 ```text
@@ -205,14 +231,15 @@ tinyharness/
 ├─ PHASE1_BASELINE.md
 ├─ PHASE2.md
 ├─ PHASE3.md
+├─ PHASE4.md
 └─ pyproject.toml
 ```
 
-`runtime/permissions.py` 已在 Phase 2 接入。`runtime/` 中其他文件和 `agent/session.py` 仍是空占位文件。
+`runtime/permissions.py`、`runtime/events.py` 和 `runtime/context.py` 已分别在 Phase 2、3、4 接入。`runtime/goal.py` 和 `agent/session.py` 仍是空占位文件。
 
 ## 当前边界
 
-当前实现了非持久化的 ALLOW / DENY / ASK，以及显式启用的控制流 metadata JSONL 日志。仍没有权限规则文件、命令分析、完整消息日志、Event Replay、Context Management、Session Resume、Artifact Store、Memory、MCP、Subagent、Agent Teams 或 Workflow。工具顺序执行，除 ASK 交互外，CLI 只打印最终答案。
+当前实现了非持久化的 ALLOW / DENY / ASK、显式启用的控制流 metadata JSONL 日志，以及可选的确定性 context 字符预算和完整交互块裁剪。仍没有精确 token 预算、摘要压缩、权限规则文件、完整消息日志、Event Replay、Session Resume、Artifact Store、Memory、MCP、Subagent、Agent Teams 或 Workflow。工具顺序执行，除 ASK 交互外，CLI 只打印最终答案。
 
 这些限制是后续可靠性研究的基线，不应被误认为已经实现但未启用的功能。
 

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from tiny_harness.models.base import ModelProvider
+from tiny_harness.runtime.context import prepare_context
 from tiny_harness.runtime.events import (
     NULL_EVENT_LOGGER,
     EventLogError,
@@ -27,23 +28,44 @@ def agent_loop(
     permission_policy: PermissionPolicy = DEFAULT_PERMISSION_POLICY,
     permission_prompt: PermissionPrompt | None = None,
     event_logger: EventLogger = NULL_EVENT_LOGGER,
+    max_context_chars: int | None = None,
 ) -> str:
     """Call the model and tools until a final text response is returned."""
 
     if max_turns < 1:
         raise ValueError("max_turns must be at least 1")
+    if max_context_chars is not None and max_context_chars < 1:
+        raise ValueError("max_context_chars must be at least 1")
 
     tools = tool_schemas()
     current_turn = 0
-    event_logger.emit(EventType.RUN_STARTED, {"max_turns": max_turns})
+    run_data = {"max_turns": max_turns}
+    if max_context_chars is not None:
+        run_data["max_context_chars"] = max_context_chars
+    event_logger.emit(EventType.RUN_STARTED, run_data)
 
     try:
         for current_turn in range(1, max_turns + 1):
+            request_messages = messages
+            if max_context_chars is not None:
+                prepared = prepare_context(messages, tools, max_context_chars)
+                request_messages = prepared.messages
+                if prepared.dropped_blocks:
+                    event_logger.emit(
+                        EventType.CONTEXT_TRIMMED,
+                        {
+                            "turn": current_turn,
+                            "before_chars": prepared.before_chars,
+                            "after_chars": prepared.after_chars,
+                            "dropped_blocks": prepared.dropped_blocks,
+                            "dropped_messages": prepared.dropped_messages,
+                        },
+                    )
             event_logger.emit(
                 EventType.MODEL_REQUESTED,
                 {"turn": current_turn},
             )
-            response = provider.complete(messages, tools)
+            response = provider.complete(request_messages, tools)
             event_logger.emit(
                 EventType.MODEL_RESPONDED,
                 {

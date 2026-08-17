@@ -11,9 +11,10 @@ from uuid import uuid4
 
 
 class EventType(str, Enum):
-    """Lifecycle events recorded by the Phase 3 harness."""
+    """Lifecycle events recorded by the harness."""
 
     RUN_STARTED = "run_started"
+    CONTEXT_TRIMMED = "context_trimmed"
     MODEL_REQUESTED = "model_requested"
     MODEL_RESPONDED = "model_responded"
     TOOL_STARTED = "tool_started"
