@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from tiny_harness.agent.loop import agent_loop
-from tiny_harness.agent.messages import ModelResponse
+from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.runtime.context import (
     ContextLimitError,
     ContextProtocolError,
@@ -275,6 +275,52 @@ class ContextAgentLoopTest(unittest.TestCase):
 
         self.assertEqual(answer, "done")
         self.assertEqual(provider.calls[0]["messages"], messages[:-1])
+
+    def test_todo_reminder_over_budget_fails_before_next_provider_call(self) -> None:
+        latest_without_reminder = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "list-3",
+                        "type": "function",
+                        "function": {
+                            "name": "list_files",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "list-3",
+                "content": "(no files)",
+            },
+        ]
+        budget = context_char_count(latest_without_reminder, tool_schemas())
+        provider = FakeProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall(f"list-{index}", "list_files", "{}")],
+                    "tool_calls",
+                )
+                for index in range(1, 4)
+            ]
+            + [ModelResponse("must not be requested", None, [], "stop")]
+        )
+
+        with self.assertRaises(ContextLimitError):
+            agent_loop(
+                provider,
+                self.workspace,
+                [],
+                max_context_chars=budget,
+            )
+
+        self.assertEqual(len(provider.calls), 3)
 
 
 if __name__ == "__main__":

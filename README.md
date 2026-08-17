@@ -2,7 +2,7 @@
 
 TinyHarness 是一个面向 Coding Agent Harness Reliability 研究的轻量 Python 项目。
 
-Phase 1 已冻结为最小可运行 Agent 基线，Phase 2 加入 Permission Gate，Phase 3、4 分别加入 Event Log 和 Context Guard。当前 Phase 5 在工具执行前后加入 run-scoped Tool Hooks：
+Phase 1 已冻结为最小可运行 Agent 基线，Phase 2 加入 Permission Gate，Phase 3、4 分别加入 Event Log 和 Context Guard，Phase 5 加入 run-scoped Tool Hooks。当前 Phase 6 加入内存 Todo 规划状态：
 
 ```text
 CLI
@@ -13,8 +13,10 @@ CLI
 → PreToolUse Hooks
 → Permission Gate
 → Tool Registry / Runtime
+→ TodoManager
 → PostToolUse Hooks
 → Tool Results
+→ Todo Reminder（连续三轮未更新时）
 → Model
 → Final Answer
 → JSONL Event Log
@@ -52,6 +54,7 @@ Phase 2 默认策略为：
 | `list_files` | ALLOW |
 | `write_file` | ALLOW |
 | `edit_file` | ALLOW |
+| `todo_write`（Phase 6） | ALLOW |
 | `bash` | ASK |
 
 `bash` 执行前，CLI 会显示工具参数并询问：
@@ -139,6 +142,24 @@ Hook 按注册顺序同步执行。Hook 异常包装成 `HookExecutionError` 并
 
 主 CLI 暂不增加 Hook 配置参数。真实 API 演示通过 `python -m examples.hooks_demo` 运行。完整设计和真实 API 验收结果见 [PHASE5.md](PHASE5.md)。
 
+## Phase 6：Minimal Todo / Agent Plan
+
+多步骤任务中，模型可以调用 `todo_write` 创建并更新当前运行的任务列表：
+
+```text
+[x] Inspect files
+[>] Implement change
+[ ] Run tests
+
+(1/3 completed)
+```
+
+Todo 状态只存在于单次 `agent_loop()` 的内存中。一次最多 20 项，同时最多一个 `in_progress`；更新先完整校验再原子替换。成功更新会把当前列表打印到终端，同时作为 ToolResult 返回模型。
+
+连续三个包含工具调用的模型轮次没有成功更新 Todo 时，Agent Loop 会向最新 tool result 附加当前 Todo 快照和 Reminder。该表达保持 Chat Completions 工具消息配对，并由 Phase 4 Context Guard 统一计算字符预算。Reminder 事件只记录轮次和条目数量，不记录 Todo 正文。
+
+Todo 是规划提示，不是完成条件。TinyHarness 当前不会阻止模型在 Todo 未完成时返回最终答案。完整设计和真实 API 验收结果见 [PHASE6.md](PHASE6.md)。
+
 ## 环境要求
 
 - Python 3.10 或更高版本
@@ -193,13 +214,14 @@ tinyharness "列出 workspace 中的文件" `
 
 ## 工具行为
 
-| 工具 | Phase 1 行为 |
+| 工具 | 当前行为 |
 |---|---|
 | `read_file` | 读取 workspace 内的 UTF-8 文本文件 |
 | `write_file` | 写入 UTF-8 文本，并自动创建 workspace 内的父目录 |
 | `edit_file` | 仅当 `old_text` 恰好出现一次时替换 |
 | `list_files` | 稳定排序并列出指定目录的直接子项 |
 | `bash` | 在 workspace 中以 `cwd` 执行系统 shell，超时 120 秒 |
+| `todo_write` | 原子替换当前 run 的内存 Todo，并在终端显示状态 |
 
 文件工具会拒绝解析后位于 workspace 外的路径，包括 `..` 路径穿越、workspace 外的绝对路径和可解析的符号链接逃逸。
 
@@ -242,6 +264,12 @@ Phase 1 冻结时的基线：
 - 90 项通过
 - 1 项跳过：同一个 Windows 符号链接权限限制
 
+当前 Phase 6 离线测试：
+
+- 107 项测试被执行
+- 106 项通过
+- 1 项跳过：同一个 Windows 符号链接权限限制
+
 ## 项目结构
 
 ```text
@@ -257,12 +285,14 @@ tinyharness/
 │  ├─ tools/
 │  │  ├─ filesystem.py
 │  │  ├─ registry.py
-│  │  └─ shell.py
+│  │  ├─ shell.py
+│  │  └─ todo.py
 │  └─ runtime/
 │     ├─ context.py
 │     ├─ events.py
 │     ├─ hooks.py
-│     └─ permissions.py
+│     ├─ permissions.py
+│     └─ todos.py
 ├─ examples/
 │  └─ hooks_demo.py
 ├─ tests/
@@ -271,14 +301,15 @@ tinyharness/
 ├─ PHASE3.md
 ├─ PHASE4.md
 ├─ PHASE5.md
+├─ PHASE6.md
 └─ pyproject.toml
 ```
 
-`runtime/permissions.py`、`runtime/events.py`、`runtime/context.py` 和 `runtime/hooks.py` 已分别在 Phase 2–5 接入。`runtime/goal.py` 和 `agent/session.py` 仍是空占位文件。
+`runtime/permissions.py`、`runtime/events.py`、`runtime/context.py`、`runtime/hooks.py` 和 `runtime/todos.py` 已分别在 Phase 2–6 接入。`runtime/goal.py` 和 `agent/session.py` 仍是空占位文件。
 
 ## 当前边界
 
-当前实现了非持久化的 ALLOW / DENY / ASK、显式启用的控制流 metadata JSONL 日志、可选的确定性 context 字符预算，以及通过 Python API 注入的同步 Pre/Post Tool Hooks。仍没有 Hook 配置文件、Prompt/Stop Hooks、精确 token 预算、摘要压缩、Session Resume、Artifact Store、Memory、MCP、Subagent、Agent Teams 或 Workflow。工具顺序执行，除 ASK 交互外，主 CLI 只打印最终答案。
+当前实现了非持久化的 ALLOW / DENY / ASK、显式启用的控制流 metadata JSONL 日志、可选的确定性 context 字符预算、通过 Python API 注入的同步 Pre/Post Tool Hooks，以及 run-scoped Todo 规划状态。仍没有 Hook 配置文件、Prompt/Stop Hooks、精确 token 预算、摘要压缩、Session Resume、Goal Gate、Artifact Store、Memory、MCP、Subagent、Agent Teams 或 Workflow。工具顺序执行；主 CLI 会显示 ASK 交互、Todo 更新和最终答案。
 
 这些限制是后续可靠性研究的基线，不应被误认为已经实现但未启用的功能。
 
@@ -291,4 +322,4 @@ Phase 1 选择性参考了：
 
 参考内容仅限核心控制流、工具 schema、分发和 workspace 路径边界。TinyHarness 根据自身 Phase 1 目标重新实现，没有直接移植 integrated harness 或后续阶段机制。
 
-Phase 2 选择性参考了 `s03_permission` 的执行前权限控制流。Phase 5 选择性参考了 `s04_hooks` 的有序注册、PreToolUse 阻止和 PostToolUse 观察概念，但保留了 TinyHarness 独立的 Permission Gate，只实现 Tool Hooks。Phase 3、4 是 TinyHarness 的可靠性扩展。没有查看 Claude Code 产品源码。
+Phase 2 选择性参考了 `s03_permission` 的执行前权限控制流。Phase 5 选择性参考了 `s04_hooks` 的有序注册、PreToolUse 阻止和 PostToolUse 观察概念，但保留了 TinyHarness 独立的 Permission Gate，只实现 Tool Hooks。Phase 6 实质性参考并改写了 `s05_todo_write` 的 TodoManager、工具 schema、终端渲染和三轮 Reminder 控制流。Phase 3、4 是 TinyHarness 的可靠性扩展。没有查看 Claude Code 产品源码。

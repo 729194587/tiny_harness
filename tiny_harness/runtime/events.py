@@ -22,6 +22,7 @@ class EventType(str, Enum):
     TOOL_STARTED = "tool_started"
     TOOL_DENIED = "tool_denied"
     TOOL_FINISHED = "tool_finished"
+    TODO_REMINDER = "todo_reminder"
     RUN_FINISHED = "run_finished"
     RUN_FAILED = "run_failed"
 

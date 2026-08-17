@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -6,6 +8,7 @@ from pathlib import Path
 
 from tiny_harness.agent.messages import ToolCall
 from tiny_harness.runtime.permissions import PermissionDecision
+from tiny_harness.runtime.todos import TodoManager
 from tiny_harness.tools.registry import dispatch, tool_schemas
 
 
@@ -25,16 +28,61 @@ class ToolRegistryTest(unittest.TestCase):
             **dispatch_options,
         )
 
-    def test_schemas_contain_exactly_the_phase_one_tools(self) -> None:
+    def test_schemas_contain_all_phase_six_tools(self) -> None:
         schemas = tool_schemas()
 
         self.assertEqual(
             [schema["function"]["name"] for schema in schemas],
-            ["read_file", "write_file", "edit_file", "list_files", "bash"],
+            [
+                "read_file",
+                "write_file",
+                "edit_file",
+                "list_files",
+                "bash",
+                "todo_write",
+            ],
         )
         for schema in schemas:
             self.assertEqual(schema["type"], "function")
             self.assertEqual(schema["function"]["parameters"]["type"], "object")
+
+        todo_parameters = schemas[-1]["function"]["parameters"]
+        self.assertEqual(todo_parameters["properties"]["todos"]["maxItems"], 20)
+
+    def test_dispatches_todo_write_with_run_scoped_manager(self) -> None:
+        manager = TodoManager()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = self.call(
+                "todo-1",
+                "todo_write",
+                {
+                    "todos": [
+                        {
+                            "content": "Implement Phase 6",
+                            "status": "in_progress",
+                        }
+                    ]
+                },
+                todo_manager=manager,
+            )
+
+        self.assertEqual(result.tool_call_id, "todo-1")
+        self.assertIn("[>] Implement Phase 6", result.content)
+        self.assertEqual(manager.revision, 1)
+
+    def test_todo_write_without_manager_becomes_tool_error(self) -> None:
+        result = self.call(
+            "todo-1",
+            "todo_write",
+            {"todos": []},
+        )
+
+        self.assertEqual(result.tool_call_id, "todo-1")
+        self.assertEqual(
+            result.content,
+            "Error: RuntimeError: todo_write requires a TodoManager",
+        )
 
     def test_dispatches_file_tools_and_preserves_call_id(self) -> None:
         write_result = self.call(

@@ -29,10 +29,16 @@ PermissionPrompt = Callable[[str, Mapping[str, Any]], bool]
 
 
 class DefaultPermissionPolicy:
-    """Allow workspace file tools and ask before every shell command."""
+    """Allow file/planning tools and ask before every shell command."""
 
     _ALLOWED_TOOLS = frozenset(
-        {"read_file", "write_file", "edit_file", "list_files"}
+        {
+            "read_file",
+            "write_file",
+            "edit_file",
+            "list_files",
+            "todo_write",
+        }
     )
 
     def decide(

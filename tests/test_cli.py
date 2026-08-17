@@ -54,6 +54,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(positional[1], self.workspace.resolve())
         self.assertEqual(positional[2][0]["role"], "system")
         self.assertIn(str(self.workspace.resolve()), positional[2][0]["content"])
+        self.assertIn("todo_write", positional[2][0]["content"])
         self.assertEqual(
             positional[2][1],
             {"role": "user", "content": "create a file"},

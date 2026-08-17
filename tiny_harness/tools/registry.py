@@ -26,8 +26,10 @@ from tiny_harness.runtime.permissions import (
     PermissionPrompt,
     resolve_permission,
 )
+from tiny_harness.runtime.todos import TodoManager
 from tiny_harness.tools.filesystem import edit_file, list_files, read_file, write_file
 from tiny_harness.tools.shell import bash
+from tiny_harness.tools.todo import todo_write
 
 ToolEntry = tuple[str, dict[str, Any], Callable[..., str]]
 
@@ -89,6 +91,37 @@ _TOOL_REGISTRY: dict[str, ToolEntry] = {
         },
         bash,
     ),
+    "todo_write": (
+        "Create and manage a task list for the current coding run.",
+        {
+            "type": "object",
+            "properties": {
+                "todos": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string", "minLength": 1},
+                            "status": {
+                                "type": "string",
+                                "enum": [
+                                    "pending",
+                                    "in_progress",
+                                    "completed",
+                                ],
+                            },
+                        },
+                        "required": ["content", "status"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["todos"],
+            "additionalProperties": False,
+        },
+        todo_write,
+    ),
 }
 
 
@@ -116,6 +149,7 @@ def dispatch(
     permission_prompt: PermissionPrompt | None = None,
     event_logger: EventLogger = NULL_EVENT_LOGGER,
     tool_hooks: ToolHooks | None = None,
+    todo_manager: TodoManager | None = None,
 ) -> ToolResult:
     """Authorize and execute one tool call, converting failures to text."""
 
@@ -208,7 +242,12 @@ def dispatch(
     )
     handler = entry[2]
     try:
-        content = handler(workspace, **arguments)
+        if call.name == "todo_write":
+            if todo_manager is None:
+                raise RuntimeError("todo_write requires a TodoManager")
+            content = handler(todo_manager, **arguments)
+        else:
+            content = handler(workspace, **arguments)
         outcome = "returned"
     except EventLogError:
         raise

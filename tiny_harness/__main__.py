@@ -96,7 +96,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "role": "system",
             "content": (
                 f"You are a coding agent working in {workspace}. "
-                "Use the available tools to complete the user's task."
+                "Use the available tools to complete the user's task. "
+                "Before starting a multi-step task, use todo_write to plan "
+                "the steps and update their status as you work."
             ),
         },
         {"role": "user", "content": args.task},

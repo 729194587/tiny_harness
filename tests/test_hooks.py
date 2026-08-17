@@ -377,6 +377,52 @@ class ToolHooksTest(unittest.TestCase):
             "HookExecutionError",
         )
 
+    def test_blocked_todo_does_not_reset_reminder_counter(self) -> None:
+        hooks = ToolHooks()
+        hooks.register_pre(
+            lambda context: (
+                HookBlock("planning blocked")
+                if context.tool_name == "todo_write"
+                else None
+            )
+        )
+        provider = FakeProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("list-1", "list_files", "{}")],
+                    "tool_calls",
+                ),
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("list-2", "list_files", "{}")],
+                    "tool_calls",
+                ),
+                ModelResponse(
+                    None,
+                    None,
+                    [
+                        ToolCall(
+                            "todo-1",
+                            "todo_write",
+                            '{"todos":[{"content":"Plan","status":"pending"}]}',
+                        )
+                    ],
+                    "tool_calls",
+                ),
+                ModelResponse("done", None, [], "stop"),
+            ]
+        )
+
+        agent_loop(provider, self.workspace, [], tool_hooks=hooks)
+
+        blocked_result = provider.calls[-1]["messages"][-1]["content"]
+        self.assertIn("planning blocked", blocked_result)
+        self.assertIn("<todo-reminder>", blocked_result)
+        self.assertIn("Current todos:\nNo todos.", blocked_result)
+
 
 if __name__ == "__main__":
     unittest.main()

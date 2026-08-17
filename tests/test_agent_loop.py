@@ -1,4 +1,6 @@
+import contextlib
 import copy
+import io
 import json
 import sys
 import tempfile
@@ -181,8 +183,234 @@ class AgentLoopTest(unittest.TestCase):
         ]
         self.assertEqual(
             names,
-            ["read_file", "write_file", "edit_file", "list_files", "bash"],
+            [
+                "read_file",
+                "write_file",
+                "edit_file",
+                "list_files",
+                "bash",
+                "todo_write",
+            ],
         )
+
+    def test_executes_todo_and_file_tools_in_model_order(self) -> None:
+        provider = FakeProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [
+                        ToolCall(
+                            "todo-1",
+                            "todo_write",
+                            json.dumps(
+                                {
+                                    "todos": [
+                                        {
+                                            "content": "Create the file",
+                                            "status": "in_progress",
+                                        }
+                                    ]
+                                }
+                            ),
+                        ),
+                        ToolCall(
+                            "write-1",
+                            "write_file",
+                            '{"path":"planned.txt","content":"done"}',
+                        ),
+                    ],
+                    "tool_calls",
+                ),
+                ModelResponse("finished", None, [], "stop"),
+            ]
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            answer = agent_loop(provider, self.workspace, [])
+
+        self.assertEqual(answer, "finished")
+        self.assertEqual(
+            (self.workspace / "planned.txt").read_text(encoding="utf-8"),
+            "done",
+        )
+        tool_messages = provider.calls[1]["messages"][-2:]
+        self.assertEqual(
+            [message["tool_call_id"] for message in tool_messages],
+            ["todo-1", "write-1"],
+        )
+        self.assertIn("[>] Create the file", tool_messages[0]["content"])
+
+    def test_adds_protocol_safe_reminder_after_three_tool_rounds(self) -> None:
+        provider = FakeProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall(f"list-{index}", "list_files", "{}")],
+                    "tool_calls",
+                )
+                for index in range(1, 4)
+            ]
+            + [ModelResponse("done", None, [], "stop")]
+        )
+
+        answer = agent_loop(
+            provider,
+            self.workspace,
+            [],
+            max_context_chars=100_000,
+        )
+
+        self.assertEqual(answer, "done")
+        self.assertNotIn(
+            "<todo-reminder>",
+            provider.calls[2]["messages"][-1]["content"],
+        )
+        fourth_request = provider.calls[3]["messages"]
+        self.assertEqual(fourth_request[-1]["role"], "tool")
+        self.assertEqual(fourth_request[-1]["tool_call_id"], "list-3")
+        self.assertIn("<todo-reminder>", fourth_request[-1]["content"])
+        self.assertIn("Current todos:\nNo todos.", fourth_request[-1]["content"])
+
+    def test_successful_todo_update_resets_reminder_counter(self) -> None:
+        provider = FakeProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("list-1", "list_files", "{}")],
+                    "tool_calls",
+                ),
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("list-2", "list_files", "{}")],
+                    "tool_calls",
+                ),
+                ModelResponse(
+                    None,
+                    None,
+                    [
+                        ToolCall(
+                            "todo-1",
+                            "todo_write",
+                            '{"todos":[{"content":"Continue","status":"pending"}]}',
+                        )
+                    ],
+                    "tool_calls",
+                ),
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("list-3", "list_files", "{}")],
+                    "tool_calls",
+                ),
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("list-4", "list_files", "{}")],
+                    "tool_calls",
+                ),
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("list-5", "list_files", "{}")],
+                    "tool_calls",
+                ),
+                ModelResponse("done", None, [], "stop"),
+            ]
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_loop(provider, self.workspace, [])
+
+        before_third_post_update_round = json.dumps(
+            provider.calls[-2]["messages"]
+        )
+        self.assertNotIn(
+            "<todo-reminder>",
+            before_third_post_update_round,
+        )
+        last_tool_result = provider.calls[-1]["messages"][-1]["content"]
+        self.assertIn("<todo-reminder>", last_tool_result)
+        self.assertIn("[ ] Continue", last_tool_result)
+
+    def test_invalid_todo_update_does_not_reset_reminder_counter(self) -> None:
+        provider = FakeProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("list-1", "list_files", "{}")],
+                    "tool_calls",
+                ),
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("list-2", "list_files", "{}")],
+                    "tool_calls",
+                ),
+                ModelResponse(
+                    None,
+                    None,
+                    [
+                        ToolCall(
+                            "todo-bad",
+                            "todo_write",
+                            '{"todos":[{"content":"","status":"pending"}]}',
+                        )
+                    ],
+                    "tool_calls",
+                ),
+                ModelResponse("done", None, [], "stop"),
+            ]
+        )
+
+        agent_loop(provider, self.workspace, [])
+
+        last_tool_result = provider.calls[3]["messages"][-1]["content"]
+        self.assertTrue(last_tool_result.startswith("Error: ValueError:"))
+        self.assertIn("<todo-reminder>", last_tool_result)
+
+    def test_todo_state_is_isolated_between_agent_runs(self) -> None:
+        first_provider = FakeProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [
+                        ToolCall(
+                            "todo-1",
+                            "todo_write",
+                            '{"todos":[{"content":"First run only","status":"pending"}]}',
+                        )
+                    ],
+                    "tool_calls",
+                ),
+                ModelResponse("first done", None, [], "stop"),
+            ]
+        )
+        second_provider = FakeProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall(f"list-{index}", "list_files", "{}")],
+                    "tool_calls",
+                )
+                for index in range(1, 4)
+            ]
+            + [ModelResponse("second done", None, [], "stop")]
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_loop(first_provider, self.workspace, [])
+        agent_loop(second_provider, self.workspace, [])
+
+        reminder = second_provider.calls[-1]["messages"][-1]["content"]
+        self.assertIn("Current todos:\nNo todos.", reminder)
+        self.assertNotIn("First run only", reminder)
 
     def test_rejects_non_positive_max_turns(self) -> None:
         provider = FakeProvider([])
