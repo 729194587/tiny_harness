@@ -87,6 +87,7 @@ class ChatCompletionsProviderTest(unittest.TestCase):
         self.assertIsNone(result.reasoning_content)
         self.assertEqual(result.tool_calls, [])
         self.assertEqual(result.finish_reason, "stop")
+        self.assertNotIn("tools", client.chat.completions.calls[0])
 
     def test_normalizes_multiple_tool_calls_and_reasoning_extension(self) -> None:
         api_response = SimpleNamespace(

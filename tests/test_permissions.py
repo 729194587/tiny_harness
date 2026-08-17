@@ -29,6 +29,7 @@ class PermissionTest(unittest.TestCase):
             "list_files",
             "todo_write",
             "task",
+            "compact",
         ):
             with self.subTest(tool_name=tool_name):
                 self.assertIs(

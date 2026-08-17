@@ -39,6 +39,7 @@ class DefaultPermissionPolicy:
             "list_files",
             "todo_write",
             "task",
+            "compact",
         }
     )
 

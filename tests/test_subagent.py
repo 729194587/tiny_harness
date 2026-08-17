@@ -119,6 +119,56 @@ class SubagentTest(unittest.TestCase):
         self.assertIn("[Subagent started]", stdout.getvalue())
         self.assertIn("[Subagent done]", stdout.getvalue())
 
+    def test_child_has_independent_compaction_with_scoped_events(self) -> None:
+        provider = ScriptedProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("task-1", "task", '{"prompt":"child work"}')],
+                    "tool_calls",
+                ),
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("child-compact", "compact", "{}")],
+                    "tool_calls",
+                ),
+                ModelResponse("CHILD_SUMMARY", None, [], "stop"),
+                ModelResponse("child done", None, [], "stop"),
+                ModelResponse("parent done", None, [], "stop"),
+            ]
+        )
+        logger = RecordingEventLogger()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            answer = agent_loop(
+                provider,
+                self.workspace,
+                [{"role": "user", "content": "delegate"}],
+                max_context_chars=100_000,
+                event_logger=logger,
+            )
+
+        self.assertEqual(answer, "parent done")
+        child_tool_names = tool_names(provider.calls[1])
+        self.assertIn("compact", child_tool_names)
+        self.assertNotIn("task", child_tool_names)
+        self.assertEqual(provider.calls[2]["tools"], [])
+        summary_events = [
+            event
+            for event in logger.events
+            if event["event_type"].startswith("context_summary_")
+        ]
+        self.assertEqual(len(summary_events), 2)
+        self.assertTrue(
+            all(
+                event["data"].get("agent_scope") == "subagent"
+                and event["data"].get("parent_tool_call_id") == "task-1"
+                for event in summary_events
+            )
+        )
+
     def test_child_tool_side_effect_is_shared_but_history_is_isolated(self) -> None:
         provider = ScriptedProvider(
             [

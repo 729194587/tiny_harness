@@ -14,6 +14,7 @@ from tiny_harness.runtime.events import (
     EventLogger,
     EventType,
 )
+from tiny_harness.runtime.context import CompactionRequest
 from tiny_harness.runtime.hooks import (
     HookExecutionError,
     ToolHookContext,
@@ -28,6 +29,7 @@ from tiny_harness.runtime.permissions import (
 )
 from tiny_harness.runtime.todos import TodoManager
 from tiny_harness.tools.filesystem import edit_file, list_files, read_file, write_file
+from tiny_harness.tools.compact import compact
 from tiny_harness.tools.shell import bash
 from tiny_harness.tools.task import SubagentRunner, task
 from tiny_harness.tools.todo import todo_write
@@ -135,10 +137,23 @@ _TOOL_REGISTRY: dict[str, ToolEntry] = {
         },
         task,
     ),
+    "compact": (
+        "Summarize earlier conversation after the current tool batch.",
+        {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        compact,
+    ),
 }
 
 
-def tool_schemas(*, include_task: bool = True) -> list[dict[str, Any]]:
+def tool_schemas(
+    *,
+    include_task: bool = True,
+    include_compact: bool = False,
+) -> list[dict[str, Any]]:
     """Return all registered tools in Chat Completions function-tool format."""
 
     return [
@@ -151,7 +166,8 @@ def tool_schemas(*, include_task: bool = True) -> list[dict[str, Any]]:
             },
         }
         for name, (description, parameters, _) in _TOOL_REGISTRY.items()
-        if include_task or name != "task"
+        if (include_task or name != "task")
+        and (include_compact or name != "compact")
     ]
 
 
@@ -165,12 +181,17 @@ def dispatch(
     tool_hooks: ToolHooks | None = None,
     todo_manager: TodoManager | None = None,
     subagent_runner: SubagentRunner | None = None,
+    compaction_request: CompactionRequest | None = None,
 ) -> ToolResult:
     """Authorize and execute one tool call, converting failures to text."""
 
     try:
         entry = _TOOL_REGISTRY.get(call.name)
-        if entry is None or (call.name == "task" and subagent_runner is None):
+        if (
+            entry is None
+            or (call.name == "task" and subagent_runner is None)
+            or (call.name == "compact" and compaction_request is None)
+        ):
             raise ValueError(f"Unknown tool: {call.name}")
 
         arguments = json.loads(call.arguments_json)
@@ -263,6 +284,8 @@ def dispatch(
             content = handler(todo_manager, **arguments)
         elif call.name == "task":
             content = handler(subagent_runner, call.id, **arguments)
+        elif call.name == "compact":
+            content = handler(compaction_request, **arguments)
         else:
             content = handler(workspace, **arguments)
         outcome = "returned"

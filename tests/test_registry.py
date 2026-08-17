@@ -8,6 +8,7 @@ from pathlib import Path
 
 from tiny_harness.agent.messages import ToolCall
 from tiny_harness.runtime.permissions import PermissionDecision
+from tiny_harness.runtime.context import CompactionRequest
 from tiny_harness.runtime.todos import TodoManager
 from tiny_harness.tools.registry import dispatch, tool_schemas
 
@@ -60,6 +61,34 @@ class ToolRegistryTest(unittest.TestCase):
             for schema in tool_schemas(include_task=False)
         ]
         self.assertNotIn("task", child_names)
+
+        compact_names = [
+            schema["function"]["name"]
+            for schema in tool_schemas(include_compact=True)
+        ]
+        self.assertIn("compact", compact_names)
+
+    def test_dispatches_compact_only_with_run_scoped_request(self) -> None:
+        manager = CompactionRequest()
+
+        result = self.call(
+            "compact-1",
+            "compact",
+            {},
+            compaction_request=manager,
+        )
+
+        self.assertEqual(manager.revision, 1)
+        self.assertEqual(
+            result.content,
+            "Compaction requested after this tool batch.",
+        )
+
+        missing_manager = self.call("compact-2", "compact", {})
+        self.assertEqual(
+            missing_manager.content,
+            "Error: ValueError: Unknown tool: compact",
+        )
 
     def test_dispatches_task_through_injected_runner(self) -> None:
         observed = []

@@ -15,6 +15,9 @@ class EventType(str, Enum):
 
     RUN_STARTED = "run_started"
     CONTEXT_TRIMMED = "context_trimmed"
+    CONTEXT_COMPACTED = "context_compacted"
+    CONTEXT_SUMMARY_REQUESTED = "context_summary_requested"
+    CONTEXT_SUMMARY_RESPONDED = "context_summary_responded"
     MODEL_REQUESTED = "model_requested"
     MODEL_RESPONDED = "model_responded"
     TOOL_HOOK_BLOCKED = "tool_hook_blocked"

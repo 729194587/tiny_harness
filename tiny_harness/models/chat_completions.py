@@ -29,11 +29,13 @@ class ChatCompletionsProvider(ModelProvider):
     ) -> ModelResponse:
         """Request one completion and return the fields used by the loop."""
 
-        response = self._client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=tools,
-        )
+        request: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+        }
+        if tools:
+            request["tools"] = tools
+        response = self._client.chat.completions.create(**request)
         if not response.choices:
             raise RuntimeError("Model API returned no choices")
 

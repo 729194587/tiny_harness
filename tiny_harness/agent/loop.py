@@ -1,10 +1,14 @@
 """The minimal TinyHarness agent loop."""
 
+import copy
 from pathlib import Path
 from typing import Any
 
 from tiny_harness.models.base import ModelProvider
-from tiny_harness.runtime.context import prepare_context
+from tiny_harness.runtime.context import (
+    CompactionRequest,
+    ContextCompactor,
+)
 from tiny_harness.runtime.events import (
     NULL_EVENT_LOGGER,
     EventLogError,
@@ -49,8 +53,25 @@ def agent_loop(
     if subagent_max_turns < 1:
         raise ValueError("subagent_max_turns must be at least 1")
 
-    tools = tool_schemas(include_task=allow_subagent)
+    tools = tool_schemas(
+        include_task=allow_subagent,
+        include_compact=max_context_chars is not None,
+    )
     todo_manager = TodoManager()
+    compaction_request = (
+        CompactionRequest() if max_context_chars is not None else None
+    )
+    compactor = (
+        ContextCompactor(
+            workspace,
+            provider,
+            tools,
+            max_context_chars,
+            event_logger=event_logger,
+        )
+        if max_context_chars is not None
+        else None
+    )
     rounds_since_todo = 0
     current_turn = 0
     run_data = {"max_turns": max_turns}
@@ -108,20 +129,10 @@ def agent_loop(
     try:
         for current_turn in range(1, max_turns + 1):
             request_messages = messages
-            if max_context_chars is not None:
-                prepared = prepare_context(messages, tools, max_context_chars)
-                request_messages = prepared.messages
-                if prepared.dropped_blocks:
-                    event_logger.emit(
-                        EventType.CONTEXT_TRIMMED,
-                        {
-                            "turn": current_turn,
-                            "before_chars": prepared.before_chars,
-                            "after_chars": prepared.after_chars,
-                            "dropped_blocks": prepared.dropped_blocks,
-                            "dropped_messages": prepared.dropped_messages,
-                        },
-                    )
+            if compactor is not None:
+                prepared = compactor.prepare(messages, todo_manager.render())
+                messages[:] = prepared.messages
+                request_messages = copy.deepcopy(messages)
             event_logger.emit(
                 EventType.MODEL_REQUESTED,
                 {"turn": current_turn},
@@ -174,6 +185,11 @@ def agent_loop(
                 return answer
 
             todo_revision = todo_manager.revision
+            compact_revision = (
+                compaction_request.revision
+                if compaction_request is not None
+                else 0
+            )
             for call in response.tool_calls:
                 result = dispatch(
                     workspace,
@@ -184,6 +200,7 @@ def agent_loop(
                     tool_hooks=tool_hooks,
                     todo_manager=todo_manager,
                     subagent_runner=subagent_runner,
+                    compaction_request=compaction_request,
                 )
                 messages.append(
                     {
@@ -216,6 +233,18 @@ def agent_loop(
                     },
                 )
                 rounds_since_todo = 0
+
+            if (
+                compactor is not None
+                and compaction_request is not None
+                and compaction_request.revision != compact_revision
+            ):
+                prepared = compactor.compact_history(
+                    messages,
+                    todo_manager.render(),
+                    reason="manual",
+                )
+                messages[:] = prepared.messages
 
         raise RuntimeError(f"Maximum model turns reached: {max_turns}")
     except EventLogError:
