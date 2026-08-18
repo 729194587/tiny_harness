@@ -226,7 +226,13 @@ class EventLifecycleTest(unittest.TestCase):
                 ModelResponse(
                     None,
                     None,
-                    [ToolCall("bash-1", "bash", '{"command":"cd"}')],
+                    [
+                        ToolCall(
+                            "bash-1",
+                            "bash",
+                            '{"command":"python --version"}',
+                        )
+                    ],
                     "tool_calls",
                 ),
                 ModelResponse("denied", None, [], "stop"),

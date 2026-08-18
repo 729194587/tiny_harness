@@ -3,6 +3,7 @@ import unittest
 from tiny_harness.runtime.permissions import (
     DEFAULT_PERMISSION_POLICY,
     PermissionDecision,
+    is_read_only_shell_command,
     resolve_permission,
 )
 
@@ -37,11 +38,79 @@ class PermissionTest(unittest.TestCase):
                     PermissionDecision.ALLOW,
                 )
 
-    def test_default_policy_asks_for_bash(self) -> None:
-        self.assertIs(
-            DEFAULT_PERMISSION_POLICY.decide("bash", {"command": "echo ok"}),
-            PermissionDecision.ASK,
+    def test_default_policy_allows_clear_read_only_bash(self) -> None:
+        commands = (
+            'find . -name "*.py" -type f | sort',
+            'rg --files -g "*.py"',
+            "dir /s /b *.py",
+            "git status --short",
+            "git diff -- README.md",
+            "cd",
+            r"type local.txt",
+            r"type .\local.txt",
+            r"type foo\bar.txt",
         )
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertIs(
+                    DEFAULT_PERMISSION_POLICY.decide(
+                        "bash",
+                        {"command": command},
+                    ),
+                    PermissionDecision.ALLOW,
+                )
+
+    def test_default_policy_asks_for_mutating_or_ambiguous_bash(self) -> None:
+        commands = (
+            "rm output.txt",
+            "del output.txt",
+            "echo bad > output.txt",
+            'python -c "open(\'output.txt\', \'w\').write(\'bad\')"',
+            "git reset --hard",
+            "git diff --output=changes.patch",
+            "find . -delete",
+            'rg --pre "python mutate.py" pattern .',
+            "sort -o sorted.txt input.txt",
+            "dir ..",
+            "cat /etc/passwd",
+            "echo %USERPROFILE%",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertIs(
+                    DEFAULT_PERMISSION_POLICY.decide(
+                        "bash",
+                        {"command": command},
+                    ),
+                    PermissionDecision.ASK,
+                )
+
+    def test_read_only_classifier_fails_closed_on_invalid_input(self) -> None:
+        for command in (None, "", "   ", 123, "rg --files &&"):
+            with self.subTest(command=command):
+                self.assertFalse(is_read_only_shell_command(command))
+
+    def test_windows_external_path_forms_require_approval(self) -> None:
+        commands = (
+            r"type C:secret.txt",
+            r"type \Windows\win.ini",
+            r"type .\..\secret.txt",
+            r"type foo\..\..\secret.txt",
+            r"type %USERPROFILE:~0,99%\secret.txt",
+            r"type %USERPROFILE:str1=str2%\secret.txt",
+            r"type !USERPROFILE!\secret.txt",
+            r"type C^:\Windows\win.ini",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertFalse(is_read_only_shell_command(command))
+                self.assertIs(
+                    DEFAULT_PERMISSION_POLICY.decide(
+                        "bash",
+                        {"command": command},
+                    ),
+                    PermissionDecision.ASK,
+                )
 
     def test_default_policy_denies_unrecognized_tool(self) -> None:
         self.assertIs(

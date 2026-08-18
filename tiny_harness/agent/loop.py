@@ -162,7 +162,7 @@ def agent_loop(
     if allow_subagent:
 
         def run_subagent(prompt: str, parent_tool_call_id: str) -> str:
-            print("\n[Subagent started]")
+            print("\n[子 Agent 已启动]")
             child_messages = [
                 {
                     "role": "system",
@@ -197,9 +197,9 @@ def agent_loop(
                     recovery_policy=recovery_policy,
                 )
             except Exception:
-                print("[Subagent failed]")
+                print("[子 Agent 执行失败]")
                 raise
-            print("[Subagent done]")
+            print("[子 Agent 已完成]")
             return answer or "(no summary)"
 
         subagent_runner = run_subagent

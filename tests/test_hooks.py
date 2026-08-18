@@ -136,7 +136,7 @@ class ToolHooksTest(unittest.TestCase):
 
         result = dispatch(
             self.workspace,
-            ToolCall("bash-1", "bash", '{"command":"cd"}'),
+            ToolCall("bash-1", "bash", '{"command":"python --version"}'),
             tool_hooks=hooks,
         )
 

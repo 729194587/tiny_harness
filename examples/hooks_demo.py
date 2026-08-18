@@ -34,8 +34,8 @@ def main() -> int:
 
     def report_result(context, result):
         print(
-            f"[PostToolUse] {context.tool_name} returned "
-            f"{len(result.content)} characters"
+            f"[工具执行后] {context.tool_name} 返回了 "
+            f"{len(result.content)} 个字符"
         )
 
     hooks.register_pre(block_write_file)

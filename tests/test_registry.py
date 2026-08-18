@@ -227,8 +227,17 @@ class ToolRegistryTest(unittest.TestCase):
         self.assertEqual(result.content, "Error: Permission denied for tool bash")
         self.assertFalse((self.workspace / "blocked.txt").exists())
 
-    def test_bash_without_prompt_is_denied(self) -> None:
-        result = self.call("bash-no-prompt", "bash", {"command": "echo no"})
+    def test_read_only_bash_without_prompt_is_allowed(self) -> None:
+        result = self.call("bash-no-prompt", "bash", {"command": "echo ok"})
+
+        self.assertEqual(result.content, "Exit code: 0\nok")
+
+    def test_ambiguous_bash_without_prompt_is_denied(self) -> None:
+        result = self.call(
+            "bash-no-prompt",
+            "bash",
+            {"command": 'python -c "print(\'no\')"'},
+        )
 
         self.assertEqual(result.content, "Error: Permission denied for tool bash")
 

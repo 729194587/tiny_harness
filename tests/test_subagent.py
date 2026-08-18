@@ -170,8 +170,8 @@ class SubagentTest(unittest.TestCase):
             "You are a coding subagent",
             json.dumps(parent_second_request),
         )
-        self.assertIn("[Subagent started]", stdout.getvalue())
-        self.assertIn("[Subagent done]", stdout.getvalue())
+        self.assertIn("[子 Agent 已启动]", stdout.getvalue())
+        self.assertIn("[子 Agent 已完成]", stdout.getvalue())
 
     def test_child_has_independent_compaction_with_scoped_events(self) -> None:
         provider = ScriptedProvider(
@@ -385,7 +385,7 @@ class SubagentTest(unittest.TestCase):
             agent_loop(provider, self.workspace, [], tool_hooks=hooks)
 
         self.assertEqual(len(provider.calls), 2)
-        self.assertNotIn("[Subagent started]", stdout.getvalue())
+        self.assertNotIn("[子 Agent 已启动]", stdout.getvalue())
         parent_result = provider.calls[1]["messages"][-1]["content"]
         self.assertIn("delegation disabled", parent_result)
 
@@ -420,7 +420,7 @@ class SubagentTest(unittest.TestCase):
             )
 
         self.assertEqual(answer, "parent handled child failure")
-        self.assertIn("[Subagent failed]", stdout.getvalue())
+        self.assertIn("[子 Agent 执行失败]", stdout.getvalue())
         parent_result = provider.calls[2]["messages"][-1]["content"]
         self.assertIn("Maximum model turns reached: 1", parent_result)
 

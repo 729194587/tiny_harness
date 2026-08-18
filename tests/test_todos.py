@@ -115,7 +115,8 @@ class TodoManagerTest(unittest.TestCase):
             )
 
         self.assertEqual(output, "[>] Visible task\n\n(0/1 completed)")
-        self.assertIn("## Current Tasks", stdout.getvalue())
+        self.assertIn("## 当前任务", stdout.getvalue())
+        self.assertIn("（已完成 0/1）", stdout.getvalue())
         self.assertIn("[>] Visible task", stdout.getvalue())
 
 

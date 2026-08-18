@@ -132,12 +132,10 @@ def _tool_call_ids(message: dict[str, Any]) -> list[str]:
 def _split_context(
     messages: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]:
-    """Split the task prefix from complete assistant/tool protocol blocks."""
+    """Split a multi-turn conversation into atomic protocol-safe blocks."""
 
-    prefix: list[dict[str, Any]] = []
     blocks: list[list[dict[str, Any]]] = []
     index = 0
-
     while index < len(messages):
         message = messages[index]
         if not isinstance(message, dict):
@@ -145,41 +143,102 @@ def _split_context(
         if message.get("role") == "tool":
             raise ContextProtocolError("Tool result has no preceding tool call")
         if message.get("role") == "assistant" and message.get("tool_calls"):
-            break
-        prefix.append(message)
-        index += 1
-
-    while index < len(messages):
-        assistant = messages[index]
-        if not isinstance(assistant, dict) or assistant.get("role") != "assistant":
-            raise ContextProtocolError(
-                "Expected an assistant tool-call message after tool history"
-            )
-        call_ids = _tool_call_ids(assistant)
-        block = [assistant]
-        index += 1
-
-        result_ids: list[str] = []
-        while index < len(messages):
-            result = messages[index]
-            if not isinstance(result, dict):
-                raise ContextProtocolError("Each context message must be an object")
-            if result.get("role") != "tool":
-                break
-            result_id = result.get("tool_call_id")
-            if not isinstance(result_id, str) or not result_id:
-                raise ContextProtocolError("Each tool result must have a tool call ID")
-            result_ids.append(result_id)
-            block.append(result)
+            call_ids = _tool_call_ids(message)
+            block = [message]
             index += 1
+            result_ids: list[str] = []
+            while index < len(messages):
+                result = messages[index]
+                if not isinstance(result, dict):
+                    raise ContextProtocolError(
+                        "Each context message must be an object"
+                    )
+                if result.get("role") != "tool":
+                    break
+                result_id = result.get("tool_call_id")
+                if not isinstance(result_id, str) or not result_id:
+                    raise ContextProtocolError(
+                        "Each tool result must have a tool call ID"
+                    )
+                result_ids.append(result_id)
+                block.append(result)
+                index += 1
+            if result_ids != call_ids:
+                raise ContextProtocolError(
+                    "Assistant tool calls and tool results must match in order"
+                )
+            blocks.append(block)
+            continue
+        blocks.append([message])
+        index += 1
 
-        if result_ids != call_ids:
-            raise ContextProtocolError(
-                "Assistant tool calls and tool results must match in order"
-            )
-        blocks.append(block)
-
+    prefix: list[dict[str, Any]] = []
+    while blocks and _is_global_prefix_message(blocks[0][0]):
+        prefix.extend(blocks.pop(0))
     return prefix, blocks
+
+
+def _is_control_message(message: dict[str, Any]) -> bool:
+    name = message.get("name")
+    return isinstance(name, str) and name.startswith("tinyharness_")
+
+
+def _is_global_prefix_message(message: dict[str, Any]) -> bool:
+    return message.get("role") == "system" or message.get("name") in {
+        "tinyharness_context_archive",
+        "tinyharness_context_summary",
+    }
+
+
+def _is_user_turn_start(block: list[dict[str, Any]]) -> bool:
+    message = block[0]
+    return message.get("role") == "user" and not _is_control_message(message)
+
+
+def _turn_ranges(
+    blocks: list[list[dict[str, Any]]],
+) -> list[tuple[int, int]]:
+    """Return half-open ranges for complete user turns."""
+
+    starts = [
+        index for index, block in enumerate(blocks) if _is_user_turn_start(block)
+    ]
+    if not blocks:
+        return []
+    if not starts:
+        return [(0, len(blocks))]
+    ranges: list[tuple[int, int]] = []
+    if starts[0] > 0:
+        ranges.append((0, starts[0]))
+    for position, start in enumerate(starts):
+        end = starts[position + 1] if position + 1 < len(starts) else len(blocks)
+        ranges.append((start, end))
+    return ranges
+
+
+def _required_latest_blocks(
+    blocks: list[list[dict[str, Any]]],
+) -> list[list[dict[str, Any]]]:
+    """Keep the current request, control markers, and latest evidence."""
+
+    if not blocks:
+        return []
+    ranges = _turn_ranges(blocks)
+    start, end = ranges[-1]
+    required_indices = {start}
+    required_indices.update(
+        index
+        for index in range(start, end)
+        if _is_control_message(blocks[index][0])
+    )
+    tool_indices = [
+        index
+        for index, block in enumerate(blocks)
+        if any(message.get("role") == "tool" for message in block)
+    ]
+    if tool_indices:
+        required_indices.add(tool_indices[-1])
+    return [blocks[index] for index in sorted(required_indices)]
 
 
 def _is_generated_marker(message: dict[str, Any]) -> bool:
@@ -318,9 +377,16 @@ class ContextCompactor:
         """Persist the largest results from the newest complete tool batch."""
 
         _, blocks = _split_context(messages)
-        if not blocks:
+        tool_blocks = [
+            block for block in blocks if any(item.get("role") == "tool" for item in block)
+        ]
+        if not tool_blocks:
             return 0
-        results = [message for message in blocks[-1][1:] if message["role"] == "tool"]
+        results = [
+            message
+            for message in tool_blocks[-1]
+            if message.get("role") == "tool"
+        ]
         total = sum(len(str(message.get("content", ""))) for message in results)
         batch_limit = min(
             self.config.tool_result_batch_chars,
@@ -350,7 +416,7 @@ class ContextCompactor:
         self,
         messages: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], int, bool]:
-        """Archive and remove old complete blocks when message count is high."""
+        """Archive old turns, then old batches inside the current turn."""
 
         prefix, blocks = _split_context(messages)
         base_prefix = [
@@ -363,12 +429,36 @@ class ContextCompactor:
 
         kept = list(blocks)
         removed: list[list[dict[str, Any]]] = []
+        required = _required_latest_blocks(kept)
+        required_ids = {id(block) for block in required}
+        ranges = _turn_ranges(kept)
+        while len(ranges) > 1 and (
+            len(base_prefix) + 1 + sum(len(block) for block in kept)
+            > self.config.max_messages
+        ):
+            start, end = ranges[0]
+            if any(id(block) in required_ids for block in kept[start:end]):
+                break
+            removed.extend(kept[start:end])
+            del kept[start:end]
+            ranges = _turn_ranges(kept)
+
         while (
-            len(kept) > 1
+            len(kept) > len(required)
             and len(base_prefix) + 1 + sum(len(block) for block in kept)
             > self.config.max_messages
         ):
-            removed.append(kept.pop(0))
+            removable_index = next(
+                (
+                    index
+                    for index, block in enumerate(kept)
+                    if id(block) not in required_ids
+                ),
+                None,
+            )
+            if removable_index is None:
+                break
+            removed.append(kept.pop(removable_index))
         if not removed:
             return messages, 0, False
 
@@ -405,21 +495,39 @@ class ContextCompactor:
         todo_state: str,
     ) -> list[dict[str, Any]]:
         prefix, blocks = _split_context(messages)
-        prefix = [
-            message
-            for message in prefix
-            if message.get("name") != "tinyharness_todo_state"
+        prefix = [message for message in prefix if message.get("name") != "tinyharness_todo_state"]
+        blocks = [
+            [
+                message
+                for message in block
+                if message.get("name") != "tinyharness_todo_state"
+            ]
+            for block in blocks
         ]
+        blocks = [block for block in blocks if block]
         marker = self._todo_marker(todo_state)
         if marker is not None:
-            prefix.append(marker)
+            turn_starts = [
+                index
+                for index, block in enumerate(blocks)
+                if _is_user_turn_start(block)
+            ]
+            if turn_starts:
+                blocks.insert(turn_starts[-1] + 1, [marker])
+            else:
+                prefix.append(marker)
         return _flatten(prefix, blocks)
 
     def _micro_compact(self, messages: list[dict[str, Any]]) -> int:
         """Replace old, long tool results while keeping the newest results."""
 
         _, blocks = _split_context(messages)
-        results = [message for block in blocks for message in block[1:]]
+        results = [
+            message
+            for block in blocks
+            for message in block
+            if message.get("role") == "tool"
+        ]
         keep = self.config.keep_recent_results
         old_results = results[:-keep] if keep else results
         shortened = 0
@@ -490,7 +598,7 @@ class ContextCompactor:
     def _fit_summary_marker(
         self,
         prefix: list[dict[str, Any]],
-        latest_block: list[dict[str, Any]],
+        latest_context: list[dict[str, Any]],
         summary: str,
         todo_state: str,
         transcript: str,
@@ -511,11 +619,10 @@ class ContextCompactor:
                     "</tinyharness-context-summary>"
                 ),
             }
-            todo_marker = self._todo_marker(todo_state)
-            generated = [marker]
-            if todo_marker is not None:
-                generated.append(todo_marker)
-            return prefix + generated + latest_block
+            return self._upsert_todo_marker(
+                prefix + [marker] + latest_context,
+                todo_state,
+            )
 
         candidate = build(summary)
         if context_char_count(candidate, self.tools) <= limit:
@@ -555,18 +662,18 @@ class ContextCompactor:
         shortened_results: int = 0,
         transcript_written: bool = False,
     ) -> PreparedContext:
-        """Archive and summarize history, retaining task prefix and latest block."""
+        """Archive and summarize history, retaining the current user turn."""
 
         _split_context(messages)
         transcript = self._write_transcript(messages)
         transcript_written = True
         prefix, blocks = _split_context(messages)
         base_prefix = [message for message in prefix if not _is_generated_marker(message)]
-        latest_block = blocks[-1] if blocks else []
+        latest_context = _flatten([], _required_latest_blocks(blocks))
         # Prove the mandatory context fits before spending a summary API call.
         self._fit_summary_marker(
             base_prefix,
-            latest_block,
+            latest_context,
             "",
             todo_state,
             transcript,
@@ -592,7 +699,7 @@ class ContextCompactor:
 
         compacted = self._fit_summary_marker(
             base_prefix,
-            latest_block,
+            latest_context,
             response.content,
             todo_state,
             transcript,
@@ -632,7 +739,8 @@ class ContextCompactor:
         generated_prefix = [
             message for message in prefix if _is_generated_marker(message)
         ]
-        if len(blocks) <= 1 and not generated_prefix:
+        required_blocks = _required_latest_blocks(blocks)
+        if len(blocks) <= len(required_blocks) and not generated_prefix:
             raise ContextLimitError(
                 "Reactive compaction has no older history that can be removed"
             )
@@ -648,25 +756,20 @@ class ContextCompactor:
         base_prefix = [
             message for message in prefix if not _is_generated_marker(message)
         ]
-        latest_block = blocks[-1] if blocks else []
+        latest_context = _flatten([], required_blocks)
         # Refuse the recovery before another API call when the hard 25% margin
         # cannot contain the task, Todo, schemas, and newest complete evidence.
         self._fit_summary_marker(
             base_prefix,
-            latest_block,
+            latest_context,
             "",
             todo_state,
             transcript,
             max_chars=target_chars,
         )
 
-        old_history = (
-            messages[: len(messages) - len(latest_block)]
-            if latest_block
-            else messages
-        )
         summary_request = self._summary_request(
-            old_history,
+            messages,
             transcript,
             max_chars=target_chars,
         )
@@ -697,7 +800,7 @@ class ContextCompactor:
 
         compacted = self._fit_summary_marker(
             base_prefix,
-            latest_block,
+            latest_context,
             response.content,
             todo_state,
             transcript,
@@ -793,12 +896,36 @@ def prepare_context(
     before = context_char_count(messages, tools)
     kept = list(blocks)
     dropped_messages = 0
-    while len(kept) > 1:
+    dropped_blocks = 0
+    required_ids = {
+        id(block) for block in _required_latest_blocks(kept)
+    }
+    while kept:
         candidate = _flatten(prefix, kept)
         if context_char_count(candidate, tools) <= max_chars:
             break
-        removed = kept.pop(0)
-        dropped_messages += len(removed)
+        ranges = _turn_ranges(kept)
+        if len(ranges) > 1 and not any(
+            id(block) in required_ids
+            for block in kept[ranges[0][0] : ranges[0][1]]
+        ):
+            start, end = ranges[0]
+            removed = kept[start:end]
+            del kept[start:end]
+        else:
+            removable_index = next(
+                (
+                    index
+                    for index, block in enumerate(kept)
+                    if id(block) not in required_ids
+                ),
+                None,
+            )
+            if removable_index is None:
+                break
+            removed = [kept.pop(removable_index)]
+        dropped_blocks += len(removed)
+        dropped_messages += sum(len(block) for block in removed)
     prepared_messages = _flatten(prefix, kept)
     size = context_char_count(prepared_messages, tools)
     if size > max_chars:
@@ -809,6 +936,6 @@ def prepare_context(
         messages=copy.deepcopy(prepared_messages),
         before_chars=before,
         after_chars=size,
-        dropped_blocks=len(blocks) - len(kept),
+        dropped_blocks=dropped_blocks,
         dropped_messages=dropped_messages,
     )

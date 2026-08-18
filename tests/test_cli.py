@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from tiny_harness.__main__ import (
     DEFAULT_BASE_URL,
+    DEFAULT_MAX_CONTEXT_CHARS,
     DEFAULT_MODEL,
     _ask_permission,
     main,
@@ -26,10 +27,13 @@ class CliTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    @patch("tiny_harness.__main__.agent_loop", return_value="final answer")
+    @patch("tiny_harness.__main__.AgentSession")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")
-    def test_wires_cli_to_provider_and_agent_loop(self, provider_class, loop) -> None:
+    def test_wires_one_shot_cli_to_provider_and_session(
+        self, provider_class, session_class
+    ) -> None:
         provider = provider_class.return_value
+        session_class.return_value.submit.return_value = "final answer"
         stdout = io.StringIO()
 
         with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
@@ -51,38 +55,42 @@ class CliTest(unittest.TestCase):
             model=DEFAULT_MODEL,
             base_url=DEFAULT_BASE_URL,
         )
-        loop.assert_called_once()
-        positional = loop.call_args.args
+        positional = session_class.call_args.args
         self.assertIs(positional[0], provider)
         self.assertEqual(positional[1], self.workspace.resolve())
-        self.assertEqual(positional[2][0]["role"], "system")
-        self.assertIn(str(self.workspace.resolve()), positional[2][0]["content"])
-        self.assertIn("todo_write", positional[2][0]["content"])
-        self.assertEqual(
-            positional[2][1],
-            {"role": "user", "content": "create a file"},
+        self.assertIn(str(self.workspace.resolve()), positional[2])
+        self.assertIn("todo_write", positional[2])
+        self.assertIn("compact", positional[2])
+        self.assertEqual(session_class.call_args.kwargs["max_turns"], 7)
+        self.assertIs(
+            session_class.call_args.kwargs["permission_prompt"], _ask_permission
         )
-        self.assertEqual(loop.call_args.kwargs["max_turns"], 7)
-        self.assertIs(loop.call_args.kwargs["permission_prompt"], _ask_permission)
-        self.assertIs(loop.call_args.kwargs["event_logger"], NULL_EVENT_LOGGER)
-        self.assertIsNone(loop.call_args.kwargs["max_context_chars"])
         self.assertEqual(
-            loop.call_args.kwargs["subagent_max_turns"],
+            session_class.call_args.kwargs["max_context_chars"],
+            DEFAULT_MAX_CONTEXT_CHARS,
+        )
+        self.assertEqual(
+            session_class.call_args.kwargs["subagent_max_turns"],
             DEFAULT_SUBAGENT_MAX_TURNS,
         )
         self.assertEqual(
-            loop.call_args.kwargs["recovery_policy"],
+            session_class.call_args.kwargs["recovery_policy"],
             RecoveryPolicy(max_retries=2),
         )
-        self.assertIsNone(loop.call_args.kwargs["goal_condition"])
         self.assertEqual(
-            loop.call_args.kwargs["max_goal_retries"],
+            session_class.call_args.kwargs["max_goal_retries"],
             DEFAULT_MAX_GOAL_RETRIES,
         )
+        session_class.return_value.submit.assert_called_once_with(
+            "create a file", goal_condition=None
+        )
 
-    @patch("tiny_harness.__main__.agent_loop", return_value="done")
+    @patch("tiny_harness.__main__.AgentSession")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")
-    def test_uses_environment_model_and_base_url(self, provider_class, _) -> None:
+    def test_uses_environment_model_and_base_url(
+        self, provider_class, session_class
+    ) -> None:
+        session_class.return_value.submit.return_value = "done"
         environment = {
             "TINYHARNESS_API_KEY": "secret",
             "TINYHARNESS_MODEL": "custom-model",
@@ -99,9 +107,12 @@ class CliTest(unittest.TestCase):
             base_url="https://example.test",
         )
 
-    @patch("tiny_harness.__main__.agent_loop", return_value="done")
+    @patch("tiny_harness.__main__.AgentSession")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")
-    def test_passes_jsonl_logger_when_event_log_is_set(self, _, loop) -> None:
+    def test_event_log_factory_creates_a_fresh_logger_per_submit(
+        self, _, session_class
+    ) -> None:
+        session_class.return_value.submit.return_value = "done"
         log_path = self.workspace / "logs" / "run.jsonl"
 
         with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
@@ -116,13 +127,31 @@ class CliTest(unittest.TestCase):
                     ]
                 )
 
-        logger = loop.call_args.kwargs["event_logger"]
-        self.assertIsInstance(logger, JsonlEventLogger)
-        self.assertEqual(logger.path, log_path.resolve())
+        factory = session_class.call_args.kwargs["event_logger_factory"]
+        first = factory()
+        second = factory()
+        self.assertIsInstance(first, JsonlEventLogger)
+        self.assertIsInstance(second, JsonlEventLogger)
+        self.assertEqual(first.path, log_path.resolve())
+        self.assertNotEqual(first.run_id, second.run_id)
 
-    @patch("tiny_harness.__main__.agent_loop", return_value="done")
+    @patch("tiny_harness.__main__.AgentSession")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")
-    def test_passes_context_budget_when_configured(self, _, loop) -> None:
+    def test_no_event_log_factory_returns_null_logger(self, _, session_class) -> None:
+        session_class.return_value.submit.return_value = "done"
+        with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
+            with contextlib.redirect_stdout(io.StringIO()):
+                main(["task", "--workspace", str(self.workspace)])
+
+        factory = session_class.call_args.kwargs["event_logger_factory"]
+        self.assertIs(factory(), NULL_EVENT_LOGGER)
+
+    @patch("tiny_harness.__main__.AgentSession")
+    @patch("tiny_harness.__main__.ChatCompletionsProvider")
+    def test_passes_context_and_recovery_configuration(
+        self, _, session_class
+    ) -> None:
+        session_class.return_value.submit.return_value = "done"
         with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
             with contextlib.redirect_stdout(io.StringIO()):
                 main(
@@ -139,16 +168,35 @@ class CliTest(unittest.TestCase):
                     ]
                 )
 
-        self.assertEqual(loop.call_args.kwargs["max_context_chars"], 9000)
-        self.assertEqual(loop.call_args.kwargs["subagent_max_turns"], 4)
+        self.assertEqual(session_class.call_args.kwargs["max_context_chars"], 9000)
+        self.assertEqual(session_class.call_args.kwargs["subagent_max_turns"], 4)
         self.assertEqual(
-            loop.call_args.kwargs["recovery_policy"],
+            session_class.call_args.kwargs["recovery_policy"],
             RecoveryPolicy(max_retries=5),
         )
 
-    @patch("tiny_harness.__main__.agent_loop", return_value="done")
+    @patch("tiny_harness.__main__.AgentSession")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")
-    def test_passes_goal_and_retry_budget_to_agent_loop(self, _, loop) -> None:
+    def test_can_disable_context_compaction(self, _, session_class) -> None:
+        session_class.return_value.submit.return_value = "done"
+        with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
+            with contextlib.redirect_stdout(io.StringIO()):
+                main(
+                    [
+                        "task",
+                        "--workspace",
+                        str(self.workspace),
+                        "--no-context-compaction",
+                    ]
+                )
+
+        self.assertIsNone(session_class.call_args.kwargs["max_context_chars"])
+        self.assertNotIn("Use compact", session_class.call_args.args[2])
+
+    @patch("tiny_harness.__main__.AgentSession")
+    @patch("tiny_harness.__main__.ChatCompletionsProvider")
+    def test_passes_goal_to_one_shot_submit(self, _, session_class) -> None:
+        session_class.return_value.submit.return_value = "done"
         with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
             with contextlib.redirect_stdout(io.StringIO()):
                 main(
@@ -163,70 +211,97 @@ class CliTest(unittest.TestCase):
                     ]
                 )
 
-        self.assertEqual(loop.call_args.kwargs["goal_condition"], "tests pass")
-        self.assertEqual(loop.call_args.kwargs["max_goal_retries"], 1)
-        system_prompt = loop.call_args.args[2][0]["content"]
+        session_class.return_value.submit.assert_called_once_with(
+            "task", goal_condition="tests pass"
+        )
+        self.assertEqual(session_class.call_args.kwargs["max_goal_retries"], 1)
+        system_prompt = session_class.call_args.args[2]
         self.assertIn("independent evaluator", system_prompt)
         self.assertIn("concrete tool results", system_prompt)
 
+    @patch("tiny_harness.__main__.AgentSession")
+    @patch("tiny_harness.__main__.ChatCompletionsProvider")
+    def test_no_task_starts_repl_and_reuses_one_session(self, _, session_class) -> None:
+        session = session_class.return_value
+        session.submit.side_effect = ["first answer", "second answer"]
+
+        with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
+            with patch("builtins.input", side_effect=["first", "second", "exit"]):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    exit_code = main(["--workspace", str(self.workspace)])
+
+        self.assertEqual(exit_code, 0)
+        session_class.assert_called_once()
+        self.assertEqual(
+            [call.args for call in session.submit.call_args_list],
+            [("first",), ("second",)],
+        )
+        output = stdout.getvalue()
+        self.assertIn("TinyHarness 交互会话", output)
+        self.assertIn("first answer", output)
+        self.assertIn("second answer", output)
+
+    @patch("tiny_harness.__main__.AgentSession")
+    @patch("tiny_harness.__main__.ChatCompletionsProvider")
+    def test_repl_commands_are_not_submitted(self, _, session_class) -> None:
+        session = session_class.return_value
+        with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
+            with patch("builtins.input", side_effect=["", "/help", "/clear", "q"]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    exit_code = main(["--workspace", str(self.workspace)])
+
+        self.assertEqual(exit_code, 0)
+        session.clear.assert_called_once_with()
+        session.submit.assert_not_called()
+
+    @patch("tiny_harness.__main__.AgentSession")
+    @patch("tiny_harness.__main__.ChatCompletionsProvider")
+    def test_repl_eof_exits_cleanly(self, _, session_class) -> None:
+        with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
+            with patch("builtins.input", side_effect=EOFError):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(main(["--workspace", str(self.workspace)]), 0)
+        session_class.return_value.submit.assert_not_called()
+
     def test_requires_api_key(self) -> None:
         stderr = io.StringIO()
-
         with patch.dict(os.environ, {}, clear=True):
             with contextlib.redirect_stderr(stderr):
                 with self.assertRaisesRegex(SystemExit, "2"):
                     main(["task", "--workspace", str(self.workspace)])
-
-        self.assertIn("TINYHARNESS_API_KEY is required", stderr.getvalue())
+        self.assertIn("必须设置 TINYHARNESS_API_KEY", stderr.getvalue())
 
     def test_rejects_non_directory_workspace(self) -> None:
         missing = self.workspace / "missing"
         stderr = io.StringIO()
-
         with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
             with contextlib.redirect_stderr(stderr):
                 with self.assertRaisesRegex(SystemExit, "2"):
                     main(["task", "--workspace", str(missing)])
+        self.assertIn("workspace 不是目录", stderr.getvalue())
 
-        self.assertIn("workspace is not a directory", stderr.getvalue())
+    def test_rejects_invalid_numeric_arguments(self) -> None:
+        cases = [
+            (["task", "--max-turns", "0"], "必须大于或等于 1"),
+            (["task", "--max-context-chars", "0"], "必须大于或等于 1"),
+            (["task", "--subagent-max-turns", "0"], "必须大于或等于 1"),
+            (["task", "--max-model-retries", "-1"], "必须大于或等于 0"),
+            (["task", "--max-goal-retries", "-1"], "必须大于或等于 0"),
+        ]
+        for arguments, expected in cases:
+            with self.subTest(arguments=arguments):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    with self.assertRaisesRegex(SystemExit, "2"):
+                        main(arguments)
+                self.assertIn(expected, stderr.getvalue())
 
-    def test_rejects_non_positive_max_turns(self) -> None:
-        stderr = io.StringIO()
-
-        with contextlib.redirect_stderr(stderr):
-            with self.assertRaisesRegex(SystemExit, "2"):
-                main(["task", "--max-turns", "0"])
-
-        self.assertIn("must be at least 1", stderr.getvalue())
-
-    def test_rejects_non_positive_context_budget(self) -> None:
-        stderr = io.StringIO()
-
-        with contextlib.redirect_stderr(stderr):
-            with self.assertRaisesRegex(SystemExit, "2"):
-                main(["task", "--max-context-chars", "0"])
-
-        self.assertIn("must be at least 1", stderr.getvalue())
-
-    def test_rejects_non_positive_subagent_turns(self) -> None:
-        stderr = io.StringIO()
-
-        with contextlib.redirect_stderr(stderr):
-            with self.assertRaisesRegex(SystemExit, "2"):
-                main(["task", "--subagent-max-turns", "0"])
-
-        self.assertIn("must be at least 1", stderr.getvalue())
-
-    def test_rejects_negative_model_retries_but_allows_zero(self) -> None:
-        stderr = io.StringIO()
-        with contextlib.redirect_stderr(stderr):
-            with self.assertRaisesRegex(SystemExit, "2"):
-                main(["task", "--max-model-retries", "-1"])
-        self.assertIn("must be at least 0", stderr.getvalue())
-
+    def test_allows_zero_model_retries(self) -> None:
         with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
             with patch("tiny_harness.__main__.ChatCompletionsProvider"):
-                with patch("tiny_harness.__main__.agent_loop", return_value="done"):
+                with patch("tiny_harness.__main__.AgentSession") as session_class:
+                    session_class.return_value.submit.return_value = "done"
                     with contextlib.redirect_stdout(io.StringIO()):
                         self.assertEqual(
                             main(
@@ -243,15 +318,12 @@ class CliTest(unittest.TestCase):
 
     def test_rejects_invalid_goal_arguments_before_provider_setup(self) -> None:
         cases = [
-            (["task", "--goal", "   "], "goal cannot be empty"),
+            (["task", "--goal", "   "], "goal 不能为空"),
             (
                 ["task", "--goal", "x" * (MAX_GOAL_LENGTH + 1)],
-                f"goal cannot exceed {MAX_GOAL_LENGTH}",
+                f"goal 不能超过 {MAX_GOAL_LENGTH}",
             ),
-            (
-                ["task", "--max-goal-retries", "-1"],
-                "must be at least 0",
-            ),
+            (["--goal", "tests pass"], "只支持单次任务模式"),
         ]
         for arguments, expected in cases:
             with self.subTest(expected=expected):
@@ -261,15 +333,27 @@ class CliTest(unittest.TestCase):
                         main(arguments)
                 self.assertIn(expected, stderr.getvalue())
 
+    def test_context_options_are_mutually_exclusive(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaisesRegex(SystemExit, "2"):
+                main(
+                    [
+                        "task",
+                        "--max-context-chars",
+                        "9000",
+                        "--no-context-compaction",
+                    ]
+                )
+        self.assertIn("not allowed with argument", stderr.getvalue())
+
     def test_permission_prompt_accepts_yes_and_displays_arguments(self) -> None:
         stdout = io.StringIO()
-
         with patch("builtins.input", return_value="yes"):
             with contextlib.redirect_stdout(stdout):
                 allowed = _ask_permission("bash", {"command": "echo hello"})
-
         self.assertTrue(allowed)
-        self.assertIn("Permission required", stdout.getvalue())
+        self.assertIn("需要工具授权", stdout.getvalue())
         self.assertIn('"command": "echo hello"', stdout.getvalue())
 
     def test_permission_prompt_defaults_to_denial(self) -> None:

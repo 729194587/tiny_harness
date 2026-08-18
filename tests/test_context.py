@@ -192,10 +192,12 @@ class ContextCompactorTest(unittest.TestCase):
 
         self.assertEqual(prepared.archived_messages, 4)
         self.assertEqual(prepared.messages[-2:], tool_block("three"))
-        self.assertEqual(
-            prepared.messages[2]["name"],
-            "tinyharness_context_archive",
-        )
+        archive_markers = [
+            message
+            for message in prepared.messages
+            if message.get("name") == "tinyharness_context_archive"
+        ]
+        self.assertEqual(len(archive_markers), 1)
         transcripts = list(
             (self.workspace / ".tinyharness/context/transcripts").glob("*.jsonl")
         )
@@ -224,6 +226,107 @@ class ContextCompactorTest(unittest.TestCase):
         self.assertTrue(results[0].startswith("[Earlier tool result omitted"))
         self.assertTrue(results[1].startswith("[Earlier tool result omitted"))
         self.assertEqual(results[-3:], ["2" * 200, "3" * 200, "4" * 200])
+
+    def test_multi_turn_history_is_protocol_safe_and_unchanged_under_budget(self):
+        messages = (
+            self.prefix
+            + tool_block("first", "FIRST_RESULT")
+            + [{"role": "assistant", "content": "first answer"}]
+            + [{"role": "user", "content": "SECOND_TASK"}]
+            + tool_block("second", "SECOND_RESULT")
+            + [{"role": "assistant", "content": "second answer"}]
+        )
+
+        prepared = self.compactor(max_chars=100_000).prepare(
+            messages,
+            "No todos.",
+        )
+
+        self.assertEqual(prepared.messages, messages)
+
+    def test_multi_turn_summary_keeps_current_request_and_latest_tool_batch(self):
+        provider = FakeProvider([ModelResponse("OLD_TURN_SUMMARY", None, [], "stop")])
+        latest = tool_block("latest-a", "A") + tool_block(
+            "latest-b",
+            "LATEST_EVIDENCE",
+        )
+        messages = (
+            self.prefix
+            + tool_block("old", "OLD_RESULT", assistant_text="X" * 4_000)
+            + [{"role": "assistant", "content": "old answer"}]
+            + [{"role": "user", "content": "CURRENT_TASK"}]
+            + latest
+        )
+        compactor = ContextCompactor(
+            self.workspace,
+            provider,
+            TOOLS,
+            1_800,
+            config=CompactionConfig(max_messages=50),
+        )
+
+        prepared = compactor.prepare(messages, "No todos.")
+
+        compacted = json.dumps(prepared.messages, ensure_ascii=False)
+        self.assertTrue(prepared.summarized)
+        self.assertIn("OLD_TURN_SUMMARY", compacted)
+        self.assertIn("CURRENT_TASK", compacted)
+        self.assertIn("latest-b", compacted)
+        self.assertIn("LATEST_EVIDENCE", compacted)
+        self.assertNotIn("OLD_RESULT", compacted)
+
+    def test_new_turn_keeps_latest_evidence_from_previous_turn(self):
+        provider = FakeProvider([ModelResponse("PRIOR_SUMMARY", None, [], "stop")])
+        messages = (
+            self.prefix
+            + [{"role": "assistant", "content": "X" * 4_000}]
+            + tool_block("prior-tool", "RECENT_EVIDENCE")
+            + [{"role": "assistant", "content": "prior answer"}]
+            + [{"role": "user", "content": "FOLLOW_UP_TASK"}]
+        )
+        compactor = ContextCompactor(
+            self.workspace,
+            provider,
+            TOOLS,
+            1_800,
+            config=CompactionConfig(max_messages=50),
+        )
+
+        prepared = compactor.prepare(messages, "No todos.")
+
+        compacted = json.dumps(prepared.messages, ensure_ascii=False)
+        self.assertTrue(prepared.summarized)
+        self.assertIn("PRIOR_SUMMARY", compacted)
+        self.assertIn("RECENT_EVIDENCE", compacted)
+        self.assertIn("FOLLOW_UP_TASK", compacted)
+        self.assertNotIn("prior answer", compacted)
+
+    def test_multi_turn_trim_drops_old_turn_without_splitting_latest_batch(self):
+        latest_batch = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "a", "type": "function", "function": {}},
+                    {"id": "b", "type": "function", "function": {}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "a", "content": "A"},
+            {"role": "tool", "tool_call_id": "b", "content": "B"},
+        ]
+        messages = (
+            self.prefix
+            + tool_block("old", "X" * 3_000)
+            + [{"role": "assistant", "content": "old answer"}]
+            + [{"role": "user", "content": "CURRENT_TASK"}]
+            + latest_batch
+        )
+
+        prepared = prepare_context(messages, TOOLS, 1_000)
+
+        self.assertIn({"role": "user", "content": "CURRENT_TASK"}, prepared.messages)
+        self.assertEqual(prepared.messages[-3:], latest_batch)
+        self.assertNotIn("X" * 3_000, json.dumps(prepared.messages))
 
     def test_current_todo_marker_is_replaced_without_accumulating(self):
         compactor = self.compactor()
