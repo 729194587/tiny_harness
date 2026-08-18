@@ -4,11 +4,13 @@ import copy
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from tiny_harness.agent.messages import ModelResponse
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger, EventType
 
@@ -44,6 +46,7 @@ class CompactionConfig:
     keep_recent_results: int = 3
     micro_result_chars: int = 120
     summary_input_chars: int = 80_000
+    reactive_target_ratio: float = 0.75
 
 
 @dataclass(frozen=True)
@@ -213,6 +216,11 @@ class ContextCompactor:
         *,
         event_logger: EventLogger = NULL_EVENT_LOGGER,
         config: CompactionConfig = CompactionConfig(),
+        summary_complete: Callable[
+            [list[dict[str, Any]], list[dict[str, Any]]],
+            ModelResponse,
+        ]
+        | None = None,
     ) -> None:
         if max_chars < 1:
             raise ValueError("max_chars must be at least 1")
@@ -222,6 +230,7 @@ class ContextCompactor:
         self.max_chars = max_chars
         self.event_logger = event_logger
         self.config = config
+        self._summary_complete = summary_complete or provider.complete
 
     def _artifact_directory(self, leaf: str) -> Path:
         candidate = self.workspace / ".tinyharness" / "context" / leaf
@@ -438,7 +447,10 @@ class ContextCompactor:
         self,
         messages: list[dict[str, Any]],
         transcript: str,
+        *,
+        max_chars: int | None = None,
     ) -> list[dict[str, Any]]:
+        limit = self.max_chars if max_chars is None else max_chars
         serialized = json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
         input_limit = min(self.config.summary_input_chars, len(serialized))
 
@@ -466,7 +478,7 @@ class ContextCompactor:
 
         while input_limit >= 0:
             request = build(input_limit)
-            if context_char_count(request, []) <= self.max_chars:
+            if context_char_count(request, []) <= limit:
                 return request
             if input_limit == 0:
                 break
@@ -482,7 +494,11 @@ class ContextCompactor:
         summary: str,
         todo_state: str,
         transcript: str,
+        *,
+        max_chars: int | None = None,
     ) -> list[dict[str, Any]]:
+        limit = self.max_chars if max_chars is None else max_chars
+
         def build(text: str) -> list[dict[str, Any]]:
             marker = {
                 "role": "user",
@@ -502,7 +518,7 @@ class ContextCompactor:
             return prefix + generated + latest_block
 
         candidate = build(summary)
-        if context_char_count(candidate, self.tools) <= self.max_chars:
+        if context_char_count(candidate, self.tools) <= limit:
             return candidate
 
         low = 0
@@ -514,7 +530,7 @@ class ContextCompactor:
             if middle < len(summary):
                 truncated += "\n[summary truncated to fit context budget]"
             candidate = build(truncated)
-            if context_char_count(candidate, self.tools) <= self.max_chars:
+            if context_char_count(candidate, self.tools) <= limit:
                 best = candidate
                 low = middle + 1
             else:
@@ -523,8 +539,7 @@ class ContextCompactor:
             required = context_char_count(build(""), self.tools)
             raise ContextLimitError(
                 "Required task, Todo, summary marker, latest evidence, and tool "
-                f"schemas exceed configured character budget: {required} > "
-                f"{self.max_chars}"
+                f"schemas exceed context target: {required} > {limit}"
             )
         return best
 
@@ -561,7 +576,7 @@ class ContextCompactor:
             EventType.CONTEXT_SUMMARY_REQUESTED,
             {"reason": reason, "input_chars": context_char_count(summary_request, [])},
         )
-        response = self.provider.complete(summary_request, [])
+        response = self._summary_complete(summary_request, [])
         self.event_logger.emit(
             EventType.CONTEXT_SUMMARY_RESPONDED,
             {
@@ -597,6 +612,110 @@ class ContextCompactor:
             transcript_written=transcript_written,
         )
         self._emit_compacted(prepared, reason)
+        return prepared
+
+    def reactive_compact(
+        self,
+        messages: list[dict[str, Any]],
+        todo_state: str,
+        *,
+        failed_request_chars: int,
+    ) -> PreparedContext:
+        """Aggressively shrink one API-rejected context by at least 25 percent."""
+
+        if failed_request_chars < 1:
+            raise ValueError("failed_request_chars must be at least 1")
+        if not 0 < self.config.reactive_target_ratio < 1:
+            raise ValueError("reactive_target_ratio must be between 0 and 1")
+
+        prefix, blocks = _split_context(messages)
+        generated_prefix = [
+            message for message in prefix if _is_generated_marker(message)
+        ]
+        if len(blocks) <= 1 and not generated_prefix:
+            raise ContextLimitError(
+                "Reactive compaction has no older history that can be removed"
+            )
+
+        target_chars = min(
+            self.max_chars,
+            int(failed_request_chars * self.config.reactive_target_ratio),
+        )
+        if target_chars < 1:
+            raise ContextLimitError("Reactive context target is too small")
+
+        transcript = self._write_transcript(messages)
+        base_prefix = [
+            message for message in prefix if not _is_generated_marker(message)
+        ]
+        latest_block = blocks[-1] if blocks else []
+        # Refuse the recovery before another API call when the hard 25% margin
+        # cannot contain the task, Todo, schemas, and newest complete evidence.
+        self._fit_summary_marker(
+            base_prefix,
+            latest_block,
+            "",
+            todo_state,
+            transcript,
+            max_chars=target_chars,
+        )
+
+        old_history = (
+            messages[: len(messages) - len(latest_block)]
+            if latest_block
+            else messages
+        )
+        summary_request = self._summary_request(
+            old_history,
+            transcript,
+            max_chars=target_chars,
+        )
+        self.event_logger.emit(
+            EventType.CONTEXT_SUMMARY_REQUESTED,
+            {
+                "reason": "reactive",
+                "input_chars": context_char_count(summary_request, []),
+            },
+        )
+        response = self._summary_complete(summary_request, [])
+        self.event_logger.emit(
+            EventType.CONTEXT_SUMMARY_RESPONDED,
+            {
+                "reason": "reactive",
+                "finish_reason": response.finish_reason,
+                "content_length": len(response.content or ""),
+            },
+        )
+        if (
+            response.tool_calls
+            or response.finish_reason != "stop"
+            or not response.content
+        ):
+            raise ContextSummaryError(
+                "Reactive context summary must return non-empty final text"
+            )
+
+        compacted = self._fit_summary_marker(
+            base_prefix,
+            latest_block,
+            response.content,
+            todo_state,
+            transcript,
+            max_chars=target_chars,
+        )
+        after_chars = context_char_count(compacted, self.tools)
+        if after_chars > target_chars:
+            raise ContextLimitError(
+                "Reactive context did not meet the required shrink margin"
+            )
+        prepared = PreparedContext(
+            messages=copy.deepcopy(compacted),
+            before_chars=failed_request_chars,
+            after_chars=after_chars,
+            summarized=True,
+            transcript_written=True,
+        )
+        self._emit_compacted(prepared, "reactive")
         return prepared
 
     def _emit_compacted(self, prepared: PreparedContext, reason: str) -> None:

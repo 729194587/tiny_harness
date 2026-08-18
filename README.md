@@ -2,12 +2,13 @@
 
 TinyHarness 是一个面向 Coding Agent Harness Reliability 研究的轻量 Python 项目。
 
-Phase 1 已冻结为最小可运行 Agent 基线，Phase 2 加入 Permission Gate，Phase 3、4 分别加入 Event Log 和 Context Guard，Phase 5 加入 run-scoped Tool Hooks，Phase 6 加入内存 Todo 规划状态。当前 Phase 7 加入同步 Subagent：
+Phase 1 已冻结为最小可运行 Agent 基线，Phase 2–8 依次加入 Permission、Event Log、Context Guard、Hooks、Todo、Subagent 和 Context Compaction v2。当前 Phase 9 加入有界 Model Failure Recovery：
 
 ```text
 CLI
 → Agent Loop
-→ Context Guard
+→ Context Compaction v2
+→ Recovery Executor（bounded retry / reactive compact orchestration）
 → Chat Completions Model Provider
 → Tool Calls
 → PreToolUse Hooks
@@ -188,7 +189,17 @@ Todo 是规划提示，不是完成条件。TinyHarness 当前不会阻止模型
 
 启用预算时增加默认 ALLOW 的 `compact` 工具。它仍经过 Hooks 和 Permission，并且只在当前完整工具批次执行和回填结束后触发摘要。摘要调用不提供工具，也不消耗 `max_turns`。父子 Agent 使用独立 compactor；子压缩事件继续带有父 task call ID。
 
-`.tinyharness/context/` 是可恢复信息，不是可信审计证据；workspace 工具和用户批准的 bash 仍可能修改它。API context overflow 后的 reactive compaction 与有限重试留到 Phase 9。完整设计、测试状态和已通过的真实 DeepSeek smoke test 见 [PHASE8.md](PHASE8.md)。
+`.tinyharness/context/` 是可恢复信息，不是可信审计证据；workspace 工具和用户批准的 bash 仍可能修改它。完整设计、测试状态和已通过的真实 DeepSeek smoke test 见 [PHASE8.md](PHASE8.md)。
+
+## Phase 9：Model Failure Recovery
+
+所有主模型、摘要模型和子 Agent 模型请求都经过统一 `RecoveryExecutor`。Adapter 将 429、服务不可用、连接失败、context overflow 和 fatal failure 归一化；前三类默认最多重试 2 次，并使用受上限约束的指数 backoff。SDK 内建 retry 被关闭，避免次数叠加。
+
+`length`、`content_filter` 及 finish reason/tool calls 相互矛盾的响应，会在写入 assistant history 和执行工具前失败；截断或过滤响应携带的工具调用不会产生副作用。
+
+配置 `--max-context-chars` 时，API 仍拒绝 context 的请求最多执行一次 reactive compaction。压缩后的主请求和摘要请求都必须达到原失败请求 75% 的明确 target；第二次 context rejection、无法满足 target 或不可恢复错误会明确终止。
+
+`--max-model-retries` 可以调整暂时性错误重试次数，设为 `0` 可关闭。每个物理 Provider attempt 都记录 `purpose`、`turn` 和 `attempt`；父子 Agent 的 retry state 相互独立。详细契约、边界和已通过的真实 DeepSeek smoke test 见 [PHASE9.md](PHASE9.md)。
 
 ## 环境要求
 
@@ -240,7 +251,7 @@ tinyharness "列出 workspace 中的文件" `
   --workspace D:\learn-claude-code\tinyharness
 ```
 
-`--workspace` 默认为当前目录，`--max-turns` 默认为 20。`--max-context-chars` 默认不启用；启用后同时打开四层 Context Compactor 和 `compact` 工具。`--subagent-max-turns` 默认为 10，并分别应用于每个同步子 Agent。
+`--workspace` 默认为当前目录，`--max-turns` 默认为 20。`--max-context-chars` 默认不启用；启用后同时打开四层 Context Compactor、reactive context recovery 和 `compact` 工具。`--max-model-retries` 默认为 2，按每个逻辑模型请求限制暂时性错误重试。`--subagent-max-turns` 默认为 10，并分别应用于每个同步子 Agent。
 
 ## 工具行为
 
@@ -314,6 +325,12 @@ Phase 1 冻结时的基线：
 - 125 项通过
 - 3 项跳过：当前 Windows 用户无法创建 filesystem、artifact 目录和最终 artifact 文件的符号链接测试
 
+当前 Phase 9 离线测试：
+
+- 148 项测试被执行
+- 145 项通过
+- 3 项跳过：同一个 Windows 符号链接权限限制
+
 ## 项目结构
 
 ```text
@@ -338,6 +355,7 @@ tinyharness/
 │     ├─ events.py
 │     ├─ hooks.py
 │     ├─ permissions.py
+│     ├─ recovery.py
 │     └─ todos.py
 ├─ examples/
 │  └─ hooks_demo.py
@@ -350,14 +368,15 @@ tinyharness/
 ├─ PHASE6.md
 ├─ PHASE7.md
 ├─ PHASE8.md
+├─ PHASE9.md
 └─ pyproject.toml
 ```
 
-`runtime/permissions.py`、`runtime/events.py`、`runtime/context.py`、`runtime/hooks.py` 和 `runtime/todos.py` 已分别在 Phase 2–8 接入。`runtime/goal.py` 和 `agent/session.py` 仍是空占位文件。
+`runtime/permissions.py`、`runtime/events.py`、`runtime/context.py`、`runtime/hooks.py`、`runtime/todos.py` 和 `runtime/recovery.py` 已分别在 Phase 2–9 接入。`runtime/goal.py` 和 `agent/session.py` 仍是空占位文件。
 
 ## 当前边界
 
-当前实现了非持久化的 ALLOW / DENY / ASK、显式启用的控制流 metadata JSONL 日志、四层主动 Context Compaction、通过 Python API 注入的同步 Pre/Post Tool Hooks、run-scoped Todo 规划状态，以及单层同步 Subagent。仍没有 Hook 配置文件、Prompt/Stop Hooks、精确 token 预算、context overflow 自动恢复、Session Resume、Goal Gate、Artifact Store、Memory、MCP、并行 Subagent、Agent Teams 或 Workflow。工具和 Subagent 顺序执行；主 CLI 会显示 ASK 交互、Todo 更新、Subagent 状态和最终答案。
+当前实现了非持久化的 ALLOW / DENY / ASK、显式启用的控制流 metadata JSONL 日志、四层主动 Context Compaction、一次 reactive context recovery、暂时性模型错误的有界 retry、通过 Python API 注入的同步 Pre/Post Tool Hooks、run-scoped Todo 规划状态，以及单层同步 Subagent。仍没有 Hook 配置文件、Prompt/Stop Hooks、精确 token 预算、fallback model、circuit breaker、Session Resume、Goal Gate、Artifact Store、Memory、MCP、并行 Subagent、Agent Teams 或 Workflow。工具和 Subagent 顺序执行；主 CLI 会显示 ASK 交互、Todo 更新、Subagent 状态和最终答案。
 
 这些限制是后续可靠性研究的基线，不应被误认为已经实现但未启用的功能。
 
@@ -370,4 +389,4 @@ Phase 1 选择性参考了：
 
 参考内容仅限核心控制流、工具 schema、分发和 workspace 路径边界。TinyHarness 根据自身 Phase 1 目标重新实现，没有直接移植 integrated harness 或后续阶段机制。
 
-Phase 2 选择性参考了 `s03_permission` 的执行前权限控制流。Phase 5 选择性参考了 `s04_hooks` 的有序注册、PreToolUse 阻止和 PostToolUse 观察概念，但保留了 TinyHarness 独立的 Permission Gate，只实现 Tool Hooks。Phase 6 实质性参考并改写了 `s05_todo_write` 的 TodoManager、工具 schema、终端渲染和三轮 Reminder 控制流。Phase 7 实质性参考并改写了 `s06_subagent` 的 task schema、fresh child context、同步嵌套 Loop、共享 workspace 和单层委派控制流。Phase 8 实质性参考并改写了 `s08_context_compact` 的四层压缩顺序、可恢复落盘、历史归档、事实摘要和手动 compact 控制流。Phase 3、4 是 TinyHarness 的可靠性扩展。没有查看 Claude Code 产品源码。
+Phase 2 选择性参考了 `s03_permission` 的执行前权限控制流。Phase 5 选择性参考了 `s04_hooks` 的有序注册、PreToolUse 阻止和 PostToolUse 观察概念，但保留了 TinyHarness 独立的 Permission Gate，只实现 Tool Hooks。Phase 6 实质性参考并改写了 `s05_todo_write` 的 TodoManager、工具 schema、终端渲染和三轮 Reminder 控制流。Phase 7 实质性参考并改写了 `s06_subagent` 的 task schema、fresh child context、同步嵌套 Loop、共享 workspace 和单层委派控制流。Phase 8 实质性参考并改写了 `s08_context_compact` 的四层压缩顺序、可恢复落盘、历史归档、事实摘要和手动 compact 控制流。Phase 9 选择性参考了 `s08_context_compact` 的 reactive compact 和 `s15_integrated_harness` 的有界 retry/backoff 控制流，但重新实现了 provider-neutral 错误契约、统一恢复执行器、shrink margin 和 attempt 事件。Phase 3、4 是 TinyHarness 的可靠性扩展。没有查看 Claude Code 产品源码。

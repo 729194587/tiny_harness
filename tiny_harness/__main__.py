@@ -10,6 +10,7 @@ from typing import Any
 from tiny_harness.agent.loop import DEFAULT_SUBAGENT_MAX_TURNS, agent_loop
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, JsonlEventLogger
+from tiny_harness.runtime.recovery import RecoveryPolicy
 
 DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
@@ -19,6 +20,13 @@ def _positive_int(value: str) -> int:
     number = int(value)
     if number < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
+    return number
+
+
+def _non_negative_int(value: str) -> int:
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be at least 0")
     return number
 
 
@@ -38,7 +46,13 @@ def _parser() -> argparse.ArgumentParser:
         "--max-turns",
         type=_positive_int,
         default=20,
-        help="Maximum model calls (default: 20)",
+        help="Maximum agent-loop turns (default: 20)",
+    )
+    parser.add_argument(
+        "--max-model-retries",
+        type=_non_negative_int,
+        default=2,
+        help="Transient retries per logical model request (default: 2)",
     )
     parser.add_argument(
         "--event-log",
@@ -55,7 +69,7 @@ def _parser() -> argparse.ArgumentParser:
         type=_positive_int,
         default=DEFAULT_SUBAGENT_MAX_TURNS,
         help=(
-            "Maximum model calls for each synchronous subagent "
+            "Maximum agent-loop turns for each synchronous subagent "
             f"(default: {DEFAULT_SUBAGENT_MAX_TURNS})"
         ),
     )
@@ -129,6 +143,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         event_logger=event_logger,
         max_context_chars=args.max_context_chars,
         subagent_max_turns=args.subagent_max_turns,
+        recovery_policy=RecoveryPolicy(max_retries=args.max_model_retries),
     )
     print(answer)
     return 0

@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from tiny_harness.models.base import ModelErrorKind, ModelProviderError
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
 
 
@@ -12,6 +13,8 @@ class FakeCompletions:
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
+        if isinstance(self.response, Exception):
+            raise self.response
         return self.response
 
 
@@ -42,6 +45,7 @@ class ChatCompletionsProviderTest(unittest.TestCase):
         openai.assert_called_once_with(
             api_key="secret",
             base_url="https://example.test",
+            max_retries=0,
         )
 
     def test_sends_messages_tools_and_model(self) -> None:
@@ -148,6 +152,103 @@ class ChatCompletionsProviderTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "no finish reason"):
             provider.complete([], [])
+
+    def test_normalizes_rate_limit_and_retry_after(self) -> None:
+        error = RuntimeError("rate limited")
+        error.status_code = 429
+        error.response = SimpleNamespace(headers={"retry-after": "2.5"})
+        client, _ = fake_client(error)
+        provider = ChatCompletionsProvider(
+            "secret", "https://example.test", "test-model", client=client
+        )
+
+        with self.assertRaises(ModelProviderError) as raised:
+            provider.complete([], [])
+
+        self.assertEqual(raised.exception.kind, ModelErrorKind.RATE_LIMIT)
+        self.assertEqual(raised.exception.status_code, 429)
+        self.assertEqual(raised.exception.retry_after_seconds, 2.5)
+
+    def test_context_error_recognition_is_a_restricted_heuristic(self) -> None:
+        context_error = RuntimeError("maximum context length exceeded")
+        context_error.status_code = 400
+        client, _ = fake_client(context_error)
+        provider = ChatCompletionsProvider(
+            "secret", "https://example.test", "test-model", client=client
+        )
+
+        with self.assertRaises(ModelProviderError) as raised:
+            provider.complete([], [])
+
+        self.assertEqual(raised.exception.kind, ModelErrorKind.CONTEXT_LENGTH)
+
+        fatal_error = RuntimeError("maximum context length in an auth response")
+        fatal_error.status_code = 401
+        fatal_client, _ = fake_client(fatal_error)
+        fatal_provider = ChatCompletionsProvider(
+            "secret", "https://example.test", "test-model", client=fatal_client
+        )
+        with self.assertRaises(ModelProviderError) as fatal:
+            fatal_provider.complete([], [])
+        self.assertEqual(fatal.exception.kind, ModelErrorKind.FATAL)
+
+    def test_normalizes_server_connection_and_unknown_failures(self) -> None:
+        cases = [
+            (SimpleNamespace(status_code=503), ModelErrorKind.SERVER_UNAVAILABLE),
+            (TimeoutError("timed out"), ModelErrorKind.CONNECTION),
+            (SimpleNamespace(status_code=422), ModelErrorKind.FATAL),
+        ]
+        for raw, expected in cases:
+            with self.subTest(expected=expected):
+                if not isinstance(raw, Exception):
+                    error = RuntimeError("request failed")
+                    error.status_code = raw.status_code
+                else:
+                    error = raw
+                client, _ = fake_client(error)
+                provider = ChatCompletionsProvider(
+                    "secret",
+                    "https://example.test",
+                    "test-model",
+                    client=client,
+                )
+                with self.assertRaises(ModelProviderError) as raised:
+                    provider.complete([], [])
+                self.assertEqual(raised.exception.kind, expected)
+
+    def test_insufficient_system_resource_discards_choice_payload(self) -> None:
+        api_response = SimpleNamespace(
+            choices=[SimpleNamespace(finish_reason="insufficient_system_resource")]
+        )
+        client, _ = fake_client(api_response)
+        provider = ChatCompletionsProvider(
+            "secret", "https://example.test", "test-model", client=client
+        )
+
+        with self.assertRaises(ModelProviderError) as raised:
+            provider.complete([], [])
+
+        self.assertEqual(raised.exception.kind, ModelErrorKind.SERVER_UNAVAILABLE)
+
+    def test_length_and_content_filter_discard_choice_payload(self) -> None:
+        for finish_reason in ("length", "content_filter"):
+            with self.subTest(finish_reason=finish_reason):
+                api_response = SimpleNamespace(
+                    choices=[SimpleNamespace(finish_reason=finish_reason)]
+                )
+                client, _ = fake_client(api_response)
+                provider = ChatCompletionsProvider(
+                    "secret",
+                    "https://example.test",
+                    "test-model",
+                    client=client,
+                )
+
+                with self.assertRaises(ModelProviderError) as raised:
+                    provider.complete([], [])
+
+                self.assertEqual(raised.exception.kind, ModelErrorKind.FATAL)
+                self.assertIn(finish_reason, str(raised.exception))
 
 
 if __name__ == "__main__":

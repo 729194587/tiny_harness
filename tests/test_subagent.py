@@ -9,8 +9,10 @@ from pathlib import Path
 
 from tiny_harness.agent.loop import agent_loop
 from tiny_harness.agent.messages import ModelResponse, ToolCall
+from tiny_harness.models.base import ModelErrorKind, ModelProviderError
 from tiny_harness.runtime.events import EventLogError
 from tiny_harness.runtime.hooks import HookBlock, ToolHooks
+from tiny_harness.runtime.recovery import RecoveryPolicy
 
 
 class ScriptedProvider:
@@ -62,6 +64,58 @@ class SubagentTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
+
+    def test_child_uses_independent_retry_state_with_scoped_events(self) -> None:
+        provider = ScriptedProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("task-retry", "task", '{"prompt":"child work"}')],
+                    "tool_calls",
+                ),
+                ModelProviderError(ModelErrorKind.SERVER_UNAVAILABLE),
+                ModelResponse("child done", None, [], "stop"),
+                ModelResponse("parent done", None, [], "stop"),
+            ]
+        )
+        logger = RecordingEventLogger()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            answer = agent_loop(
+                provider,
+                self.workspace,
+                [],
+                event_logger=logger,
+                recovery_policy=RecoveryPolicy(
+                    max_retries=1,
+                    base_delay_seconds=0,
+                    max_delay_seconds=0,
+                    jitter_ratio=0,
+                ),
+            )
+
+        self.assertEqual(answer, "parent done")
+        child_requests = [
+            event["data"]
+            for event in logger.events
+            if event["event_type"] == "model_requested"
+            and event["data"].get("agent_scope") == "subagent"
+        ]
+        self.assertEqual([event["attempt"] for event in child_requests], [1, 2])
+        self.assertTrue(
+            all(
+                event["parent_tool_call_id"] == "task-retry"
+                for event in child_requests
+            )
+        )
+        parent_requests = [
+            event["data"]
+            for event in logger.events
+            if event["event_type"] == "model_requested"
+            and "agent_scope" not in event["data"]
+        ]
+        self.assertEqual([event["attempt"] for event in parent_requests], [1, 1])
 
     def test_child_context_is_fresh_and_parent_gets_only_final_text(self) -> None:
         provider = ScriptedProvider(

@@ -4,10 +4,16 @@ import copy
 from pathlib import Path
 from typing import Any
 
-from tiny_harness.models.base import ModelProvider
+from tiny_harness.agent.messages import ModelResponse
+from tiny_harness.models.base import (
+    ModelErrorKind,
+    ModelProvider,
+    ModelProviderError,
+)
 from tiny_harness.runtime.context import (
     CompactionRequest,
     ContextCompactor,
+    context_char_count,
 )
 from tiny_harness.runtime.events import (
     NULL_EVENT_LOGGER,
@@ -21,6 +27,11 @@ from tiny_harness.runtime.permissions import (
     DEFAULT_PERMISSION_POLICY,
     PermissionPolicy,
     PermissionPrompt,
+)
+from tiny_harness.runtime.recovery import (
+    RecoveryExecutor,
+    RecoveryPolicy,
+    RecoveryState,
 )
 from tiny_harness.runtime.todos import TodoManager
 from tiny_harness.tools.registry import dispatch, tool_schemas
@@ -43,6 +54,7 @@ def agent_loop(
     tool_hooks: ToolHooks | None = None,
     subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS,
     allow_subagent: bool = True,
+    recovery_policy: RecoveryPolicy = RecoveryPolicy(),
 ) -> str:
     """Call the model and tools until a final text response is returned."""
 
@@ -58,6 +70,25 @@ def agent_loop(
         include_compact=max_context_chars is not None,
     )
     todo_manager = TodoManager()
+    current_turn = 0
+    recovery_executor = RecoveryExecutor(
+        recovery_policy,
+        event_logger=event_logger,
+    )
+
+    def complete_summary(
+        summary_messages: list[dict[str, Any]],
+        summary_tools: list[dict[str, Any]],
+    ) -> ModelResponse:
+        return recovery_executor.complete(
+            provider,
+            summary_messages,
+            summary_tools,
+            purpose="summary",
+            turn=current_turn,
+            state=RecoveryState(),
+        )
+
     compaction_request = (
         CompactionRequest() if max_context_chars is not None else None
     )
@@ -68,13 +99,16 @@ def agent_loop(
             tools,
             max_context_chars,
             event_logger=event_logger,
+            summary_complete=complete_summary,
         )
         if max_context_chars is not None
         else None
     )
     rounds_since_todo = 0
-    current_turn = 0
-    run_data = {"max_turns": max_turns}
+    run_data = {
+        "max_turns": max_turns,
+        "max_model_retries": recovery_policy.max_retries,
+    }
     if allow_subagent:
         run_data["subagent_max_turns"] = subagent_max_turns
     if max_context_chars is not None:
@@ -117,6 +151,7 @@ def agent_loop(
                     tool_hooks=tool_hooks,
                     subagent_max_turns=subagent_max_turns,
                     allow_subagent=False,
+                    recovery_policy=recovery_policy,
                 )
             except Exception:
                 print("[Subagent failed]")
@@ -133,20 +168,71 @@ def agent_loop(
                 prepared = compactor.prepare(messages, todo_manager.render())
                 messages[:] = prepared.messages
                 request_messages = copy.deepcopy(messages)
-            event_logger.emit(
-                EventType.MODEL_REQUESTED,
-                {"turn": current_turn},
-            )
-            response = provider.complete(request_messages, tools)
-            event_logger.emit(
-                EventType.MODEL_RESPONDED,
-                {
-                    "turn": current_turn,
-                    "finish_reason": response.finish_reason,
-                    "tool_call_count": len(response.tool_calls),
-                    "content_length": len(response.content or ""),
-                },
-            )
+            recovery_state = RecoveryState()
+            while True:
+                try:
+                    response = recovery_executor.complete(
+                        provider,
+                        request_messages,
+                        tools,
+                        purpose="main",
+                        turn=current_turn,
+                        state=recovery_state,
+                        context_recovery_available=(
+                            compactor is not None
+                            and not recovery_state.reactive_compact_used
+                        ),
+                    )
+                    break
+                except ModelProviderError as error:
+                    if (
+                        error.kind is not ModelErrorKind.CONTEXT_LENGTH
+                        or compactor is None
+                        or recovery_state.reactive_compact_used
+                    ):
+                        raise
+
+                    # Mark the single reactive opportunity before doing any
+                    # recovery work. A failed summary must never recurse.
+                    recovery_state.reactive_compact_used = True
+                    failed_request_chars = context_char_count(
+                        request_messages,
+                        tools,
+                    )
+                    prepared = compactor.reactive_compact(
+                        messages,
+                        todo_manager.render(),
+                        failed_request_chars=failed_request_chars,
+                    )
+                    messages[:] = prepared.messages
+                    request_messages = copy.deepcopy(messages)
+                    event_logger.emit(
+                        EventType.MODEL_RETRY_SCHEDULED,
+                        {
+                            "purpose": "main",
+                            "turn": current_turn,
+                            "attempt": recovery_state.attempt,
+                            "delay_ms": 0,
+                            "error_kind": error.kind.value,
+                            "recovery": "reactive_compact",
+                        },
+                    )
+
+            if response.finish_reason == "stop":
+                if response.tool_calls:
+                    raise RuntimeError(
+                        "Model response is not executable: stop with tool calls"
+                    )
+            elif response.finish_reason == "tool_calls":
+                if not response.tool_calls:
+                    raise RuntimeError(
+                        "Model response is not executable: tool_calls without calls"
+                    )
+            else:
+                raise RuntimeError(
+                    "Model response is not executable: "
+                    f"{response.finish_reason}"
+                )
 
             assistant_message: dict[str, Any] = {
                 "role": "assistant",
@@ -169,11 +255,6 @@ def agent_loop(
             messages.append(assistant_message)
 
             if not response.tool_calls:
-                if response.finish_reason != "stop":
-                    raise RuntimeError(
-                        "Model stopped without a final answer: "
-                        f"{response.finish_reason}"
-                    )
                 answer = response.content or ""
                 event_logger.emit(
                     EventType.RUN_FINISHED,

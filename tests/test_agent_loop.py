@@ -446,9 +446,73 @@ class AgentLoopTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             RuntimeError,
-            "Model stopped without a final answer: length",
+            "Model response is not executable: length",
         ):
             agent_loop(provider, self.workspace, [])
+
+    def test_failed_finish_reason_never_commits_or_dispatches_tool_calls(self) -> None:
+        for finish_reason in ("length", "content_filter"):
+            with self.subTest(finish_reason=finish_reason):
+                path = f"{finish_reason}.txt"
+                provider = FakeProvider(
+                    [
+                        ModelResponse(
+                            None,
+                            None,
+                            [
+                                ToolCall(
+                                    "write-1",
+                                    "write_file",
+                                    json.dumps(
+                                        {"path": path, "content": "SIDE_EFFECT"}
+                                    ),
+                                )
+                            ],
+                            finish_reason,
+                        )
+                    ]
+                )
+                messages = [{"role": "user", "content": "task"}]
+
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    f"Model response is not executable: {finish_reason}",
+                ):
+                    agent_loop(provider, self.workspace, messages, max_turns=1)
+
+                self.assertEqual(messages, [{"role": "user", "content": "task"}])
+                self.assertFalse((self.workspace / path).exists())
+
+    def test_inconsistent_success_finish_reason_fails_before_commit(self) -> None:
+        cases = [
+            ModelResponse(
+                None,
+                None,
+                [
+                    ToolCall(
+                        "write-1",
+                        "write_file",
+                        '{"path":"bad.txt","content":"SIDE_EFFECT"}',
+                    )
+                ],
+                "stop",
+            ),
+            ModelResponse(None, None, [], "tool_calls"),
+        ]
+        for response in cases:
+            with self.subTest(finish_reason=response.finish_reason):
+                messages = [{"role": "user", "content": "task"}]
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "Model response is not executable",
+                ):
+                    agent_loop(
+                        FakeProvider([response]),
+                        self.workspace,
+                        messages,
+                    )
+                self.assertEqual(messages, [{"role": "user", "content": "task"}])
+                self.assertFalse((self.workspace / "bad.txt").exists())
 
 
 if __name__ == "__main__":

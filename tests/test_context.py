@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from tiny_harness.agent.loop import agent_loop
 from tiny_harness.agent.messages import ModelResponse, ToolCall
+from tiny_harness.models.base import ModelErrorKind, ModelProviderError
 from tiny_harness.runtime.context import (
     CompactionConfig,
     ContextArtifactError,
@@ -22,6 +23,7 @@ from tiny_harness.runtime.context import (
     prepare_context,
 )
 from tiny_harness.runtime.hooks import HookBlock, ToolHooks
+from tiny_harness.runtime.recovery import RecoveryPolicy
 
 
 TOOLS = [
@@ -301,6 +303,50 @@ class ContextCompactorTest(unittest.TestCase):
             compactor.prepare(messages, "No todos.")
         self.assertEqual(provider.calls, [])
 
+    def test_reactive_compaction_meets_explicit_shrink_margin(self):
+        provider = FakeProvider([ModelResponse("REACTIVE_SUMMARY", None, [], "stop")])
+        messages = (
+            self.prefix
+            + tool_block("old", "old", assistant_text="X" * 10_000)
+            + tool_block("latest", "LATEST_EVIDENCE")
+        )
+        failed_chars = context_char_count(messages, TOOLS)
+
+        prepared = self.compactor(
+            provider,
+            max_chars=100_000,
+            reactive_target_ratio=0.75,
+        ).reactive_compact(
+            messages,
+            "[>] CURRENT_TODO",
+            failed_request_chars=failed_chars,
+        )
+
+        self.assertLessEqual(prepared.after_chars, int(failed_chars * 0.75))
+        self.assertLessEqual(
+            context_char_count(provider.calls[0]["messages"], []),
+            int(failed_chars * 0.75),
+        )
+        compacted = json.dumps(prepared.messages, ensure_ascii=False)
+        self.assertIn("ORIGINAL_TASK", compacted)
+        self.assertIn("CURRENT_TODO", compacted)
+        self.assertIn("REACTIVE_SUMMARY", compacted)
+        self.assertIn("LATEST_EVIDENCE", compacted)
+        self.assertNotIn("\"old\"", compacted)
+
+    def test_reactive_compaction_without_old_history_fails_before_summary(self):
+        provider = FakeProvider([ModelResponse("must not run", None, [], "stop")])
+        messages = self.prefix + tool_block("latest", "evidence")
+
+        with self.assertRaisesRegex(ContextLimitError, "no older history"):
+            self.compactor(provider).reactive_compact(
+                messages,
+                "No todos.",
+                failed_request_chars=context_char_count(messages, TOOLS),
+            )
+
+        self.assertEqual(provider.calls, [])
+
     def test_existing_artifact_symlink_escape_is_rejected(self):
         with tempfile.TemporaryDirectory() as outside_name:
             link = self.workspace / ".tinyharness"
@@ -421,6 +467,47 @@ class ContextAgentLoopTest(unittest.TestCase):
         self.assertNotIn("ORIGINAL_TASK", json.dumps(logger.events))
         self.assertNotIn("SUMMARY", json.dumps(logger.events))
 
+    def test_summary_model_calls_use_the_same_bounded_recovery_policy(self):
+        provider = FakeProvider(
+            [
+                ModelProviderError(ModelErrorKind.SERVER_UNAVAILABLE),
+                ModelResponse("SUMMARY", None, [], "stop"),
+                ModelResponse("done", None, [], "stop"),
+            ]
+        )
+        messages = [
+            {"role": "user", "content": "task"},
+            *tool_block("old", "old", assistant_text="X" * 10_000),
+            *tool_block("latest", "latest"),
+        ]
+        logger = RecordingEventLogger()
+
+        answer = agent_loop(
+            provider,
+            self.workspace,
+            messages,
+            max_turns=1,
+            max_context_chars=6_000,
+            event_logger=logger,
+            recovery_policy=RecoveryPolicy(
+                max_retries=1,
+                base_delay_seconds=0,
+                max_delay_seconds=0,
+                jitter_ratio=0,
+            ),
+        )
+
+        self.assertEqual(answer, "done")
+        requested = [
+            event["data"]
+            for event in logger.events
+            if event["event_type"] == "model_requested"
+        ]
+        self.assertEqual(
+            [(event["purpose"], event["attempt"]) for event in requested],
+            [("summary", 1), ("summary", 2), ("main", 1)],
+        )
+
     def test_manual_compact_runs_after_all_tools_in_batch(self):
         provider = FakeProvider(
             [
@@ -504,6 +591,148 @@ class ContextAgentLoopTest(unittest.TestCase):
         names = [schema["function"]["name"] for schema in provider.calls[0]["tools"]]
         self.assertNotIn("compact", names)
         self.assertFalse((self.workspace / ".tinyharness").exists())
+
+    def test_context_rejection_compacts_once_and_retries_same_turn(self):
+        provider = FakeProvider(
+            [
+                ModelProviderError(ModelErrorKind.CONTEXT_LENGTH),
+                ModelResponse("REACTIVE_SUMMARY", None, [], "stop"),
+                ModelResponse("done", None, [], "stop"),
+            ]
+        )
+        messages = [
+            {"role": "user", "content": "ORIGINAL_TASK"},
+            *tool_block("old", "old", assistant_text="X" * 10_000),
+            *tool_block("latest", "LATEST_EVIDENCE"),
+        ]
+        logger = RecordingEventLogger()
+
+        answer = agent_loop(
+            provider,
+            self.workspace,
+            messages,
+            max_turns=1,
+            max_context_chars=100_000,
+            event_logger=logger,
+            recovery_policy=RecoveryPolicy(
+                max_retries=0,
+                base_delay_seconds=0,
+                max_delay_seconds=0,
+                jitter_ratio=0,
+            ),
+        )
+
+        self.assertEqual(answer, "done")
+        self.assertEqual(len(provider.calls), 3)
+        self.assertNotIn("compact", [
+            schema["function"]["name"] for schema in provider.calls[1]["tools"]
+        ])
+        self.assertIn("REACTIVE_SUMMARY", json.dumps(provider.calls[2]["messages"]))
+        compacted = next(
+            event["data"]
+            for event in logger.events
+            if event["event_type"] == "context_compacted"
+            and event["data"]["reason"] == "reactive"
+        )
+        self.assertLessEqual(
+            compacted["after_chars"],
+            int(compacted["before_chars"] * 0.75),
+        )
+        requested = [
+            event["data"]
+            for event in logger.events
+            if event["event_type"] == "model_requested"
+        ]
+        self.assertEqual(
+            [(item["purpose"], item["attempt"]) for item in requested],
+            [("main", 1), ("summary", 1), ("main", 2)],
+        )
+
+    def test_second_context_rejection_does_not_compact_again(self):
+        provider = FakeProvider(
+            [
+                ModelProviderError(ModelErrorKind.CONTEXT_LENGTH),
+                ModelResponse("SUMMARY", None, [], "stop"),
+                ModelProviderError(ModelErrorKind.CONTEXT_LENGTH),
+            ]
+        )
+        messages = [
+            {"role": "user", "content": "task"},
+            *tool_block("old", "old", assistant_text="X" * 10_000),
+            *tool_block("latest", "latest"),
+        ]
+        logger = RecordingEventLogger()
+
+        with self.assertRaises(ModelProviderError):
+            agent_loop(
+                provider,
+                self.workspace,
+                messages,
+                max_turns=1,
+                max_context_chars=100_000,
+                event_logger=logger,
+                recovery_policy=RecoveryPolicy(max_retries=0),
+            )
+
+        self.assertEqual(len(provider.calls), 3)
+        reactive_events = [
+            event
+            for event in logger.events
+            if event["event_type"] == "context_compacted"
+            and event["data"]["reason"] == "reactive"
+        ]
+        self.assertEqual(len(reactive_events), 1)
+
+    def test_transient_retry_budget_survives_reactive_compaction(self):
+        provider = FakeProvider(
+            [
+                ModelProviderError(ModelErrorKind.SERVER_UNAVAILABLE),
+                ModelProviderError(ModelErrorKind.CONTEXT_LENGTH),
+                ModelResponse("SUMMARY", None, [], "stop"),
+                ModelProviderError(ModelErrorKind.CONNECTION),
+                ModelResponse("done", None, [], "stop"),
+            ]
+        )
+        messages = [
+            {"role": "user", "content": "task"},
+            *tool_block("old", "old", assistant_text="X" * 10_000),
+            *tool_block("latest", "latest"),
+        ]
+        logger = RecordingEventLogger()
+
+        answer = agent_loop(
+            provider,
+            self.workspace,
+            messages,
+            max_turns=1,
+            max_context_chars=100_000,
+            event_logger=logger,
+            recovery_policy=RecoveryPolicy(
+                max_retries=2,
+                base_delay_seconds=0,
+                max_delay_seconds=0,
+                jitter_ratio=0,
+            ),
+        )
+
+        self.assertEqual(answer, "done")
+        main_attempts = [
+            event["data"]["attempt"]
+            for event in logger.events
+            if event["event_type"] == "model_requested"
+            and event["data"]["purpose"] == "main"
+        ]
+        self.assertEqual(main_attempts, [1, 2, 3, 4])
+        transient_retries = [
+            event
+            for event in logger.events
+            if event["event_type"] == "model_retry_scheduled"
+            and event["data"].get("recovery") != "reactive_compact"
+        ]
+        self.assertEqual(
+            [event["data"]["retry_number"] for event in transient_retries],
+            [1, 2],
+        )
 
 
 if __name__ == "__main__":

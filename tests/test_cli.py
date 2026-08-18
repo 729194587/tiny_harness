@@ -14,6 +14,7 @@ from tiny_harness.__main__ import (
 )
 from tiny_harness.agent.loop import DEFAULT_SUBAGENT_MAX_TURNS
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, JsonlEventLogger
+from tiny_harness.runtime.recovery import RecoveryPolicy
 
 
 class CliTest(unittest.TestCase):
@@ -67,6 +68,10 @@ class CliTest(unittest.TestCase):
         self.assertEqual(
             loop.call_args.kwargs["subagent_max_turns"],
             DEFAULT_SUBAGENT_MAX_TURNS,
+        )
+        self.assertEqual(
+            loop.call_args.kwargs["recovery_policy"],
+            RecoveryPolicy(max_retries=2),
         )
 
     @patch("tiny_harness.__main__.agent_loop", return_value="done")
@@ -123,11 +128,17 @@ class CliTest(unittest.TestCase):
                         "9000",
                         "--subagent-max-turns",
                         "4",
+                        "--max-model-retries",
+                        "5",
                     ]
                 )
 
         self.assertEqual(loop.call_args.kwargs["max_context_chars"], 9000)
         self.assertEqual(loop.call_args.kwargs["subagent_max_turns"], 4)
+        self.assertEqual(
+            loop.call_args.kwargs["recovery_policy"],
+            RecoveryPolicy(max_retries=5),
+        )
 
     def test_requires_api_key(self) -> None:
         stderr = io.StringIO()
@@ -176,6 +187,30 @@ class CliTest(unittest.TestCase):
                 main(["task", "--subagent-max-turns", "0"])
 
         self.assertIn("must be at least 1", stderr.getvalue())
+
+    def test_rejects_negative_model_retries_but_allows_zero(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaisesRegex(SystemExit, "2"):
+                main(["task", "--max-model-retries", "-1"])
+        self.assertIn("must be at least 0", stderr.getvalue())
+
+        with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
+            with patch("tiny_harness.__main__.ChatCompletionsProvider"):
+                with patch("tiny_harness.__main__.agent_loop", return_value="done"):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(
+                            main(
+                                [
+                                    "task",
+                                    "--workspace",
+                                    str(self.workspace),
+                                    "--max-model-retries",
+                                    "0",
+                                ]
+                            ),
+                            0,
+                        )
 
     def test_permission_prompt_accepts_yes_and_displays_arguments(self) -> None:
         stdout = io.StringIO()
