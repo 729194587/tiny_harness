@@ -11,7 +11,7 @@ from tiny_harness.runtime.hooks import HookBlock, ToolHooks
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="TinyHarness Phase 5 hook demo")
+    parser = argparse.ArgumentParser(description="TinyHarness tool hook demo")
     parser.add_argument("task")
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
     parser.add_argument("--event-log", type=Path)
@@ -29,7 +29,7 @@ def main() -> int:
 
     def block_write_file(context):
         if context.tool_name == "write_file":
-            return HookBlock("write_file is blocked by the Phase 5 demo")
+            return HookBlock("write_file is blocked by the hook demo")
         return None
 
     def report_result(context, result):

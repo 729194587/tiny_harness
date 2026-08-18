@@ -1,433 +1,226 @@
 # TinyHarness
 
-TinyHarness 是一个面向 Coding Agent Harness Reliability 研究的轻量 Python 项目。
+TinyHarness 是一个面向 DeepSeek Chat Completions API 的轻量 Coding Agent Harness。它用一条显式、可测试的 Python 控制链，把模型输出变成受约束的工具执行，并围绕 **Context、Execution、Verification、Observability** 四条控制面研究 Harness Reliability。
 
-Phase 1 已冻结为最小可运行 Agent 基线，Phase 2–10 依次加入 Permission、Event Log、Context Guard、Hooks、Todo、Subagent、Context Compaction、Model Failure Recovery 和 Goal Verification Gate。当前 Phase 11 为这些机制增加 Reliability Eval v1：
+它不是完整 IDE，也不是通用 Agent Framework。项目关注的是一个更小的问题：当模型会调用工具、修改代码并自主结束时，Harness 如何避免静默错误、恢复可恢复故障，并为最终结果留下可验证证据。
 
-```text
-CLI
-→ Agent Loop
-→ Context Compaction v2
-→ Recovery Executor（bounded retry / reactive compact orchestration）
-→ Chat Completions Model Provider
-→ Tool Calls
-→ PreToolUse Hooks
-→ Permission Gate
-→ Tool Registry / Runtime
-  ├→ Base Tools / TodoManager
-  └→ task → fresh Child Agent Loop → Child Final Text
-→ PostToolUse Hooks
-→ Tool Results
-→ Todo Reminder（连续三轮未更新时）
-→ Model
-→ Candidate Final Answer
-→ Goal Evaluator（可选、无工具）
-  ├→ incomplete → feedback → Agent Loop
-  └→ achieved → Final Answer
-→ JSONL Event Log
+```mermaid
+flowchart LR
+    CLI["CLI / Task"] --> Loop["Agent Loop"]
+    Loop --> Context["Context Runtime"]
+    Context --> Recovery["Model Recovery"]
+    Recovery --> Model["Chat Completions API"]
+    Model --> Loop
+    Loop --> Execution["Hooks → Permission → Tools"]
+    Execution --> Loop
+    Loop --> Goal["Goal Verification Gate"]
+    Goal -->|"incomplete + feedback"| Loop
+    Goal -->|"verified"| Final["Final Answer"]
+    Loop -. "metadata only" .-> Events["JSONL Event Log"]
 ```
 
-DeepSeek 是当前默认模型服务，但模型适配器通过 `api_key`、`base_url` 和 `model` 配置，可用于使用相同 Chat Completions 工具调用格式的服务。`reasoning_content` 作为可选兼容字段保留。
+## What is implemented
 
-## Phase 1 基线功能
-
-- 一个同步的 `ChatCompletionsProvider`
-- 一个短小、串行的 Agent Loop
-- 五个基础工具：
-  - `read_file`
-  - `write_file`
-  - `edit_file`
-  - `list_files`
-  - `bash`
-- 单一工具注册表及 function-tool schemas
-- 工具调用参数解析和统一分发
-- 工具异常转换为 `ToolResult`
-- 一次模型响应中的多个 tool calls
-- 文件工具的 workspace 路径边界
-- 模型调用次数限制 `max_turns`
-- 一次性任务 CLI
-
-Phase 1 的完整范围、验收记录和已知限制见 [PHASE1_BASELINE.md](PHASE1_BASELINE.md)。
-
-## Phase 2：最小 Permission Gate
-
-Phase 2 默认策略为：
-
-| 工具 | 默认权限 |
+| 控制面 | 核心机制 |
 |---|---|
-| `read_file` | ALLOW |
-| `list_files` | ALLOW |
-| `write_file` | ALLOW |
-| `edit_file` | ALLOW |
-| `todo_write`（Phase 6） | ALLOW |
-| `task`（Phase 7） | ALLOW |
-| `compact`（Phase 8，启用 context budget 时） | ALLOW |
-| `bash` | ASK |
+| **Execution** | 多 Tool Calls、统一 Registry、workspace 文件边界、ALLOW/DENY/ASK、Pre/Post Tool Hooks、Todo、单层同步 Subagent |
+| **Context** | 协议校验、字符预算、大 Tool Result 落盘、历史裁剪、旧结果替换、LLM Summary、reactive compaction |
+| **Verification** | 非法模型响应执行前拒绝、独立 Goal Evaluator、workspace 外 hidden grader、安全不变量 |
+| **Observability** | run/turn/attempt/tool 生命周期 JSONL、父子 Agent 关联、retry/continuation 指标、正文最小化 |
 
-`bash` 执行前，CLI 会显示工具参数并询问：
+模型接入通过 `api_key`、`base_url` 和 `model` 注入。DeepSeek 是默认服务，但 Runtime 依赖的是兼容 Chat Completions function calling 的 Provider，而不是厂商专用 Agent SDK；`reasoning_content` 只作为可选兼容字段保留。
 
-```text
-Allow this tool call? [y/N]:
-```
+## Reliability results
 
-只有 `y` 或 `yes` 会放行。空输入、其他输入、EOF、缺少交互 prompt 或权限组件异常都会默认拒绝。拒绝结果作为关联原 tool call ID 的 `ToolResult` 回填模型，Agent Loop 可以继续运行。
+正式评测使用 `deepseek-v4-flash`，包含 5 个 coding fixtures、两个 profile、每组重复 3 次，共 30 个真实 Agent run。正确性由 Agent workspace 外的 deterministic hidden tests 判定，不使用 LLM-as-judge。
 
-Phase 2 的设计、测试状态和待验收项目见 [PHASE2.md](PHASE2.md)。
+| Profile | Verified | False success | Explicit failure | Avg model attempts | Avg turns |
+|---|---:|---:|---:|---:|---:|
+| `basic_ablation` | 15/15 | 0 | 0 | 6.9 | 6.9 |
+| `reliable` | 15/15 | 0 | 0 | 8.2 | 7.2 |
 
-## Phase 3：最小执行事件日志
+受控故障与安全不变量：
 
-指定 `--event-log` 后，TinyHarness 将控制流元数据追加到 JSON Lines 文件：
+- Reliable 对 transient provider failure、context rejection、premature final answer **3/3 恢复**；
+- Basic 在相同注入下分别明确失败、明确失败和产生 false success；
+- Permission deny 无文件副作用、非法 `length + write_file` 无工具副作用，**2/2 通过**；
+- 30/30 hidden graders 的退出码均为 0；181 项本地测试中 178 项通过，3 项因当前 Windows 用户缺少符号链接权限而跳过。
 
-```powershell
-python -m tiny_harness `
-  "列出 workspace 中的文件" `
-  --workspace D:\learn-claude-code\tinyharness `
-  --event-log D:\tinyharness-logs\events.jsonl
-```
+这组小型真实任务中两个 profile 都是 15/15，因此它**不能证明** Reliable 降低了真实 coding task 的失败率。它证明的是指定恢复路径和安全不变量确实生效，并量化了本次样本中平均 `+1.3` 次模型调用（约 18.8%）的可靠性开销。完整实验口径见 [evals/README.md](evals/README.md)。
 
-事件包括：
+## Quick start
 
-- `run_started`
-- `model_requested`
-- `model_responded`
-- `tool_started`
-- `tool_denied`
-- `tool_finished`
-- `run_finished`
-- `run_failed`
-
-每条事件包含 run ID、递增 sequence、UTC 时间、事件类型和最小 metadata。日志不保存 prompt、`reasoning_content`、工具参数、文件内容、完整工具输出或最终答案正文。
-
-为了让日志独立于 `write_file` / `edit_file` 的 workspace 文件访问范围，建议把日志路径放在 Agent workspace 外部。Event Log 是 observability trace，不是不可篡改的 audit log；Phase 2 没有 OS 级沙箱，用户批准的 `bash` 命令仍可能访问 workspace 外部路径。
-
-未指定 `--event-log` 时使用 no-op logger，Phase 2 行为不变。指定日志后，写入失败会明确终止执行，不会静默丢失事件。
-
-Phase 3 的设计、测试状态和真实 API 验收结果见 [PHASE3.md](PHASE3.md)。
-
-## Phase 4：Minimal Context Guard
-
-指定 `--max-context-chars` 后，每次模型调用前都会按照紧凑 JSON 的 `{messages, tools}` 计算字符数：
+要求 Python 3.10+。从源码安装：
 
 ```powershell
-python -m tiny_harness `
-  "列出 workspace 中的文件" `
-  --workspace D:\learn-claude-code\tinyharness `
-  --max-context-chars 100000
-```
+git clone https://github.com/729194587/tiny_harness.git
+cd tiny_harness
 
-预算内的 context 原样复制给 Provider。超出预算时，Context Guard 从最旧的完整 assistant/tool 交互块开始删除，同时始终保留初始消息和最新一个完整交互块。一次 assistant 返回的多个 tool calls 及其全部 tool results 不会被拆开。
-
-如果必保留内容和 tool schemas 本身已经超过预算，会在调用模型 API 前抛出 `ContextLimitError`。协议中存在孤立、缺失或顺序错误的 tool result 时，会在 API 调用前抛出 `ContextProtocolError`。
-
-字符预算是 TinyHarness 的确定性本地计数，不等于模型 token 数，也不保证与某个厂商的 context window 精确对应。未指定该参数时，Phase 3 行为不变。
-
-发生裁剪时，Event Log 增加不含消息正文的 `context_trimmed` 事件。详细设计与真实 API 验收结果见 [PHASE4.md](PHASE4.md)。
-
-## Phase 5：Minimal Tool Hooks
-
-TinyHarness 的 Python API 可以为一次 Agent Run 注册有序的 PreToolUse 和 PostToolUse Hooks：
-
-```python
-from tiny_harness.runtime.hooks import HookBlock, ToolHooks
-
-hooks = ToolHooks()
-hooks.register_pre(
-    lambda context: (
-        HookBlock("write disabled")
-        if context.tool_name == "write_file"
-        else None
-    )
-)
-hooks.register_post(
-    lambda context, result: print(context.tool_name, len(result.content))
-)
-```
-
-Pre Hook 位于参数解析之后、Permission Gate 之前。返回 `HookBlock` 会阻止本次调用，但仍生成关联原 call ID 的 ToolResult。Post Hook 在 handler 已经产生 ToolResult 后运行，只观察结果，不能修改实际回填内容。
-
-Hook 按注册顺序同步执行。Hook 异常包装成 `HookExecutionError` 并明确终止 run；Pre Hook 异常发生在 handler 前，Post Hook 异常可能发生在工具已经产生副作用之后。
-
-主 CLI 暂不增加 Hook 配置参数。真实 API 演示通过 `python -m examples.hooks_demo` 运行。完整设计和真实 API 验收结果见 [PHASE5.md](PHASE5.md)。
-
-## Phase 6：Minimal Todo / Agent Plan
-
-多步骤任务中，模型可以调用 `todo_write` 创建并更新当前运行的任务列表：
-
-```text
-[x] Inspect files
-[>] Implement change
-[ ] Run tests
-
-(1/3 completed)
-```
-
-Todo 状态只存在于单次 `agent_loop()` 的内存中。一次最多 20 项，同时最多一个 `in_progress`；更新先完整校验再原子替换。成功更新会把当前列表打印到终端，同时作为 ToolResult 返回模型。
-
-连续三个包含工具调用的模型轮次没有成功更新 Todo 时，Agent Loop 会向最新 tool result 附加当前 Todo 快照和 Reminder。该表达保持 Chat Completions 工具消息配对，并由 Phase 4 Context Guard 统一计算字符预算。Reminder 事件只记录轮次和条目数量，不记录 Todo 正文。
-
-Todo 是规划提示，不是完成条件。TinyHarness 当前不会阻止模型在 Todo 未完成时返回最终答案。完整设计和真实 API 验收结果见 [PHASE6.md](PHASE6.md)。
-
-## Phase 7：Minimal Subagent
-
-主 Agent 可以调用 `task(prompt)` 同步运行一个 fresh-context 子 Agent。父子使用同一个模型 Provider 和 workspace，但子 Agent 不继承父消息、reasoning 或 Todo 状态。子 Agent 的中间工具历史不会进入父上下文，只有最终文本作为 `task` ToolResult 返回。
-
-子 Agent 可使用六个已有工具，但没有 `task`，因此只允许一层委派。子工具继续经过相同 Permission 和 Hooks；`bash` 仍然逐次 ASK。多个 `task` 调用保持原始顺序串行执行。
-
-每个子 Agent 默认最多调用模型 10 次，可通过 `--subagent-max-turns` 调整。子 Agent 使用独立消息历史执行 Context Guard，但继承相同字符预算值。
-
-子生命周期事件写入同一有序 Event Log，并增加 `agent_scope=subagent` 和父 task call ID。详细边界和真实 API 验收结果见 [PHASE7.md](PHASE7.md)。
-
-## Phase 8：Context Compaction v2
-
-配置 `--max-context-chars` 后，每次模型调用前运行固定的四层主动压缩管线：
-
-```text
-大工具结果落盘
-→ 过长历史归档与裁剪
-→ 较旧工具结果缩短
-→ 仍超预算时生成事实摘要
-```
-
-完整工具结果和 transcript 分别保存到 workspace 内的 `.tinyharness/context/tool-results/` 与 `.tinyharness/context/transcripts/`。初始任务、当前 Todo 和最新完整工具交互块会继续保留；多 tool calls 及其 results 不会被拆开。压缩后仍无法满足字符预算时，在主模型调用前明确失败。
-
-启用预算时增加默认 ALLOW 的 `compact` 工具。它仍经过 Hooks 和 Permission，并且只在当前完整工具批次执行和回填结束后触发摘要。摘要调用不提供工具，也不消耗 `max_turns`。父子 Agent 使用独立 compactor；子压缩事件继续带有父 task call ID。
-
-`.tinyharness/context/` 是可恢复信息，不是可信审计证据；workspace 工具和用户批准的 bash 仍可能修改它。完整设计、测试状态和已通过的真实 DeepSeek smoke test 见 [PHASE8.md](PHASE8.md)。
-
-## Phase 9：Model Failure Recovery
-
-所有主模型、摘要模型和子 Agent 模型请求都经过统一 `RecoveryExecutor`。Adapter 将 429、服务不可用、连接失败、context overflow 和 fatal failure 归一化；前三类默认最多重试 2 次，并使用受上限约束的指数 backoff。SDK 内建 retry 被关闭，避免次数叠加。
-
-`length`、`content_filter` 及 finish reason/tool calls 相互矛盾的响应，会在写入 assistant history 和执行工具前失败；截断或过滤响应携带的工具调用不会产生副作用。
-
-配置 `--max-context-chars` 时，API 仍拒绝 context 的请求最多执行一次 reactive compaction。压缩后的主请求和摘要请求都必须达到原失败请求 75% 的明确 target；第二次 context rejection、无法满足 target 或不可恢复错误会明确终止。
-
-`--max-model-retries` 可以调整暂时性错误重试次数，设为 `0` 可关闭。每个物理 Provider attempt 都记录 `purpose`、`turn` 和 `attempt`；父子 Agent 的 retry state 相互独立。详细契约、边界和已通过的真实 DeepSeek smoke test 见 [PHASE9.md](PHASE9.md)。
-
-## Phase 10：Goal Verification Gate
-
-指定 `--goal` 后，模型的无工具最终文本先成为候选答案，不会立即提交或返回。独立、无工具的 Evaluator 根据 completion condition、候选文本和有界执行证据返回严格 JSON contract（兼容可选 code fence）。只有 `achieved` 才提交候选；证据不足时丢弃候选、把有长度上限且明确标记为不可信数据的反馈写回 Goal state marker，并继续同一个 Agent Loop。
-
-Evaluator 请求受 `--max-context-chars` 约束，物理调用复用 Phase 9 bounded recovery 并以 `purpose=goal_evaluation` 记录。`--max-goal-retries` 默认允许 3 次自动 continuation。Goal 正文、候选、Evaluator reason 和工具输出不会进入 Event Log。
-
-Goal 是单次 CLI run 的停止门，不是测试框架或可信证明。它不跨 Session 持久化，也不会继承给 Subagent。详细契约、边界和已通过的真实 DeepSeek `block → continuation → achieved` smoke test 见 [PHASE10.md](PHASE10.md)。
-
-## Phase 11：Reliability Eval v1
-
-`python -m evals.run` 提供三块独立结果：Real Coding 的 `basic_ablation` / `reliable` 对比、确定性 Controlled Failure Recovery，以及不进入提升百分比的 Safety Invariants。正确性只由 workspace 外 hidden tests、文件状态、退出码和副作用检查判定，不使用 LLM-as-judge。
-
-Real Coding 固定 5 个小任务，两个 profile 保持相同模型、工具、Subagent、Permission 和 `max_turns`；差异只有 Goal Gate 与 transient retry。冻结配置上的正式评测已完成：两个 profile 均为 15/15 verified、0 false success；Reliable 在三种确定性故障中 3/3 恢复，并通过两项无副作用安全不变量。它平均使用 8.2 次模型调用，Basic 为 6.9 次。离线故障使用 Scripted Provider，必须记录 `fault_triggered=true` 后才能判断恢复成功。
-
-原始运行结果写入已忽略的 `evals/results/`，包含逐 run JSON 和三段式 Markdown。完整设计、运行命令、可信边界和正式 DeepSeek profile comparison 见 [PHASE11.md](PHASE11.md) 与 [evals/README.md](evals/README.md)。
-
-## 环境要求
-
-- Python 3.10 或更高版本
-- 一个兼容的模型 API Key
-
-安装项目和依赖：
-
-```powershell
-cd D:\learn-claude-code\tinyharness
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install -e .
 ```
 
-## 配置
-
-API Key 通过环境变量提供，不要写入源码或提交到版本库。
+API Key 只通过进程环境提供，不要写入源码：
 
 ```powershell
-$env:TINYHARNESS_API_KEY="你的 API Key"
+$env:TINYHARNESS_API_KEY = "你的 API Key"
 ```
 
-可选配置：
-
-| 环境变量 | 默认值 | 说明 |
-|---|---|---|
-| `TINYHARNESS_API_KEY` | 无 | 必需的 API Key |
-| `TINYHARNESS_MODEL` | `deepseek-v4-flash` | 模型 ID |
-| `TINYHARNESS_BASE_URL` | `https://api.deepseek.com` | Chat Completions API 地址 |
-
-环境变量只需在运行 TinyHarness 的进程环境中存在。项目当前不自动读取 `.env` 文件。
-
-## 运行
-
-必须从项目根目录运行模块：
+运行一个任务：
 
 ```powershell
-cd D:\learn-claude-code\tinyharness
-
-python -m tiny_harness `
-  "列出 workspace 中的文件" `
-  --workspace D:\learn-claude-code\tinyharness `
+tinyharness `
+  "检查项目并修复失败的单元测试，修改后重新运行测试" `
+  --workspace . `
   --max-turns 20
 ```
 
-执行 `python -m pip install -e .` 后，也可以使用命令入口：
+启用 Context Runtime、外部事件日志和 Goal Verification：
 
 ```powershell
-tinyharness "列出 workspace 中的文件" `
-  --workspace D:\learn-claude-code\tinyharness
+New-Item -ItemType Directory -Force D:\tinyharness-logs
+
+tinyharness `
+  "修复 palindrome.py，使全部测试通过" `
+  --goal "实现正确，并且执行记录中有测试退出码为 0 的证据" `
+  --workspace . `
+  --max-context-chars 100000 `
+  --event-log D:\tinyharness-logs\run.jsonl
 ```
 
-`--workspace` 默认为当前目录，`--max-turns` 默认为 20。`--max-context-chars` 默认不启用；启用后同时打开四层 Context Compactor、reactive context recovery 和 `compact` 工具。`--max-model-retries` 默认为 2，按每个逻辑模型请求限制暂时性错误重试。`--subagent-max-turns` 默认为 10，并分别应用于每个同步子 Agent。`--goal` 默认不启用；启用时 `--max-goal-retries` 默认为 3。
+`bash` 默认使用 ASK 策略。模型调用时，CLI 会显示参数并等待用户输入 `y` 或 `yes`；其他输入、EOF 或权限组件异常都按拒绝处理。
 
-## 工具行为
+## Runtime flow
 
-| 工具 | 当前行为 |
-|---|---|
-| `read_file` | 读取 workspace 内的 UTF-8 文本文件 |
-| `write_file` | 写入 UTF-8 文本，并自动创建 workspace 内的父目录 |
-| `edit_file` | 仅当 `old_text` 恰好出现一次时替换 |
-| `list_files` | 稳定排序并列出指定目录的直接子项 |
-| `bash` | 在 workspace 中以 `cwd` 执行系统 shell，超时 120 秒，并始终返回退出码 |
-| `todo_write` | 原子替换当前 run 的内存 Todo，并在终端显示状态 |
-| `task` | 同步运行 fresh-context 子 Agent，只返回其最终文本 |
-| `compact` | 在当前完整工具批次结束后归档并总结旧历史；仅在配置字符预算时暴露 |
+一次主模型响应可能包含多个 tool calls。TinyHarness 保留原始顺序并逐个执行，每个结果都以独立 tool message 回填：
 
-文件工具会拒绝解析后位于 workspace 外的路径，包括 `..` 路径穿越、workspace 外的绝对路径和可解析的符号链接逃逸。
+```text
+Model response
+  → validate finish reason / tool-call contract
+  → PreToolUse hooks
+  → Permission gate
+  → Tool registry and handler
+  → PostToolUse hooks
+  → ToolResult
+  → next model turn
+```
 
-`bash` 不受这个文件路径边界约束。它只有 `cwd` 约束，不是安全沙箱。
+只有被接受的模型响应才会写入 assistant history。`length`、`content_filter`、空 tool batch 或 finish reason/tool calls 相互矛盾的响应，会在提交 history 和产生工具副作用前失败。
 
-## 测试
+暂时性 Provider 错误使用有界指数退避；API 拒绝 context 时最多执行一次 reactive compaction。每个物理请求都记录独立的 `purpose / turn / attempt`，retry 不会重置逻辑 turn。
+
+模型返回最终文本后，可选 Goal Evaluator 根据 completion condition 和有界执行证据独立判断：证据不足则丢弃候选答案并继续原 Agent Loop，验证通过才返回最终答案。
+
+## Tools and policies
+
+| Tool | 行为 | 默认权限 |
+|---|---|---|
+| `read_file` | 读取 workspace 内 UTF-8 文件 | ALLOW |
+| `write_file` | 写入文件并创建 workspace 内父目录 | ALLOW |
+| `edit_file` | 仅在 `old_text` 唯一时执行精确替换 | ALLOW |
+| `list_files` | 稳定排序并列出直接子项 | ALLOW |
+| `bash` | 以 workspace 为 `cwd` 执行 shell，返回退出码 | ASK |
+| `todo_write` | 原子更新当前 run 的内存 Todo | ALLOW |
+| `task` | 运行 fresh-context 子 Agent，只返回最终文本 | ALLOW |
+| `compact` | 在完整工具批次后请求历史摘要 | ALLOW |
+
+文件工具拒绝 `..` 穿越、workspace 外绝对路径和可解析的符号链接逃逸。`edit_file` 在 anchor 出现 0 次或多次时明确报错，避免静默修改错误位置。工具异常、未知工具和非法 JSON 参数都转换为关联原 call ID 的 `ToolResult`。
+
+## Context runtime
+
+配置 `--max-context-chars` 后，每次模型调用前依次执行：
+
+```text
+1. tool_result_budget  大结果保存为 workspace artifact
+2. snip_compact       归档并裁剪过长旧历史
+3. micro_compact      用占位符替换旧 ToolResult
+4. compact_history    最后才调用模型总结旧历史
+```
+
+初始任务、当前 Todo 和最新完整 tool-call block 被优先保留；一次响应中的 tool calls 与 results 不会拆开。压缩后仍无法满足预算时，会在主 API 调用前明确失败。这里的字符预算是确定性本地近似，不等于精确 token 数。
+
+## Configuration
+
+| 配置 | 默认值 | 说明 |
+|---|---|---|
+| `TINYHARNESS_API_KEY` | 无 | 必需的 API Key |
+| `TINYHARNESS_MODEL` | `deepseek-v4-flash` | Chat Completions 模型 ID |
+| `TINYHARNESS_BASE_URL` | `https://api.deepseek.com` | 模型服务地址 |
+| `--workspace` | 当前目录 | Agent 文件工具作用域 |
+| `--max-turns` | `20` | 主 Agent 最大逻辑轮次 |
+| `--max-model-retries` | `2` | 每个逻辑请求的暂时性重试次数 |
+| `--subagent-max-turns` | `10` | 每个同步子 Agent 的最大轮次 |
+| `--max-context-chars` | 不启用 | 开启 Context Runtime 和 `compact` 工具 |
+| `--event-log` | 不启用 | 追加写入 JSONL 生命周期日志 |
+| `--goal` | 不启用 | 最终答案的 completion condition |
+| `--max-goal-retries` | `3` | Goal 被拒绝后的自动 continuation 次数 |
+
+项目当前不自动读取 `.env`。
+
+## Evaluation
+
+离线故障注入和安全不变量不需要 API Key：
 
 ```powershell
-cd D:\learn-claude-code\tinyharness
+python -m evals.run --suite offline
+```
+
+完整评测（30 个真实 run，加上不消耗 API 的受控故障与安全不变量）：
+
+```powershell
+python -m evals.run `
+  --suite all `
+  --profile both `
+  --repetitions 3
+```
+
+每次 run 使用全新的 `workspace/`，hidden grader 和 `events.jsonl` 位于其外部。报告分成 Real Coding、Controlled Failure Recovery、Safety Invariants 三部分；原始运行目录写入被 Git 忽略的 `evals/results/`。
+
+## Tests
+
+```powershell
 python -m unittest discover -s tests -v
 ```
 
-Phase 1 冻结时的基线：
+当前本地基线：
 
-- 35 项测试被执行
-- 34 项通过
-- 1 项跳过：当前 Windows 用户没有创建符号链接的权限
+- 181 tests executed；
+- 178 passed；
+- 3 skipped：当前 Windows 用户无法创建测试所需的符号链接。
 
-当前 Phase 2 离线测试：
+## Trust boundaries
 
-- 50 项测试被执行
-- 49 项通过
-- 1 项跳过：同一个 Windows 符号链接权限限制
+- 文件工具有 workspace 路径边界；`bash` 只有 `cwd` 约束，**不是 OS sandbox**。
+- Event Log 是 observability trace，不是防篡改 audit log；建议写到 Agent workspace 外。
+- `.tinyharness/context/` 中的 artifact 用于恢复信息，不是可信证据。
+- Goal Evaluator 是停止门，不是形式化证明；workspace/process 条件仍需要实际 tool results。
+- Subagent 共享 workspace、Provider、Permission 和 Hooks，但只有一层且顺序执行。
+- 当前没有 Session Resume、MCP、Memory、并行 Agent、精确 token accounting 或 fallback model。
 
-当前 Phase 3 离线测试：
+这些是 TinyHarness v1 的明确范围，而不是已经实现但未启用的功能。
 
-- 65 项测试被执行
-- 64 项通过
-- 1 项跳过：同一个 Windows 符号链接权限限制
-
-当前 Phase 4 离线测试：
-
-- 80 项测试被执行
-- 79 项通过
-- 1 项跳过：同一个 Windows 符号链接权限限制
-
-当前 Phase 5 离线测试：
-
-- 91 项测试被执行
-- 90 项通过
-- 1 项跳过：同一个 Windows 符号链接权限限制
-
-当前 Phase 6 离线测试：
-
-- 107 项测试被执行
-- 106 项通过
-- 1 项跳过：同一个 Windows 符号链接权限限制
-
-当前 Phase 7 离线测试：
-
-- 121 项测试被执行
-- 120 项通过
-- 1 项跳过：同一个 Windows 符号链接权限限制
-
-当前 Phase 8 离线测试：
-
-- 128 项测试被执行
-- 125 项通过
-- 3 项跳过：当前 Windows 用户无法创建 filesystem、artifact 目录和最终 artifact 文件的符号链接测试
-
-当前 Phase 9 离线测试：
-
-- 148 项测试被执行
-- 145 项通过
-- 3 项跳过：同一个 Windows 符号链接权限限制
-
-当前 Phase 10 离线测试：
-
-- 171 项测试被执行
-- 168 项通过
-- 3 项跳过：同一个 Windows 符号链接权限限制
-
-当前 Phase 11 离线测试：
-
-- 181 项测试被执行
-- 178 项通过
-- 3 项跳过：同一个 Windows 符号链接权限限制
-
-## 项目结构
+## Project layout
 
 ```text
-tinyharness/
-├─ tiny_harness/
-│  ├─ __main__.py
-│  ├─ agent/
-│  │  ├─ loop.py
-│  │  └─ messages.py
-│  ├─ models/
-│  │  ├─ base.py
-│  │  └─ chat_completions.py
-│  ├─ tools/
-│  │  ├─ compact.py
-│  │  ├─ filesystem.py
-│  │  ├─ registry.py
-│  │  ├─ shell.py
-│  │  ├─ task.py
-│  │  └─ todo.py
-│  └─ runtime/
-│     ├─ context.py
-│     ├─ events.py
-│     ├─ goal.py
-│     ├─ hooks.py
-│     ├─ permissions.py
-│     ├─ recovery.py
-│     └─ todos.py
-├─ examples/
-│  └─ hooks_demo.py
-├─ evals/
-│  ├─ cases.json
-│  ├─ core.py
-│  ├─ graders.py
-│  ├─ run.py
-│  ├─ scenarios.py
-│  └─ fixtures/
-├─ tests/
-├─ PHASE1_BASELINE.md
-├─ PHASE2.md
-├─ PHASE3.md
-├─ PHASE4.md
-├─ PHASE5.md
-├─ PHASE6.md
-├─ PHASE7.md
-├─ PHASE8.md
-├─ PHASE9.md
-├─ PHASE10.md
-├─ PHASE11.md
-└─ pyproject.toml
+tiny_harness/
+├─ agent/          # messages and the explicit Agent Loop
+├─ models/         # Provider contract and Chat Completions adapter
+├─ tools/          # filesystem, shell, todo, task, compact and registry
+└─ runtime/        # permission, hooks, context, recovery, goal and events
+evals/             # fixtures, hidden graders, fault scenarios and reports
+examples/          # Python API examples
+tests/             # deterministic unit and integration tests
 ```
 
-`runtime/permissions.py`、`runtime/events.py`、`runtime/context.py`、`runtime/hooks.py`、`runtime/todos.py`、`runtime/recovery.py` 和 `runtime/goal.py` 已分别在 Phase 2–10 接入。`agent/session.py` 仍是空占位文件。
+## Design references
 
-## 当前边界
+TinyHarness 选择性参考并重新实现了 `learn-claude-code` 的核心控制流：
 
-当前实现了非持久化的 ALLOW / DENY / ASK、控制流 metadata JSONL 日志、四层 Context Compaction、reactive context recovery、暂时性模型错误的有界 retry、同步 Pre/Post Tool Hooks、run-scoped Todo、单层同步 Subagent、run-scoped Goal Verification Gate，以及目的单一的 Reliability Eval v1。仍没有 Hook 配置文件、通用 Prompt/Stop Hooks、精确 token 预算、fallback model、circuit breaker、Session Resume、Goal 持久化、Artifact Store、Memory、MCP、并行 Subagent、Agent Teams、Workflow、通用 Eval SDK 或 OS sandbox。工具、Subagent 和评测顺序执行。
+- `s01_agent_loop` / `s02_tool_use`
+- `s03_permission` / `s04_hooks` / `s05_todo_write`
+- `s06_subagent` / `s08_context_compact`
+- `s15_integrated_harness` 的 bounded retry 思路
+- `s17_goal_loop` 的独立 Evaluator Stop Gate
 
-这些限制是后续可靠性研究的基线，不应被误认为已经实现但未启用的功能。
-
-## 参考来源
-
-Phase 1 选择性参考了：
-
-- `learn-claude-code-main/s01_agent_loop`
-- `learn-claude-code-main/s02_tool_use`
-
-参考内容仅限核心控制流、工具 schema、分发和 workspace 路径边界。TinyHarness 根据自身 Phase 1 目标重新实现，没有直接移植 integrated harness 或后续阶段机制。
-
-Phase 2 选择性参考了 `s03_permission` 的执行前权限控制流。Phase 5 选择性参考了 `s04_hooks` 的有序注册、PreToolUse 阻止和 PostToolUse 观察概念，但保留了 TinyHarness 独立的 Permission Gate，只实现 Tool Hooks。Phase 6 实质性参考并改写了 `s05_todo_write` 的 TodoManager、工具 schema、终端渲染和三轮 Reminder 控制流。Phase 7 实质性参考并改写了 `s06_subagent` 的 task schema、fresh child context、同步嵌套 Loop、共享 workspace 和单层委派控制流。Phase 8 实质性参考并改写了 `s08_context_compact` 的四层压缩顺序、可恢复落盘、历史归档、事实摘要和手动 compact 控制流。Phase 9 选择性参考了 `s08_context_compact` 的 reactive compact 和 `s15_integrated_harness` 的有界 retry/backoff 控制流。Phase 10 实质性参考并改写了 `s17_goal_loop` 的独立 Evaluator Stop Gate，但没有引入 session command、恢复、后台任务或 token/time accounting。Phase 11 是 TinyHarness 自己的评测扩展。Phase 3、4 也是可靠性扩展。没有查看 Claude Code 产品源码。
+metadata Event Log、初版 Context Guard 和 Reliability Eval 是 TinyHarness 自己的可靠性扩展。项目没有直接复制 integrated harness，也没有查看或移植 Claude Code 产品源码。

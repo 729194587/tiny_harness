@@ -785,7 +785,7 @@ def prepare_context(
     tools: list[dict[str, Any]],
     max_chars: int,
 ) -> PreparedContext:
-    """Apply the deterministic Phase 4 block trim as a compatibility helper."""
+    """Apply the deterministic block trim as a compatibility helper."""
 
     if max_chars < 1:
         raise ValueError("max_chars must be at least 1")

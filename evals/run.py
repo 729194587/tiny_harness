@@ -1,4 +1,4 @@
-"""CLI for Phase 11 real coding and deterministic reliability evals."""
+"""CLI for real coding and deterministic reliability evals."""
 
 import argparse
 import json

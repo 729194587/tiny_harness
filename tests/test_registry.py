@@ -29,7 +29,7 @@ class ToolRegistryTest(unittest.TestCase):
             **dispatch_options,
         )
 
-    def test_schemas_contain_all_phase_seven_tools(self) -> None:
+    def test_schemas_contain_all_default_runtime_tools(self) -> None:
         schemas = tool_schemas()
 
         self.assertEqual(
@@ -146,7 +146,7 @@ class ToolRegistryTest(unittest.TestCase):
                 {
                     "todos": [
                         {
-                            "content": "Implement Phase 6",
+                            "content": "Implement the feature",
                             "status": "in_progress",
                         }
                     ]
@@ -155,7 +155,7 @@ class ToolRegistryTest(unittest.TestCase):
             )
 
         self.assertEqual(result.tool_call_id, "todo-1")
-        self.assertIn("[>] Implement Phase 6", result.content)
+        self.assertIn("[>] Implement the feature", result.content)
         self.assertEqual(manager.revision, 1)
 
     def test_todo_write_without_manager_becomes_tool_error(self) -> None:

@@ -1,4 +1,4 @@
-"""Shared contracts and event-derived metrics for Phase 11 evals."""
+"""Shared contracts and event-derived metrics for reliability evals."""
 
 import json
 import re
@@ -37,7 +37,7 @@ class RunMetrics:
 
 @dataclass
 class EvalResult:
-    """Normalized result used by all three Phase 11 report sections."""
+    """Normalized result used by all three reliability report sections."""
 
     category: str
     case_id: str

@@ -93,7 +93,7 @@ class ContextPrimitiveTest(unittest.TestCase):
         )
         self.assertEqual(context_char_count(messages, TOOLS), expected)
 
-    def test_phase_four_helper_still_drops_complete_old_blocks(self) -> None:
+    def test_compatibility_helper_drops_complete_old_blocks(self) -> None:
         prefix = [{"role": "user", "content": "task"}]
         old = tool_block("old")
         latest = tool_block("latest")
@@ -585,7 +585,7 @@ class ContextAgentLoopTest(unittest.TestCase):
         self.assertEqual(len(provider.calls), 2)
         self.assertIn("compaction blocked", provider.calls[1]["messages"][-1]["content"])
 
-    def test_unconfigured_budget_preserves_phase_seven_tools(self):
+    def test_unconfigured_budget_preserves_default_runtime_tools(self):
         provider = FakeProvider([ModelResponse("done", None, [], "stop")])
         agent_loop(provider, self.workspace, [])
         names = [schema["function"]["name"] for schema in provider.calls[0]["tools"]]

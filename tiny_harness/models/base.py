@@ -40,7 +40,7 @@ class ModelProviderError(RuntimeError):
 
 
 class ModelProvider(Protocol):
-    """Synchronous model interface required by the Phase 1 agent loop."""
+    """Synchronous model interface required by the agent loop."""
 
     def complete(
         self,

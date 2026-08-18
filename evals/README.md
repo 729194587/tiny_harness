@@ -1,6 +1,6 @@
 # TinyHarness Reliability Eval v1
 
-Phase 11 使用一个专用、同步、标准库实现的 runner，回答三个问题：
+TinyHarness 使用一个专用、同步、标准库实现的 runner，回答三个问题：
 
 1. Harness 是否降低 `false_success`；
 2. 是否能恢复确定性注入的故障；
@@ -64,7 +64,7 @@ python -m evals.run `
 | `basic_ablation` | 关闭 | 0 |
 | `reliable` | 开启 | 2 |
 
-Real Coding 不启用 Context Compaction，因此两个 profile 都没有 `compact` 工具。`basic_ablation` 是当前 Runtime 的消融配置，不是历史 Phase 1 实现。
+Real Coding 不启用 Context Compaction，因此两个 profile 都没有 `compact` 工具。`basic_ablation` 是当前 Runtime 的消融配置，不是早期 Runtime 快照。
 
 ### Controlled Failure Recovery
 
@@ -104,7 +104,7 @@ Runner 在 Agent 开始前复制 seed 和 hidden grader。Agent 只获得 `works
 3. 通过环境变量把 workspace 路径交给 grader；
 4. 只记录退出码，不把 grader stdout 写进报告。
 
-Real Coding 的 Bash 使用精确字符串白名单，两个 profile 完全相同。它避免普通 Agent 命令访问 hidden grader，但不是 OS sandbox；恶意 shell 进程隔离不属于 Phase 11。
+Real Coding 的 Bash 使用精确字符串白名单，两个 profile 完全相同。它避免普通 Agent 命令访问 hidden grader，但不是 OS sandbox；恶意 shell 进程隔离不属于当前 Eval v1。
 
 ## 指标语义
 
