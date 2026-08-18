@@ -2,7 +2,7 @@
 
 TinyHarness 是一个面向 Coding Agent Harness Reliability 研究的轻量 Python 项目。
 
-Phase 1 已冻结为最小可运行 Agent 基线，Phase 2–9 依次加入 Permission、Event Log、Context Guard、Hooks、Todo、Subagent、Context Compaction v2 和 Model Failure Recovery。当前 Phase 10 加入 Goal Verification Gate：
+Phase 1 已冻结为最小可运行 Agent 基线，Phase 2–10 依次加入 Permission、Event Log、Context Guard、Hooks、Todo、Subagent、Context Compaction、Model Failure Recovery 和 Goal Verification Gate。当前 Phase 11 为这些机制增加 Reliability Eval v1：
 
 ```text
 CLI
@@ -212,6 +212,14 @@ Evaluator 请求受 `--max-context-chars` 约束，物理调用复用 Phase 9 bo
 
 Goal 是单次 CLI run 的停止门，不是测试框架或可信证明。它不跨 Session 持久化，也不会继承给 Subagent。详细契约、边界和已通过的真实 DeepSeek `block → continuation → achieved` smoke test 见 [PHASE10.md](PHASE10.md)。
 
+## Phase 11：Reliability Eval v1
+
+`python -m evals.run` 提供三块独立结果：Real Coding 的 `basic_ablation` / `reliable` 对比、确定性 Controlled Failure Recovery，以及不进入提升百分比的 Safety Invariants。正确性只由 workspace 外 hidden tests、文件状态、退出码和副作用检查判定，不使用 LLM-as-judge。
+
+Real Coding 固定 5 个小任务，两个 profile 保持相同模型、工具、Subagent、Permission 和 `max_turns`；差异只有 Goal Gate 与 transient retry。冻结配置上的正式评测已完成：两个 profile 均为 15/15 verified、0 false success；Reliable 在三种确定性故障中 3/3 恢复，并通过两项无副作用安全不变量。它平均使用 8.2 次模型调用，Basic 为 6.9 次。离线故障使用 Scripted Provider，必须记录 `fault_triggered=true` 后才能判断恢复成功。
+
+原始运行结果写入已忽略的 `evals/results/`，包含逐 run JSON 和三段式 Markdown。完整设计、运行命令、可信边界和正式 DeepSeek profile comparison 见 [PHASE11.md](PHASE11.md) 与 [evals/README.md](evals/README.md)。
+
 ## 环境要求
 
 - Python 3.10 或更高版本
@@ -348,6 +356,12 @@ Phase 1 冻结时的基线：
 - 168 项通过
 - 3 项跳过：同一个 Windows 符号链接权限限制
 
+当前 Phase 11 离线测试：
+
+- 181 项测试被执行
+- 178 项通过
+- 3 项跳过：同一个 Windows 符号链接权限限制
+
 ## 项目结构
 
 ```text
@@ -377,6 +391,13 @@ tinyharness/
 │     └─ todos.py
 ├─ examples/
 │  └─ hooks_demo.py
+├─ evals/
+│  ├─ cases.json
+│  ├─ core.py
+│  ├─ graders.py
+│  ├─ run.py
+│  ├─ scenarios.py
+│  └─ fixtures/
 ├─ tests/
 ├─ PHASE1_BASELINE.md
 ├─ PHASE2.md
@@ -388,6 +409,7 @@ tinyharness/
 ├─ PHASE8.md
 ├─ PHASE9.md
 ├─ PHASE10.md
+├─ PHASE11.md
 └─ pyproject.toml
 ```
 
@@ -395,7 +417,7 @@ tinyharness/
 
 ## 当前边界
 
-当前实现了非持久化的 ALLOW / DENY / ASK、显式启用的控制流 metadata JSONL 日志、四层主动 Context Compaction、一次 reactive context recovery、暂时性模型错误的有界 retry、通过 Python API 注入的同步 Pre/Post Tool Hooks、run-scoped Todo、单层同步 Subagent，以及显式启用的 run-scoped Goal Verification Gate。仍没有 Hook 配置文件、通用 Prompt/Stop Hooks、精确 token 预算、fallback model、circuit breaker、Session Resume、Goal 持久化、Artifact Store、Memory、MCP、并行 Subagent、Agent Teams 或 Workflow。工具和 Subagent 顺序执行；主 CLI 会显示 ASK 交互、Todo 更新、Subagent 状态和最终答案。
+当前实现了非持久化的 ALLOW / DENY / ASK、控制流 metadata JSONL 日志、四层 Context Compaction、reactive context recovery、暂时性模型错误的有界 retry、同步 Pre/Post Tool Hooks、run-scoped Todo、单层同步 Subagent、run-scoped Goal Verification Gate，以及目的单一的 Reliability Eval v1。仍没有 Hook 配置文件、通用 Prompt/Stop Hooks、精确 token 预算、fallback model、circuit breaker、Session Resume、Goal 持久化、Artifact Store、Memory、MCP、并行 Subagent、Agent Teams、Workflow、通用 Eval SDK 或 OS sandbox。工具、Subagent 和评测顺序执行。
 
 这些限制是后续可靠性研究的基线，不应被误认为已经实现但未启用的功能。
 
@@ -408,4 +430,4 @@ Phase 1 选择性参考了：
 
 参考内容仅限核心控制流、工具 schema、分发和 workspace 路径边界。TinyHarness 根据自身 Phase 1 目标重新实现，没有直接移植 integrated harness 或后续阶段机制。
 
-Phase 2 选择性参考了 `s03_permission` 的执行前权限控制流。Phase 5 选择性参考了 `s04_hooks` 的有序注册、PreToolUse 阻止和 PostToolUse 观察概念，但保留了 TinyHarness 独立的 Permission Gate，只实现 Tool Hooks。Phase 6 实质性参考并改写了 `s05_todo_write` 的 TodoManager、工具 schema、终端渲染和三轮 Reminder 控制流。Phase 7 实质性参考并改写了 `s06_subagent` 的 task schema、fresh child context、同步嵌套 Loop、共享 workspace 和单层委派控制流。Phase 8 实质性参考并改写了 `s08_context_compact` 的四层压缩顺序、可恢复落盘、历史归档、事实摘要和手动 compact 控制流。Phase 9 选择性参考了 `s08_context_compact` 的 reactive compact 和 `s15_integrated_harness` 的有界 retry/backoff 控制流。Phase 10 实质性参考并改写了 `s17_goal_loop` 的独立 Evaluator Stop Gate，但没有引入 session command、恢复、后台任务或 token/time accounting。Phase 3、4 是 TinyHarness 的可靠性扩展。没有查看 Claude Code 产品源码。
+Phase 2 选择性参考了 `s03_permission` 的执行前权限控制流。Phase 5 选择性参考了 `s04_hooks` 的有序注册、PreToolUse 阻止和 PostToolUse 观察概念，但保留了 TinyHarness 独立的 Permission Gate，只实现 Tool Hooks。Phase 6 实质性参考并改写了 `s05_todo_write` 的 TodoManager、工具 schema、终端渲染和三轮 Reminder 控制流。Phase 7 实质性参考并改写了 `s06_subagent` 的 task schema、fresh child context、同步嵌套 Loop、共享 workspace 和单层委派控制流。Phase 8 实质性参考并改写了 `s08_context_compact` 的四层压缩顺序、可恢复落盘、历史归档、事实摘要和手动 compact 控制流。Phase 9 选择性参考了 `s08_context_compact` 的 reactive compact 和 `s15_integrated_harness` 的有界 retry/backoff 控制流。Phase 10 实质性参考并改写了 `s17_goal_loop` 的独立 Evaluator Stop Gate，但没有引入 session command、恢复、后台任务或 token/time accounting。Phase 11 是 TinyHarness 自己的评测扩展。Phase 3、4 也是可靠性扩展。没有查看 Claude Code 产品源码。

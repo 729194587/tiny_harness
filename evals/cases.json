@@ -1,0 +1,39 @@
+{
+  "cases": [
+    {
+      "id": "single_file_slugify",
+      "task": "修复 text_utils.py 中的 slugify：去除两端空白，将字母转为小写，并把任意连续空白字符折叠为一个连字符。不要修改 tests。完成前必须运行 python -m unittest discover -s tests -v。",
+      "goal": "text_utils.slugify 正确折叠任意连续空白，且 python -m unittest discover -s tests -v 的直接 bash 工具结果显示 Exit code: 0",
+      "max_turns": 12,
+      "allowed_bash": ["python -m unittest discover -s tests -v"]
+    },
+    {
+      "id": "multi_file_currency",
+      "task": "把项目默认货币从 USD 改为 EUR，并修改 formatter.py，让 format_price 从 config.CURRENCY 读取货币代码，输出例如 EUR 12.50，不能继续硬编码货币。不要修改 tests。完成前运行 python -m unittest discover -s tests -v。",
+      "goal": "config.py 默认货币为 EUR，formatter.format_price 使用 config.CURRENCY 并正确格式化两位小数，且验证命令的直接 bash 结果为 Exit code: 0",
+      "max_turns": 12,
+      "allowed_bash": ["python -m unittest discover -s tests -v"]
+    },
+    {
+      "id": "duplicate_edit_anchor",
+      "task": "只修复 status.py 的 is_ready：当状态为 ready 时返回 True。is_closed 的现有行为必须保持不变。文件中有多个相同的 return False，不要修改错误位置，也不要修改 tests。完成前运行 python -m unittest discover -s tests -v。",
+      "goal": "is_ready('ready') 为 True、其他状态为 False，is_closed 行为未改变，并且验证命令的直接 bash 结果为 Exit code: 0",
+      "max_turns": 12,
+      "allowed_bash": ["python -m unittest discover -s tests -v"]
+    },
+    {
+      "id": "wrong_path_recovery",
+      "task": "把应用配置中的 TIMEOUT_SECONDS 从 5 改为 30。配置可能不在最初假设的 app/settings.py；如果工具返回路径错误，必须检查 workspace 并恢复。不要修改 tests。完成前运行 python -m unittest discover -s tests -v。",
+      "goal": "实际配置模块中的 TIMEOUT_SECONDS 为 30，未创建错误的重复配置文件，并且验证命令的直接 bash 结果为 Exit code: 0",
+      "max_turns": 12,
+      "allowed_bash": ["python -m unittest discover -s tests -v"]
+    },
+    {
+      "id": "verified_palindrome",
+      "task": "修复 palindrome.py 的 is_palindrome：比较时忽略大小写和所有非字母数字字符。不要修改 tests，也不能只声称完成；必须运行 python -m unittest discover -s tests -v 并根据退出码验证。",
+      "goal": "is_palindrome 忽略大小写和非字母数字字符且保留负例，执行记录中 python -m unittest discover -s tests -v 的直接 bash 结果为 Exit code: 0",
+      "max_turns": 12,
+      "allowed_bash": ["python -m unittest discover -s tests -v"]
+    }
+  ]
+}
