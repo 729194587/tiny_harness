@@ -19,7 +19,5 @@ def bash(workspace: Path, command: str) -> str:
     )
     output = (completed.stdout + completed.stderr).strip()
 
-    if completed.returncode != 0:
-        detail = f"\n{output}" if output else ""
-        return f"Exit code: {completed.returncode}{detail}"
-    return output or "(no output)"
+    detail = f"\n{output}" if output else ""
+    return f"Exit code: {completed.returncode}{detail}"

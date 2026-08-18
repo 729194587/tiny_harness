@@ -14,6 +14,7 @@ from tiny_harness.__main__ import (
 )
 from tiny_harness.agent.loop import DEFAULT_SUBAGENT_MAX_TURNS
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, JsonlEventLogger
+from tiny_harness.runtime.goal import DEFAULT_MAX_GOAL_RETRIES, MAX_GOAL_LENGTH
 from tiny_harness.runtime.recovery import RecoveryPolicy
 
 
@@ -72,6 +73,11 @@ class CliTest(unittest.TestCase):
         self.assertEqual(
             loop.call_args.kwargs["recovery_policy"],
             RecoveryPolicy(max_retries=2),
+        )
+        self.assertIsNone(loop.call_args.kwargs["goal_condition"])
+        self.assertEqual(
+            loop.call_args.kwargs["max_goal_retries"],
+            DEFAULT_MAX_GOAL_RETRIES,
         )
 
     @patch("tiny_harness.__main__.agent_loop", return_value="done")
@@ -139,6 +145,29 @@ class CliTest(unittest.TestCase):
             loop.call_args.kwargs["recovery_policy"],
             RecoveryPolicy(max_retries=5),
         )
+
+    @patch("tiny_harness.__main__.agent_loop", return_value="done")
+    @patch("tiny_harness.__main__.ChatCompletionsProvider")
+    def test_passes_goal_and_retry_budget_to_agent_loop(self, _, loop) -> None:
+        with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
+            with contextlib.redirect_stdout(io.StringIO()):
+                main(
+                    [
+                        "task",
+                        "--workspace",
+                        str(self.workspace),
+                        "--goal",
+                        "tests pass",
+                        "--max-goal-retries",
+                        "1",
+                    ]
+                )
+
+        self.assertEqual(loop.call_args.kwargs["goal_condition"], "tests pass")
+        self.assertEqual(loop.call_args.kwargs["max_goal_retries"], 1)
+        system_prompt = loop.call_args.args[2][0]["content"]
+        self.assertIn("independent evaluator", system_prompt)
+        self.assertIn("concrete tool results", system_prompt)
 
     def test_requires_api_key(self) -> None:
         stderr = io.StringIO()
@@ -211,6 +240,26 @@ class CliTest(unittest.TestCase):
                             ),
                             0,
                         )
+
+    def test_rejects_invalid_goal_arguments_before_provider_setup(self) -> None:
+        cases = [
+            (["task", "--goal", "   "], "goal cannot be empty"),
+            (
+                ["task", "--goal", "x" * (MAX_GOAL_LENGTH + 1)],
+                f"goal cannot exceed {MAX_GOAL_LENGTH}",
+            ),
+            (
+                ["task", "--max-goal-retries", "-1"],
+                "must be at least 0",
+            ),
+        ]
+        for arguments, expected in cases:
+            with self.subTest(expected=expected):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    with self.assertRaisesRegex(SystemExit, "2"):
+                        main(arguments)
+                self.assertIn(expected, stderr.getvalue())
 
     def test_permission_prompt_accepts_yes_and_displays_arguments(self) -> None:
         stdout = io.StringIO()

@@ -23,6 +23,8 @@ class EventType(str, Enum):
     MODEL_REQUEST_FAILED = "model_request_failed"
     MODEL_RETRY_SCHEDULED = "model_retry_scheduled"
     MODEL_RETRY_EXHAUSTED = "model_retry_exhausted"
+    GOAL_EVALUATION_REQUESTED = "goal_evaluation_requested"
+    GOAL_EVALUATED = "goal_evaluated"
     TOOL_HOOK_BLOCKED = "tool_hook_blocked"
     TOOL_HOOK_FAILED = "tool_hook_failed"
     TOOL_STARTED = "tool_started"

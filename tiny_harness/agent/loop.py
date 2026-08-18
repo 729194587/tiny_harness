@@ -22,6 +22,13 @@ from tiny_harness.runtime.events import (
     EventType,
     ScopedEventLogger,
 )
+from tiny_harness.runtime.goal import (
+    DEFAULT_MAX_GOAL_RETRIES,
+    GoalController,
+    GoalEvaluator,
+    GoalNotAchievedError,
+    PromptGoalEvaluator,
+)
 from tiny_harness.runtime.hooks import ToolHooks
 from tiny_harness.runtime.permissions import (
     DEFAULT_PERMISSION_POLICY,
@@ -55,6 +62,9 @@ def agent_loop(
     subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS,
     allow_subagent: bool = True,
     recovery_policy: RecoveryPolicy = RecoveryPolicy(),
+    goal_condition: str | None = None,
+    max_goal_retries: int = DEFAULT_MAX_GOAL_RETRIES,
+    goal_evaluator: GoalEvaluator | None = None,
 ) -> str:
     """Call the model and tools until a final text response is returned."""
 
@@ -64,6 +74,10 @@ def agent_loop(
         raise ValueError("max_context_chars must be at least 1")
     if subagent_max_turns < 1:
         raise ValueError("subagent_max_turns must be at least 1")
+    if max_goal_retries < 0:
+        raise ValueError("max_goal_retries must be at least 0")
+    if goal_evaluator is not None and goal_condition is None:
+        raise ValueError("goal_evaluator requires goal_condition")
 
     tools = tool_schemas(
         include_task=allow_subagent,
@@ -89,6 +103,32 @@ def agent_loop(
             state=RecoveryState(),
         )
 
+    def complete_goal_evaluation(
+        evaluation_messages: list[dict[str, Any]],
+        evaluation_tools: list[dict[str, Any]],
+    ) -> ModelResponse:
+        return recovery_executor.complete(
+            provider,
+            evaluation_messages,
+            evaluation_tools,
+            purpose="goal_evaluation",
+            turn=current_turn,
+            state=RecoveryState(),
+        )
+
+    goal_controller: GoalController | None = None
+    if goal_condition is not None:
+        evaluator = goal_evaluator or PromptGoalEvaluator(
+            complete_goal_evaluation,
+            max_context_chars=max_context_chars,
+        )
+        goal_controller = GoalController(
+            goal_condition,
+            evaluator,
+            max_retries=max_goal_retries,
+        )
+        goal_controller.upsert_marker(messages)
+
     compaction_request = (
         CompactionRequest() if max_context_chars is not None else None
     )
@@ -113,6 +153,9 @@ def agent_loop(
         run_data["subagent_max_turns"] = subagent_max_turns
     if max_context_chars is not None:
         run_data["max_context_chars"] = max_context_chars
+    if goal_controller is not None:
+        run_data["goal_enabled"] = True
+        run_data["max_goal_retries"] = max_goal_retries
     event_logger.emit(EventType.RUN_STARTED, run_data)
 
     subagent_runner: SubagentRunner | None = None
@@ -252,18 +295,67 @@ def agent_loop(
                     }
                     for call in response.tool_calls
                 ]
-            messages.append(assistant_message)
-
             if not response.tool_calls:
                 answer = response.content or ""
+                if goal_controller is not None:
+                    evaluation_number = goal_controller.state.evaluations + 1
+                    event_logger.emit(
+                        EventType.GOAL_EVALUATION_REQUESTED,
+                        {
+                            "turn": current_turn,
+                            "evaluation": evaluation_number,
+                        },
+                    )
+                    decision = goal_controller.evaluate(messages, answer)
+                    if (
+                        decision.action == "block"
+                        and current_turn < max_turns
+                    ):
+                        goal_controller.record_continuation()
+                    event_logger.emit(
+                        EventType.GOAL_EVALUATED,
+                        {
+                            "turn": current_turn,
+                            "evaluation": goal_controller.state.evaluations,
+                            "outcome": decision.action,
+                            "reason_length": len(decision.reason),
+                            "retries_used": goal_controller.state.retries_used,
+                        },
+                    )
+                    if decision.action == "block":
+                        if current_turn < max_turns:
+                            goal_controller.upsert_marker(messages)
+                        continue
+                    if decision.action == "impossible":
+                        raise GoalNotAchievedError(
+                            "Goal evaluator determined completion is impossible: "
+                            f"{decision.reason}"
+                        )
+                    if decision.action == "limit":
+                        raise GoalNotAchievedError(
+                            "Goal remains unverified after maximum automatic "
+                            f"continuations: {decision.reason}"
+                        )
+                    if decision.action != "achieved":
+                        raise GoalNotAchievedError(
+                            f"Unknown goal decision: {decision.action}"
+                        )
+                messages.append(assistant_message)
+                finish_data = {
+                    "turns": current_turn,
+                    "answer_length": len(answer),
+                }
+                if goal_controller is not None:
+                    finish_data["goal_evaluations"] = (
+                        goal_controller.state.evaluations
+                    )
                 event_logger.emit(
                     EventType.RUN_FINISHED,
-                    {
-                        "turns": current_turn,
-                        "answer_length": len(answer),
-                    },
+                    finish_data,
                 )
                 return answer
+
+            messages.append(assistant_message)
 
             todo_revision = todo_manager.revision
             compact_revision = (
@@ -327,6 +419,11 @@ def agent_loop(
                 )
                 messages[:] = prepared.messages
 
+        if goal_controller is not None:
+            raise GoalNotAchievedError(
+                "Maximum model turns reached before goal verification: "
+                f"{max_turns}"
+            )
         raise RuntimeError(f"Maximum model turns reached: {max_turns}")
     except EventLogError:
         raise

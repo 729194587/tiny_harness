@@ -195,7 +195,20 @@ class ToolRegistryTest(unittest.TestCase):
         )
 
         self.assertEqual(result.tool_call_id, "bash-1")
-        self.assertEqual(result.content, "workspace")
+        self.assertEqual(result.content, "Exit code: 0\nworkspace")
+
+    def test_bash_reports_nonzero_exit_code_as_evidence(self) -> None:
+        command = f'"{sys.executable}" -c "raise SystemExit(7)"'
+
+        result = self.call(
+            "bash-failed",
+            "bash",
+            {"command": command},
+            permission_prompt=lambda *_: True,
+        )
+
+        self.assertEqual(result.tool_call_id, "bash-failed")
+        self.assertEqual(result.content, "Exit code: 7")
 
     def test_denied_bash_is_not_executed_and_preserves_call_id(self) -> None:
         command = (
