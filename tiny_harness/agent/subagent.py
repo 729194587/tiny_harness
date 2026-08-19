@@ -1,0 +1,82 @@
+"""Fresh-context execution for the synchronous task subagent."""
+
+from collections.abc import Callable
+from pathlib import Path
+
+from tiny_harness.models.base import ModelProvider
+from tiny_harness.runtime.events import EventLogger, ScopedEventLogger
+from tiny_harness.runtime.hooks import ToolHooks
+from tiny_harness.runtime.permissions import PermissionPolicy, PermissionPrompt
+from tiny_harness.runtime.recovery import RecoveryPolicy
+
+AgentEntrypoint = Callable[..., str]
+
+
+class SubagentExecutor:
+    """Run one delegated prompt through an isolated child Agent Loop."""
+
+    def __init__(
+        self,
+        run_agent: AgentEntrypoint,
+        provider: ModelProvider,
+        workspace: Path,
+        *,
+        max_turns: int,
+        permission_policy: PermissionPolicy,
+        permission_prompt: PermissionPrompt | None,
+        event_logger: EventLogger,
+        max_context_chars: int | None,
+        tool_hooks: ToolHooks | None,
+        recovery_policy: RecoveryPolicy,
+    ) -> None:
+        self.run_agent = run_agent
+        self.provider = provider
+        self.workspace = workspace
+        self.max_turns = max_turns
+        self.permission_policy = permission_policy
+        self.permission_prompt = permission_prompt
+        self.event_logger = event_logger
+        self.max_context_chars = max_context_chars
+        self.tool_hooks = tool_hooks
+        self.recovery_policy = recovery_policy
+
+    def __call__(self, prompt: str, parent_tool_call_id: str) -> str:
+        print("\n[子 Agent 已启动]")
+        child_messages = [
+            {
+                "role": "system",
+                "content": (
+                    f"You are a coding subagent working in {self.workspace}. "
+                    "Complete only the delegated task and return a concise "
+                    "final answer. Use todo_write for multi-step work."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+        child_logger = ScopedEventLogger(
+            self.event_logger,
+            {
+                "agent_scope": "subagent",
+                "parent_tool_call_id": parent_tool_call_id,
+            },
+        )
+        try:
+            answer = self.run_agent(
+                self.provider,
+                self.workspace,
+                child_messages,
+                max_turns=self.max_turns,
+                permission_policy=self.permission_policy,
+                permission_prompt=self.permission_prompt,
+                event_logger=child_logger,
+                max_context_chars=self.max_context_chars,
+                tool_hooks=self.tool_hooks,
+                subagent_max_turns=self.max_turns,
+                allow_subagent=False,
+                recovery_policy=self.recovery_policy,
+            )
+        except Exception:
+            print("[子 Agent 执行失败]")
+            raise
+        print("[子 Agent 已完成]")
+        return answer or "(no summary)"

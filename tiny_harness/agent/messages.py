@@ -1,6 +1,7 @@
 """Minimal messages exchanged by the model, agent loop, and tools."""
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -28,3 +29,49 @@ class ModelResponse:
     reasoning_content: str | None
     tool_calls: list[ToolCall]
     finish_reason: str
+
+
+def validate_model_response(response: ModelResponse) -> None:
+    """Reject a response that cannot be safely committed or executed."""
+
+    if response.finish_reason == "stop":
+        if response.tool_calls:
+            raise RuntimeError(
+                "Model response is not executable: stop with tool calls"
+            )
+        return
+    if response.finish_reason == "tool_calls":
+        if not response.tool_calls:
+            raise RuntimeError(
+                "Model response is not executable: tool_calls without calls"
+            )
+        return
+    raise RuntimeError(
+        f"Model response is not executable: {response.finish_reason}"
+    )
+
+
+def assistant_message_from_response(
+    response: ModelResponse,
+) -> dict[str, Any]:
+    """Convert a validated model response into one assistant message."""
+
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": response.content,
+    }
+    if response.reasoning_content is not None:
+        message["reasoning_content"] = response.reasoning_content
+    if response.tool_calls:
+        message["tool_calls"] = [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {
+                    "name": call.name,
+                    "arguments": call.arguments_json,
+                },
+            }
+            for call in response.tool_calls
+        ]
+    return message

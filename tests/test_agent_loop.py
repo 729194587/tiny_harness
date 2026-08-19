@@ -7,8 +7,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tiny_harness.agent.loop import agent_loop
+from tiny_harness.agent.context import create_run_context
+from tiny_harness.agent.loop import agent_loop as core_agent_loop
+from tiny_harness.agent.loop import run_agent as agent_loop
 from tiny_harness.agent.messages import ModelResponse, ToolCall
+from tiny_harness.runtime.context import ContextProtocolError
 
 
 class FakeProvider:
@@ -35,6 +38,40 @@ class AgentLoopTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
+
+    def test_three_argument_core_loop_runs_with_prebuilt_context(self) -> None:
+        provider = FakeProvider(
+            [ModelResponse("done", None, [], "stop")]
+        )
+        messages = [{"role": "user", "content": "task"}]
+        context = create_run_context(
+            provider,
+            self.workspace,
+            allow_subagent=False,
+        )
+
+        answer = core_agent_loop(messages, context, "task")
+
+        self.assertEqual(answer, "done")
+        self.assertEqual(messages[-1]["content"], "done")
+
+    def test_active_request_mismatch_fails_before_provider_call(self) -> None:
+        provider = FakeProvider(
+            [ModelResponse("must not run", None, [], "stop")]
+        )
+        messages = [{"role": "user", "content": "actual task"}]
+        context = create_run_context(
+            provider,
+            self.workspace,
+            max_context_chars=100_000,
+            allow_subagent=False,
+        )
+
+        with self.assertRaises(ContextProtocolError):
+            core_agent_loop(messages, context, "different task")
+
+        self.assertEqual(provider.calls, [])
+        self.assertEqual(messages, [{"role": "user", "content": "actual task"}])
 
     def test_returns_final_text_and_appends_assistant_message(self) -> None:
         provider = FakeProvider(

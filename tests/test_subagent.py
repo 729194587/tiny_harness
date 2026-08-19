@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tiny_harness.agent.loop import agent_loop
+from tiny_harness.agent.loop import run_agent as agent_loop
 from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.models.base import ModelErrorKind, ModelProviderError
 from tiny_harness.runtime.events import EventLogError

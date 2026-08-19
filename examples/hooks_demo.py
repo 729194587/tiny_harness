@@ -4,7 +4,7 @@ import argparse
 import os
 from pathlib import Path
 
-from tiny_harness.agent.loop import agent_loop
+from tiny_harness.agent.loop import run_agent
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, JsonlEventLogger
 from tiny_harness.runtime.hooks import HookBlock, ToolHooks
@@ -61,7 +61,7 @@ def main() -> int:
         },
         {"role": "user", "content": args.task},
     ]
-    answer = agent_loop(
+    answer = run_agent(
         provider,
         workspace,
         messages,

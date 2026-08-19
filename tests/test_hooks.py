@@ -4,12 +4,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tiny_harness.agent.loop import agent_loop
+from tiny_harness.agent.loop import run_agent as agent_loop
 from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.runtime.hooks import (
     HookBlock,
     HookExecutionError,
+    StopDecision,
     ToolHooks,
+    run_stop_hook,
 )
 from tiny_harness.runtime.permissions import PermissionDecision
 from tiny_harness.tools.registry import dispatch
@@ -422,6 +424,60 @@ class ToolHooksTest(unittest.TestCase):
         self.assertIn("planning blocked", blocked_result)
         self.assertIn("<todo-reminder>", blocked_result)
         self.assertIn("Current todos:\nNo todos.", blocked_result)
+
+
+class StopHookTest(unittest.TestCase):
+    def test_missing_stop_hook_allows_candidate(self) -> None:
+        decision = run_stop_hook(
+            None,
+            [{"role": "user", "content": "task"}],
+            "done",
+            turn=1,
+            has_next_turn=False,
+        )
+
+        self.assertEqual(decision, StopDecision("allow"))
+
+    def test_stop_hook_receives_candidate_without_committing_it(self) -> None:
+        messages = [{"role": "user", "content": "task"}]
+        observed = []
+
+        def block(context):
+            observed.append(context)
+            return StopDecision("block", "missing evidence")
+
+        decision = run_stop_hook(
+            block,
+            messages,
+            "premature",
+            turn=2,
+            has_next_turn=True,
+        )
+
+        self.assertEqual(decision.action, "block")
+        self.assertEqual(observed[0].messages, messages)
+        self.assertEqual(observed[0].candidate_answer, "premature")
+        self.assertEqual(observed[0].turn, 2)
+        self.assertTrue(observed[0].has_next_turn)
+        self.assertNotIn("premature", json.dumps(messages))
+
+    def test_stop_hook_rejects_untyped_or_invalid_decisions(self) -> None:
+        invalid_hooks = [
+            lambda context: True,
+            lambda context: StopDecision("invalid"),
+            lambda context: StopDecision("allow", None),
+        ]
+
+        for hook in invalid_hooks:
+            with self.subTest(hook=hook):
+                with self.assertRaises(TypeError):
+                    run_stop_hook(
+                        hook,
+                        [],
+                        "candidate",
+                        turn=1,
+                        has_next_turn=False,
+                    )
 
 
 if __name__ == "__main__":

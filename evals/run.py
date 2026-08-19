@@ -24,7 +24,7 @@ from evals.graders import (
 )
 from evals.scenarios import run_offline_scenarios
 from tiny_harness.__main__ import DEFAULT_BASE_URL, DEFAULT_MODEL
-from tiny_harness.agent.loop import agent_loop
+from tiny_harness.agent.loop import run_agent as agent_loop
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
 from tiny_harness.runtime.events import JsonlEventLogger
 from tiny_harness.runtime.permissions import PermissionDecision

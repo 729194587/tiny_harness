@@ -5,7 +5,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from tiny_harness.agent.loop import DEFAULT_SUBAGENT_MAX_TURNS, agent_loop
+from tiny_harness.agent.context import (
+    DEFAULT_SUBAGENT_MAX_TURNS,
+    create_run_context,
+)
+from tiny_harness.agent.loop import agent_loop
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger
 from tiny_harness.runtime.goal import DEFAULT_MAX_GOAL_RETRIES
@@ -78,10 +82,9 @@ class AgentSession:
             )
         self._remove_run_scoped_markers()
         self.messages.append({"role": "user", "content": task})
-        answer = agent_loop(
+        context = create_run_context(
             self.provider,
             self.workspace,
-            self.messages,
             max_turns=self.max_turns,
             permission_prompt=self.permission_prompt,
             event_logger=self.event_logger_factory(),
@@ -91,6 +94,7 @@ class AgentSession:
             goal_condition=goal_condition,
             max_goal_retries=self.max_goal_retries,
         )
+        answer = agent_loop(self.messages, context, task)
         self._remove_run_scoped_markers()
         return answer
 

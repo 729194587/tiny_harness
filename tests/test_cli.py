@@ -13,7 +13,7 @@ from tiny_harness.__main__ import (
     _ask_permission,
     main,
 )
-from tiny_harness.agent.loop import DEFAULT_SUBAGENT_MAX_TURNS
+from tiny_harness.agent.context import DEFAULT_SUBAGENT_MAX_TURNS
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, JsonlEventLogger
 from tiny_harness.runtime.goal import DEFAULT_MAX_GOAL_RETRIES, MAX_GOAL_LENGTH
 from tiny_harness.runtime.recovery import RecoveryPolicy

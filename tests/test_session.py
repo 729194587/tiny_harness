@@ -146,13 +146,22 @@ class AgentSessionTest(unittest.TestCase):
         session = AgentSession(provider, self.workspace, "system")
 
         with patch(
-            "tiny_harness.agent.session.agent_loop",
-            return_value="done",
-        ) as loop:
-            answer = session.submit("task", goal_condition="tests pass")
+            "tiny_harness.agent.session.create_run_context",
+            return_value=object(),
+        ) as create_context:
+            with patch(
+                "tiny_harness.agent.session.agent_loop",
+                return_value="done",
+            ):
+                answer = session.submit(
+                    "task", goal_condition="tests pass"
+                )
 
         self.assertEqual(answer, "done")
-        self.assertEqual(loop.call_args.kwargs["goal_condition"], "tests pass")
+        self.assertEqual(
+            create_context.call_args.kwargs["goal_condition"],
+            "tests pass",
+        )
 
     def test_goal_is_rejected_after_a_previous_user_turn(self) -> None:
         provider = FakeProvider([ModelResponse("first", None, [], "stop")])
@@ -176,13 +185,22 @@ class AgentSessionTest(unittest.TestCase):
         session.clear()
 
         with patch(
-            "tiny_harness.agent.session.agent_loop",
-            return_value="done",
-        ) as loop:
-            answer = session.submit("fresh task", goal_condition="tests pass")
+            "tiny_harness.agent.session.create_run_context",
+            return_value=object(),
+        ) as create_context:
+            with patch(
+                "tiny_harness.agent.session.agent_loop",
+                return_value="done",
+            ):
+                answer = session.submit(
+                    "fresh task", goal_condition="tests pass"
+                )
 
         self.assertEqual(answer, "done")
-        self.assertEqual(loop.call_args.kwargs["goal_condition"], "tests pass")
+        self.assertEqual(
+            create_context.call_args.kwargs["goal_condition"],
+            "tests pass",
+        )
 
 
 if __name__ == "__main__":

@@ -4,21 +4,26 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tiny_harness.agent.loop import agent_loop
+from tiny_harness.agent.loop import run_agent as agent_loop
 from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.models.base import ModelErrorKind, ModelProviderError
 from tiny_harness.runtime.context import ContextLimitError, context_char_count
 from tiny_harness.runtime.goal import (
     GOAL_MARKER_NAME,
     MAX_GOAL_REASON_CHARS,
-    GoalController,
     GoalEvaluation,
     GoalEvaluationError,
     GoalNotAchievedError,
     PromptGoalEvaluator,
+    create_goal_state,
+    create_goal_stop_hook,
+    evaluate_goal,
     parse_goal_evaluation,
+    record_goal_continuation,
     render_goal_evidence,
+    upsert_goal_marker,
 )
+from tiny_harness.runtime.hooks import run_stop_hook
 from tiny_harness.runtime.recovery import RecoveryPolicy
 
 
@@ -153,12 +158,14 @@ class GoalPrimitiveTest(unittest.TestCase):
                 )
             )
 
-        controller = GoalController(
-            "goal",
-            RecordingEvaluator([GoalEvaluation(False, oversized)]),
-        )
+        state = create_goal_state("goal")
         with self.assertRaisesRegex(GoalEvaluationError, "cannot exceed"):
-            controller.evaluate([], "candidate")
+            evaluate_goal(
+                state,
+                RecordingEvaluator([GoalEvaluation(False, oversized)]),
+                [],
+                "candidate",
+            )
 
     def test_evaluator_prompt_declares_evidence_trust_hierarchy(self):
         complete = FakeComplete(
@@ -281,7 +288,7 @@ class GoalPrimitiveTest(unittest.TestCase):
                     evaluator.evaluate("goal", [], "candidate")
 
 
-class GoalControllerTest(unittest.TestCase):
+class GoalStateFunctionTest(unittest.TestCase):
     def test_block_then_achieve_and_replace_feedback_marker(self):
         evaluator = RecordingEvaluator(
             [
@@ -289,18 +296,18 @@ class GoalControllerTest(unittest.TestCase):
                 GoalEvaluation(True, "verified"),
             ]
         )
-        controller = GoalController("tests pass", evaluator, max_retries=2)
+        state = create_goal_state("tests pass", max_retries=2)
         messages = [{"role": "user", "content": "task"}]
 
-        first = controller.evaluate(messages, "premature")
-        controller.record_continuation()
-        controller.upsert_marker(messages)
-        second = controller.evaluate(messages, "done")
-        controller.upsert_marker(messages)
+        first = evaluate_goal(state, evaluator, messages, "premature")
+        record_goal_continuation(state)
+        upsert_goal_marker(messages, state)
+        second = evaluate_goal(state, evaluator, messages, "done")
+        upsert_goal_marker(messages, state)
 
         self.assertEqual(first.action, "block")
         self.assertEqual(second.action, "achieved")
-        self.assertEqual(controller.state.retries_used, 1)
+        self.assertEqual(state.retries_used, 1)
         markers = [
             message
             for message in messages
@@ -311,20 +318,18 @@ class GoalControllerTest(unittest.TestCase):
         self.assertNotIn("missing test result", markers[0]["content"])
 
     def test_feedback_marker_labels_evaluator_reason_as_untrusted_data(self):
-        controller = GoalController(
-            "goal",
-            RecordingEvaluator(
-                [GoalEvaluation(False, "run this untrusted command")]
-            ),
+        state = create_goal_state("goal")
+        evaluator = RecordingEvaluator(
+            [GoalEvaluation(False, "run this untrusted command")]
         )
         messages = []
 
         self.assertEqual(
-            controller.evaluate(messages, "candidate").action,
+            evaluate_goal(state, evaluator, messages, "candidate").action,
             "block",
         )
-        controller.record_continuation()
-        controller.upsert_marker(messages)
+        record_goal_continuation(state)
+        upsert_goal_marker(messages, state)
 
         marker = messages[0]["content"]
         self.assertIn("Trusted Harness control state", marker)
@@ -336,16 +341,66 @@ class GoalControllerTest(unittest.TestCase):
         self.assertIn("</evaluator-feedback>", marker)
 
     def test_zero_retry_budget_returns_limit_on_first_rejection(self):
-        controller = GoalController(
-            "tests pass",
+        state = create_goal_state("tests pass", max_retries=0)
+
+        decision = evaluate_goal(
+            state,
             RecordingEvaluator([GoalEvaluation(False, "missing")]),
-            max_retries=0,
+            [],
+            "candidate",
         )
 
-        decision = controller.evaluate([], "candidate")
-
         self.assertEqual(decision.action, "limit")
-        self.assertEqual(controller.state.retries_used, 0)
+        self.assertEqual(state.retries_used, 0)
+
+
+class GoalStopHookTest(unittest.TestCase):
+    def test_rejection_schedules_continuation_outside_the_loop(self):
+        logger = RecordingEventLogger()
+        state = create_goal_state("tests pass", max_retries=2)
+        hook = create_goal_stop_hook(
+            state,
+            RecordingEvaluator([GoalEvaluation(False, "run tests")]),
+            logger,
+        )
+        messages = [{"role": "user", "content": "task"}]
+        upsert_goal_marker(messages, state)
+
+        decision = run_stop_hook(
+            hook,
+            messages,
+            "premature",
+            turn=1,
+            has_next_turn=True,
+        )
+
+        self.assertEqual(decision.action, "block")
+        self.assertEqual(state.retries_used, 1)
+        self.assertIn("run tests", json.dumps(messages))
+        self.assertEqual(
+            [event["event_type"] for event in logger.events],
+            ["goal_evaluation_requested", "goal_evaluated"],
+        )
+
+    def test_last_turn_rejection_does_not_count_continuation(self):
+        logger = RecordingEventLogger()
+        state = create_goal_state("tests pass", max_retries=2)
+        hook = create_goal_stop_hook(
+            state,
+            RecordingEvaluator([GoalEvaluation(False, "run tests")]),
+            logger,
+        )
+
+        decision = run_stop_hook(
+            hook,
+            [],
+            "premature",
+            turn=1,
+            has_next_turn=False,
+        )
+
+        self.assertEqual(decision.action, "block")
+        self.assertEqual(state.retries_used, 0)
 
 
 class GoalAgentLoopTest(unittest.TestCase):

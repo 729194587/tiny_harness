@@ -3,7 +3,7 @@
 import copy
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from tiny_harness.agent.messages import ToolResult
 
@@ -39,6 +39,56 @@ class HookExecutionError(RuntimeError):
 
 PreToolHook = Callable[[ToolHookContext], HookBlock | None]
 PostToolHook = Callable[[ToolHookContext, ToolResult], None]
+
+
+@dataclass(frozen=True)
+class StopHookContext:
+    """模型提出结束时交给受信任 Harness Hook 的运行边界。"""
+
+    messages: list[dict[str, Any]]
+    candidate_answer: str
+    turn: int
+    has_next_turn: bool
+
+
+@dataclass(frozen=True)
+class StopDecision:
+    """Stop Hook 对候选最终回答作出的类型化决定。"""
+
+    action: Literal["allow", "block"]
+    reason: str = ""
+
+
+StopHook = Callable[[StopHookContext], StopDecision]
+
+
+def run_stop_hook(
+    hook: StopHook | None,
+    messages: list[dict[str, Any]],
+    candidate_answer: str,
+    *,
+    turn: int,
+    has_next_turn: bool,
+) -> StopDecision:
+    """运行一个可选 Stop Hook，并拒绝模糊或非法返回值。"""
+
+    if hook is None:
+        return StopDecision("allow")
+    decision = hook(
+        StopHookContext(
+            messages=messages,
+            candidate_answer=candidate_answer,
+            turn=turn,
+            has_next_turn=has_next_turn,
+        )
+    )
+    if not isinstance(decision, StopDecision):
+        raise TypeError("Stop hook must return StopDecision")
+    if decision.action not in {"allow", "block"}:
+        raise TypeError("StopDecision action must be 'allow' or 'block'")
+    if not isinstance(decision.reason, str):
+        raise TypeError("StopDecision reason must be a string")
+    return decision
 
 
 class ToolHooks:

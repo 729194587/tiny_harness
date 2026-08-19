@@ -1,4 +1,4 @@
-"""Protocol-safe, layered context compaction for bounded model requests."""
+"""为有界模型请求提供保持协议合法的分层上下文压缩。"""
 
 import copy
 import hashlib
@@ -16,28 +16,28 @@ from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger, EventTyp
 
 
 class ContextError(RuntimeError):
-    """Base error raised while preparing a model context."""
+    """准备模型上下文时抛出的基础异常。"""
 
 
 class ContextProtocolError(ContextError):
-    """Raised when assistant tool calls and tool results are not paired."""
+    """assistant 工具调用与工具结果未正确配对时抛出。"""
 
 
 class ContextLimitError(ContextError):
-    """Raised when required context cannot fit within the configured budget."""
+    """必须保留的上下文无法放入配置预算时抛出。"""
 
 
 class ContextArtifactError(ContextError):
-    """Raised when a compaction artifact cannot be stored safely."""
+    """无法安全保存压缩产物时抛出。"""
 
 
 class ContextSummaryError(ContextError):
-    """Raised when the model does not return a usable factual summary."""
+    """模型没有返回可用的事实摘要时抛出。"""
 
 
 @dataclass(frozen=True)
 class CompactionConfig:
-    """Small set of deterministic thresholds used by the four layers."""
+    """四层压缩流程使用的一组精简确定性阈值。"""
 
     tool_result_batch_chars: int = 200_000
     large_result_chars: int = 30_000
@@ -51,7 +51,7 @@ class CompactionConfig:
 
 @dataclass(frozen=True)
 class PreparedContext:
-    """A protocol-safe model context and compaction metadata."""
+    """保持协议合法的模型上下文及其压缩元数据。"""
 
     messages: list[dict[str, Any]]
     before_chars: int
@@ -67,7 +67,7 @@ class PreparedContext:
 
     @property
     def changed(self) -> bool:
-        """Return whether any compaction layer changed the history."""
+        """返回是否有任意压缩层修改了历史记录。"""
 
         return any(
             (
@@ -81,13 +81,13 @@ class PreparedContext:
 
 
 class CompactionRequest:
-    """Run-scoped signal set only by a successfully executed compact tool."""
+    """仅由成功执行的 compact 工具设置、作用于当前 run 的信号。"""
 
     def __init__(self) -> None:
         self.revision = 0
 
     def request(self) -> str:
-        """Request compaction after the current complete tool-call batch."""
+        """请求在当前完整工具调用批次结束后执行压缩。"""
 
         self.revision += 1
         return "Compaction requested after this tool batch."
@@ -97,7 +97,7 @@ def context_char_count(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
 ) -> int:
-    """Count characters in the compact JSON request context."""
+    """统计紧凑 JSON 模型请求上下文的字符数。"""
 
     try:
         serialized = json.dumps(
@@ -132,7 +132,7 @@ def _tool_call_ids(message: dict[str, Any]) -> list[str]:
 def _split_context(
     messages: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]:
-    """Split a multi-turn conversation into atomic protocol-safe blocks."""
+    """将多轮会话拆分成不可再分且保持协议合法的消息块。"""
 
     blocks: list[list[dict[str, Any]]] = []
     index = 0
@@ -198,7 +198,7 @@ def _is_user_turn_start(block: list[dict[str, Any]]) -> bool:
 def _turn_ranges(
     blocks: list[list[dict[str, Any]]],
 ) -> list[tuple[int, int]]:
-    """Return half-open ranges for complete user turns."""
+    """返回完整用户轮次对应的左闭右开区间。"""
 
     starts = [
         index for index, block in enumerate(blocks) if _is_user_turn_start(block)
@@ -219,7 +219,7 @@ def _turn_ranges(
 def _required_latest_blocks(
     blocks: list[list[dict[str, Any]]],
 ) -> list[list[dict[str, Any]]]:
-    """Keep the current request, control markers, and latest evidence."""
+    """保留当前请求、控制标记和最新执行证据。"""
 
     if not blocks:
         return []
@@ -257,7 +257,7 @@ def _flatten(
 
 
 class ContextCompactor:
-    """Apply s08-style compaction before a bounded model request."""
+    """在有界模型请求前执行 s08 风格的分层压缩。"""
 
     SUMMARY_SYSTEM = (
         "Summarize the supplied coding-agent history as factual state. "
@@ -350,7 +350,7 @@ class ContextCompactor:
                 with candidate.open("x", encoding="utf-8") as result_file:
                     result_file.write(content)
             except FileExistsError as error:
-                # Exclusive creation never follows an existing file symlink.
+                # 独占创建不会跟随已经存在的文件符号链接。
                 collision = error
                 continue
             except OSError as error:
@@ -373,8 +373,8 @@ class ContextCompactor:
             "</persisted-tool-result>"
         )
 
-    def _tool_result_budget(self, messages: list[dict[str, Any]]) -> int:
-        """Persist the largest results from the newest complete tool batch."""
+    def tool_result_budget(self, messages: list[dict[str, Any]]) -> int:
+        """将最新完整工具批次中最大的结果持久化到磁盘。"""
 
         _, blocks = _split_context(messages)
         tool_blocks = [
@@ -412,11 +412,11 @@ class ContextCompactor:
             persisted += 1
         return persisted
 
-    def _snip_compact(
+    def snip_compact(
         self,
         messages: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], int, bool]:
-        """Archive old turns, then old batches inside the current turn."""
+        """先归档旧轮次，再归档当前轮次中的旧工具批次。"""
 
         prefix, blocks = _split_context(messages)
         base_prefix = [
@@ -489,7 +489,7 @@ class ContextCompactor:
             ),
         }
 
-    def _upsert_todo_marker(
+    def upsert_todo_marker(
         self,
         messages: list[dict[str, Any]],
         todo_state: str,
@@ -518,8 +518,8 @@ class ContextCompactor:
                 prefix.append(marker)
         return _flatten(prefix, blocks)
 
-    def _micro_compact(self, messages: list[dict[str, Any]]) -> int:
-        """Replace old, long tool results while keeping the newest results."""
+    def micro_compact(self, messages: list[dict[str, Any]]) -> int:
+        """保留最新结果，同时替换较早且过长的工具结果。"""
 
         _, blocks = _split_context(messages)
         results = [
@@ -619,7 +619,7 @@ class ContextCompactor:
                     "</tinyharness-context-summary>"
                 ),
             }
-            return self._upsert_todo_marker(
+            return self.upsert_todo_marker(
                 prefix + [marker] + latest_context,
                 todo_state,
             )
@@ -662,7 +662,7 @@ class ContextCompactor:
         shortened_results: int = 0,
         transcript_written: bool = False,
     ) -> PreparedContext:
-        """Archive and summarize history, retaining the current user turn."""
+        """归档并总结历史，同时保留当前用户轮次。"""
 
         _split_context(messages)
         transcript = self._write_transcript(messages)
@@ -670,7 +670,7 @@ class ContextCompactor:
         prefix, blocks = _split_context(messages)
         base_prefix = [message for message in prefix if not _is_generated_marker(message)]
         latest_context = _flatten([], _required_latest_blocks(blocks))
-        # Prove the mandatory context fits before spending a summary API call.
+        # 在消耗摘要 API 调用前，先证明必须保留的上下文能够放入预算。
         self._fit_summary_marker(
             base_prefix,
             latest_context,
@@ -718,7 +718,7 @@ class ContextCompactor:
             summarized=True,
             transcript_written=transcript_written,
         )
-        self._emit_compacted(prepared, reason)
+        self.emit_compacted(prepared, reason)
         return prepared
 
     def reactive_compact(
@@ -728,7 +728,7 @@ class ContextCompactor:
         *,
         failed_request_chars: int,
     ) -> PreparedContext:
-        """Aggressively shrink one API-rejected context by at least 25 percent."""
+        """将一次被 API 拒绝的上下文强制缩减至少 25%。"""
 
         if failed_request_chars < 1:
             raise ValueError("failed_request_chars must be at least 1")
@@ -757,8 +757,8 @@ class ContextCompactor:
             message for message in prefix if not _is_generated_marker(message)
         ]
         latest_context = _flatten([], required_blocks)
-        # Refuse the recovery before another API call when the hard 25% margin
-        # cannot contain the task, Todo, schemas, and newest complete evidence.
+        # 如果强制保留 25% 余量后已无法容纳任务、Todo、工具 schema 和最新
+        # 完整证据，则在发起下一次 API 调用前拒绝此次恢复。
         self._fit_summary_marker(
             base_prefix,
             latest_context,
@@ -818,10 +818,10 @@ class ContextCompactor:
             summarized=True,
             transcript_written=True,
         )
-        self._emit_compacted(prepared, "reactive")
+        self.emit_compacted(prepared, "reactive")
         return prepared
 
-    def _emit_compacted(self, prepared: PreparedContext, reason: str) -> None:
+    def emit_compacted(self, prepared: PreparedContext, reason: str) -> None:
         self.event_logger.emit(
             EventType.CONTEXT_COMPACTED,
             {
@@ -837,37 +837,67 @@ class ContextCompactor:
             },
         )
 
-    def prepare(
-        self,
-        messages: list[dict[str, Any]],
-        todo_state: str,
-    ) -> PreparedContext:
-        """Run the four proactive layers and enforce the hard request budget."""
+def validate_active_request(
+    messages: list[dict[str, Any]],
+    active_request: str,
+) -> None:
+    """确认最后一个真实 user message 仍是本次运行的请求。"""
 
-        working = copy.deepcopy(messages)
-        _split_context(working)
-        before_chars = context_char_count(working, self.tools)
-
-        persisted = self._tool_result_budget(working)
-        working, archived, transcript_written = self._snip_compact(working)
-        shortened = self._micro_compact(working)
-        before_todo_messages = copy.deepcopy(working)
-        working = self._upsert_todo_marker(working, todo_state)
-        todo_state_updated = working != before_todo_messages
-        after_chars = context_char_count(working, self.tools)
-
-        if after_chars > self.max_chars:
-            return self.compact_history(
-                working,
-                todo_state,
-                reason="automatic",
-                before_chars=before_chars,
-                persisted_results=persisted,
-                archived_messages=archived,
-                shortened_results=shortened,
-                transcript_written=transcript_written,
+    _split_context(messages)
+    user_messages = [
+        message
+        for message in messages
+        if message.get("role") == "user" and not _is_control_message(message)
+    ]
+    if not user_messages:
+        if active_request:
+            raise ContextProtocolError(
+                "Active request is missing from the model context"
             )
+        return
+    actual = str(user_messages[-1].get("content") or "")
+    if actual != active_request:
+        raise ContextProtocolError(
+            "Latest user message does not match the active request"
+        )
 
+
+def prepare_context(
+    messages: list[dict[str, Any]],
+    compactor: ContextCompactor | None,
+    todo_state: str,
+    active_request: str,
+) -> PreparedContext | None:
+    """事务式执行正常四层压缩，但不提交 canonical messages。"""
+
+    validate_active_request(messages, active_request)
+    if compactor is None:
+        return None
+
+    working = copy.deepcopy(messages)
+    before_chars = context_char_count(working, compactor.tools)
+
+    # 正常路径固定按信息损失与调用成本从低到高执行。
+    persisted = compactor.tool_result_budget(working)
+    working, archived, transcript_written = compactor.snip_compact(working)
+    shortened = compactor.micro_compact(working)
+    before_todo_messages = copy.deepcopy(working)
+    working = compactor.upsert_todo_marker(working, todo_state)
+    todo_state_updated = working != before_todo_messages
+    after_chars = context_char_count(working, compactor.tools)
+
+    if after_chars > compactor.max_chars:
+        prepared = compactor.compact_history(
+            working,
+            todo_state,
+            reason="automatic",
+            before_chars=before_chars,
+            persisted_results=persisted,
+            archived_messages=archived,
+            shortened_results=shortened,
+            transcript_written=transcript_written,
+        )
+    else:
         prepared = PreparedContext(
             messages=copy.deepcopy(working),
             before_chars=before_chars,
@@ -879,16 +909,25 @@ class ContextCompactor:
             todo_state_updated=todo_state_updated,
         )
         if prepared.changed:
-            self._emit_compacted(prepared, "automatic")
-        return prepared
+            compactor.emit_compacted(prepared, "automatic")
+
+    # 所有层成功后再次验证；调用方随后只需执行一次 messages[:] 提交。
+    validate_active_request(prepared.messages, active_request)
+    final_chars = context_char_count(prepared.messages, compactor.tools)
+    if final_chars > compactor.max_chars:
+        raise ContextLimitError(
+            "Prepared context exceeds configured character budget: "
+            f"{final_chars} > {compactor.max_chars}"
+        )
+    return prepared
 
 
-def prepare_context(
+def trim_context_blocks(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
     max_chars: int,
 ) -> PreparedContext:
-    """Apply the deterministic block trim as a compatibility helper."""
+    """作为兼容辅助函数，执行确定性的完整消息块裁剪。"""
 
     if max_chars < 1:
         raise ValueError("max_chars must be at least 1")

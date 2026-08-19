@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from tiny_harness.agent.loop import DEFAULT_SUBAGENT_MAX_TURNS
+from tiny_harness.agent.context import DEFAULT_SUBAGENT_MAX_TURNS
 from tiny_harness.agent.session import AgentSession
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, JsonlEventLogger
