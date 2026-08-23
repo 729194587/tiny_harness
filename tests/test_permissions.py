@@ -30,6 +30,7 @@ class PermissionTest(unittest.TestCase):
             "list_files",
             "todo_write",
             "task",
+            "load_skill",
             "compact",
         ):
             with self.subTest(tool_name=tool_name):

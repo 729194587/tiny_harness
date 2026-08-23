@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tiny_harness.agent.messages import ModelResponse
+from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.agent.session import AgentSession
 
 
@@ -69,6 +69,71 @@ class AgentSessionTest(unittest.TestCase):
             ],
         )
         self.assertEqual(session.messages[-1]["content"], "SECOND_ANSWER")
+
+    def test_each_submit_refreshes_the_workspace_skill_catalog(self) -> None:
+        provider = FakeProvider(
+            [
+                ModelResponse("FIRST_ANSWER", None, [], "stop"),
+                ModelResponse(
+                    None,
+                    None,
+                    [
+                        ToolCall(
+                            "skill-1",
+                            "load_skill",
+                            '{"name":"review"}',
+                        )
+                    ],
+                    "tool_calls",
+                ),
+                ModelResponse("SECOND_ANSWER", None, [], "stop"),
+            ]
+        )
+        session = AgentSession(provider, self.workspace, "system")
+
+        self.assertEqual(session.submit("first"), "FIRST_ANSWER")
+        skill_path = self.workspace / "skills" / "review" / "SKILL.md"
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text(
+            "---\n"
+            "name: review\n"
+            "description: Review the current change\n"
+            "---\n\n"
+            "SESSION_REFRESH_SKILL_BODY\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(session.submit("second"), "SECOND_ANSWER")
+
+        first_request = provider.calls[0]
+        self.assertNotIn(
+            "load_skill",
+            [tool["function"]["name"] for tool in first_request["tools"]],
+        )
+        second_request = provider.calls[1]
+        self.assertIn(
+            "load_skill",
+            [tool["function"]["name"] for tool in second_request["tools"]],
+        )
+        catalog = next(
+            message
+            for message in second_request["messages"]
+            if message.get("name") == "tinyharness_skill_catalog"
+        )
+        self.assertIn("Review the current change", catalog["content"])
+        self.assertNotIn("SESSION_REFRESH_SKILL_BODY", catalog["content"])
+        loaded_result = next(
+            message
+            for message in provider.calls[2]["messages"]
+            if message.get("tool_call_id") == "skill-1"
+        )
+        self.assertIn("SESSION_REFRESH_SKILL_BODY", loaded_result["content"])
+        self.assertFalse(
+            any(
+                message.get("name") == "tinyharness_skill_catalog"
+                for message in session.messages
+            )
+        )
 
     def test_submit_removes_run_markers_but_keeps_context_markers(self) -> None:
         provider = FakeProvider([ModelResponse("done", None, [], "stop")])

@@ -173,6 +173,152 @@ class SubagentTest(unittest.TestCase):
         self.assertIn("[子 Agent 已启动]", stdout.getvalue())
         self.assertIn("[子 Agent 已完成]", stdout.getvalue())
 
+    def test_child_discovers_and_loads_workspace_skill_in_isolated_history(self) -> None:
+        skill_path = self.workspace / "skills" / "review" / "SKILL.md"
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text(
+            "---\n"
+            "name: review\n"
+            "description: Review delegated code\n"
+            "---\n\n"
+            "SUBAGENT_PRIVATE_SKILL_BODY\n",
+            encoding="utf-8",
+        )
+        provider = ScriptedProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("task-1", "task", '{"prompt":"review child work"}')],
+                    "tool_calls",
+                ),
+                ModelResponse(
+                    None,
+                    None,
+                    [
+                        ToolCall(
+                            "child-skill",
+                            "load_skill",
+                            '{"name":"review"}',
+                        )
+                    ],
+                    "tool_calls",
+                ),
+                ModelResponse("child used review guidance", None, [], "stop"),
+                ModelResponse("parent final", None, [], "stop"),
+            ]
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            answer = agent_loop(provider, self.workspace, [])
+
+        self.assertEqual(answer, "parent final")
+        child_first_request = provider.calls[1]
+        self.assertIn("load_skill", tool_names(child_first_request))
+        self.assertNotIn("task", tool_names(child_first_request))
+        child_catalog = next(
+            message
+            for message in child_first_request["messages"]
+            if message.get("name") == "tinyharness_skill_catalog"
+        )
+        self.assertIn("Review delegated code", child_catalog["content"])
+        self.assertNotIn(
+            "SUBAGENT_PRIVATE_SKILL_BODY",
+            json.dumps(child_first_request, ensure_ascii=False),
+        )
+
+        child_loaded_result = next(
+            message
+            for message in provider.calls[2]["messages"]
+            if message.get("tool_call_id") == "child-skill"
+        )
+        self.assertIn(
+            "SUBAGENT_PRIVATE_SKILL_BODY",
+            child_loaded_result["content"],
+        )
+        parent_follow_up = json.dumps(
+            provider.calls[3]["messages"],
+            ensure_ascii=False,
+        )
+        self.assertIn("child used review guidance", parent_follow_up)
+        self.assertNotIn("SUBAGENT_PRIVATE_SKILL_BODY", parent_follow_up)
+
+    def test_child_loads_memory_but_does_not_extract_child_history(self) -> None:
+        memory_path = (
+            self.workspace / ".tinyharness" / "memory" / "tabs.md"
+        )
+        memory_path.parent.mkdir(parents=True)
+        memory_path.write_text(
+            "---\n"
+            "name: tabs\n"
+            "description: User prefers tabs for indentation\n"
+            "type: user\n"
+            "---\n\n"
+            "SUBAGENT_MEMORY_BODY\n",
+            encoding="utf-8",
+        )
+        provider = ScriptedProvider(
+            [
+                ModelResponse(
+                    '{"selected_memories":["tabs.md"]}',
+                    None,
+                    [],
+                    "stop",
+                ),
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("task-1", "task", '{"prompt":"use tabs"}')],
+                    "tool_calls",
+                ),
+                ModelResponse(
+                    '{"selected_memories":["tabs.md"]}',
+                    None,
+                    [],
+                    "stop",
+                ),
+                ModelResponse("child done", None, [], "stop"),
+                ModelResponse("parent done", None, [], "stop"),
+                ModelResponse('{"memories":[]}', None, [], "stop"),
+            ]
+        )
+        logger = RecordingEventLogger()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            answer = agent_loop(
+                provider,
+                self.workspace,
+                [{"role": "user", "content": "delegate using tabs"}],
+                memory_enabled=True,
+                event_logger=logger,
+            )
+
+        self.assertEqual(answer, "parent done")
+        self.assertIn(
+            "SUBAGENT_MEMORY_BODY",
+            json.dumps(provider.calls[1]["messages"], ensure_ascii=False),
+        )
+        self.assertIn(
+            "SUBAGENT_MEMORY_BODY",
+            json.dumps(provider.calls[3]["messages"], ensure_ascii=False),
+        )
+        extraction_events = [
+            event
+            for event in logger.events
+            if event["event_type"] == "memory_extraction_requested"
+        ]
+        self.assertEqual(len(extraction_events), 1)
+        self.assertNotIn("agent_scope", extraction_events[0]["data"])
+        selected_events = [
+            event
+            for event in logger.events
+            if event["event_type"] == "memory_selected"
+        ]
+        self.assertEqual(len(selected_events), 2)
+        self.assertTrue(
+            any(event["data"].get("agent_scope") == "subagent" for event in selected_events)
+        )
+
     def test_child_has_independent_compaction_with_scoped_events(self) -> None:
         provider = ScriptedProvider(
             [

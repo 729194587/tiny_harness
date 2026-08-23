@@ -9,14 +9,18 @@ flowchart LR
     CLI["REPL / One-shot CLI"] --> Session["In-process Agent Session"]
     Session --> Loop["Agent Loop"]
     Loop --> Context["Context Runtime"]
+    Skills["Workspace Skills"] -->|"names + descriptions"| Context
+    Memory["Persistent Memory"] -->|"catalog + selected excerpts"| Context
     Context --> Recovery["Model Recovery"]
     Recovery --> Model["Chat Completions API"]
     Model --> Loop
     Loop --> Execution["Hooks → Permission → Tools"]
+    Execution -->|"load_skill on demand"| Skills
     Execution --> Loop
     Loop --> Goal["Goal Verification Gate"]
     Goal -->|"incomplete + feedback"| Loop
     Goal -->|"verified"| Final["Final Answer"]
+    Loop -->|"accepted Stop Hook extraction + consolidation"| Memory
     Loop -. "metadata only" .-> Events["JSONL Event Log"]
 ```
 
@@ -26,6 +30,8 @@ flowchart LR
 |---|---|
 | **Execution** | 多 Tool Calls、统一 Registry、workspace 文件边界、ALLOW/DENY/ASK、Pre/Post Tool Hooks、Todo、单层同步 Subagent |
 | **Context** | 协议校验、字符预算、大 Tool Result 落盘、历史裁剪、旧结果替换、LLM Summary、reactive compaction |
+| **Skills** | workspace 单源目录、frontmatter 元数据目录、按需 `load_skill`、不可信正文边界 |
+| **Memory** | 显式启用、Markdown + frontmatter、LLM side-query + 关键词降级、Stop Hook 提取、阈值整理 |
 | **Verification** | 非法模型响应执行前拒绝、独立 Goal Evaluator、workspace 外 hidden grader、安全不变量 |
 | **Observability** | run/turn/attempt/tool 生命周期 JSONL、父子 Agent 关联、retry/continuation 指标、正文最小化 |
 
@@ -45,7 +51,7 @@ flowchart LR
 - Reliable 对 transient provider failure、context rejection、premature final answer **3/3 恢复**；
 - Basic 在相同注入下分别明确失败、明确失败和产生 false success；
 - Permission deny 无文件副作用、非法 `length + write_file` 无工具副作用，**2/2 通过**；
-- 30/30 hidden graders 的退出码均为 0；201 项本地测试中 198 项通过，3 项因当前 Windows 用户缺少符号链接权限而跳过。
+- 30/30 hidden graders 的退出码均为 0；267 项本地测试中 261 项通过，6 项因当前 Windows 用户缺少符号链接权限而跳过。
 
 这组小型真实任务中两个 profile 都是 15/15，因此它**不能证明** Reliable 降低了真实 coding task 的失败率。它证明的是指定恢复路径和安全不变量确实生效，并量化了本次样本中平均 `+1.3` 次模型调用（约 18.8%）的可靠性开销。完整实验口径见 [evals/README.md](evals/README.md)。
 
@@ -131,6 +137,105 @@ Model response
 
 模型返回最终文本后，可选 Goal Evaluator 根据 completion condition 和有界执行证据独立判断：证据不足则丢弃候选答案并继续原 Agent Loop，验证通过才返回最终答案。Goal 目前只支持 one-shot CLI，或 fresh `AgentSession` 的第一次 `submit()`；多轮会话不复用旧证据验证新 Goal。
 
+## Minimal Skills
+
+TinyHarness 只发现当前 workspace 中直接位于 `skills/<directory>/SKILL.md` 的 Skill。启动一次 run 时只读取有界 YAML frontmatter，把 `name` 和 `description` 作为目录放进第一次模型请求；完整正文不会自动进入上下文。只有存在有效 Skill 时才暴露 `load_skill` 工具，模型按精确名称调用后，完整 `SKILL.md` 才作为普通 Tool Result 进入 messages：
+
+```text
+create_run_context
+  → discover_skills             # bounded frontmatter only
+  → catalog system marker       # names + descriptions
+  → model calls load_skill
+  → Hooks → Permission → load
+  → untrusted ToolResult
+  → next model turn
+```
+
+最小目录和文档格式：
+
+```text
+workspace/
+└─ skills/
+   └─ review/
+      └─ SKILL.md
+```
+
+```markdown
+---
+name: review
+description: Review code changes for correctness and missing tests
+---
+
+# Review workflow
+
+Inspect the changed files, run focused tests, and report concrete findings.
+```
+
+当前只支持 `name` 和 `description`，不实现多来源、legacy commands、`allowed-tools`、forked Skill、Skill 级 Hooks 或 MCP Skill。重复 `name` 会使该名称的所有候选整体失效，不使用目录排序选择胜者。目录最多注册 100 项，目录文本最多 8,000 字符，单个完整文档最多 30,000 字符；超限会省略目录尾部或明确拒绝加载，不返回截断正文。连续会话在每次 `submit()` 时重新发现目录，Subagent 也从共享 workspace 建立自己的目录，但父子 history 保持隔离。
+
+Skill 文件属于不可信 workspace 内容：它不能覆盖 system/user 指令、授予 Permission、绕过 Hooks、扩大 workspace 边界或自行授权工具调用。`load_skill` 仍经过统一 Permission、Pre/Post Tool Hooks 和 Event Log，加载后的大结果也继续受 Context Budget 与落盘策略约束。可直接试用 [examples/skills_demo](examples/skills_demo) 中的最小 workspace。
+
+## Minimal Memory
+
+Memory 是跨 Context Compact、跨进程会话保留的长期知识，不是当前任务的 Plan、Todo 或 Session Memory。它默认关闭，因为启用后会增加无工具模型调用并产生持久写入；可用 `--memory` 明确启用。存储固定在 workspace 内的 Harness 私有目录：
+
+```text
+.tinyharness/memory/
+├─ MEMORY.md               # 派生索引
+├─ user-tabs.md
+├─ project-auth.md
+└─ archive/                # consolidation 成功前的完整旧快照
+```
+
+每个文件使用 Markdown + YAML frontmatter，类型只允许 `user`、`feedback`、`project` 和 `reference`：
+
+```markdown
+---
+name: user-tabs
+description: User prefers tabs for indentation
+type: user
+---
+
+Use tabs when writing or editing source files.
+```
+
+一次启用 Memory 的 run 使用以下函数流水线：
+
+```text
+discover_memories                 # 最多 200 项，按 mtime 降序，只读 frontmatter
+  → catalog marker                # name / description / type，不含正文
+  → tool-free LLM side-query      # 最多选择 5 个精确 filename
+     └─ invalid/error/budget → conservative keyword fallback
+  → bounded relevant excerpts     # 每文件最多 200 行 / 4096 bytes
+  → untrusted user-role marker
+  → unchanged Agent Loop
+  → Goal Stop Gate allows final answer
+  → Memory Stop Hook extraction   # 严格 JSON、无工具、最多 5 项
+  → atomic files + MEMORY.md rebuild
+  → if new write and count >= 10
+     → complete snapshot           # 正文不截断；modified_at 给模型
+     → tool-free consolidation     # 完整 replacement set，after <= before
+     → fingerprint recheck
+     → staging
+     → commit-time recheck
+     → archive + replace + MEMORY.md rebuild
+```
+
+选择请求只包含最近用户文本和 Memory 元数据，不包含正文；它复用现有 Provider、Recovery 和 `purpose=memory_selection` Event。相关正文以具名 user marker 注入，避免把历史文件提升为可信 system 指令，并继续受 Context Budget 约束。提取发生在最终候选被 Goal Gate 接受之后，使用 `purpose=memory_extraction` 的无工具请求；无有效新信息时返回空数组。普通 Provider、解析或写入失败采用 fail-open，只记录不含正文的失败元数据，不阻止主任务返回；Event Log 自身失败仍然上抛。
+
+Memory 名称和文件路径只能使用有界逻辑标识；符号链接和 workspace 逃逸会被拒绝，重复名称整体失效，提取不会覆盖已有文件。写入属于显式启用后的 Harness 内部状态维护，只能触及 `.tinyharness/memory/`，不会执行命令或绕过现有 Tool Permission/Hooks。Subagent 可以选择并读取同一 workspace 的 Memory，但不执行提取，避免把 delegated prompt 或子 Agent 推断写入长期状态。
+
+Consolidation 是同步、tool-free 的最小实现。只有提取实际写入新 Memory、当前有效文件达到 10 个且 discovery 无 issue 时才以 `purpose=memory_consolidation` 请求模型；模型获得完整正文和可读的 `modified_at`，但 `modified_ns + content hash` 只留在 Harness 中构造指纹。整理结果不强求减少条数，只要求非空且 `after_count <= before_count`，因此 `10 → 10` 是合法更新。模型输出先写入不参与 discovery 的唯一 staging 目录；Harness 在模型返回后和 commit 前各检查一次快照指纹，随后把旧 active 文件移入唯一 archive，再激活 replacement set。激活失败会尝试回滚，普通 consolidation 失败仍然 fail-open，不阻止主回答；四类 consolidation Event 只记录计数、结果和错误类型，不记录 Memory 正文。
+
+这里使用的是 optimistic concurrency，不是文件锁；最终检查与文件移动之间仍存在很小的跨进程竞争窗口。Minimal 版也刻意没有 24 小时、session 数量或后台 Dream 门控，所以达到 10 个以后，每次成功写入新 Memory 都可能再次触发 consolidation。Archive 和 staging 永远不参与 Memory discovery，archive 暂不自动清理。当前仍不实现 Dream、Session Memory、异步 prefetch、embedding、Team Memory、文件锁或 forked extraction agent。
+
+```powershell
+python -m tiny_harness `
+  "Remember that I prefer tabs, then inspect this project" `
+  --workspace . `
+  --memory
+```
+
 ## Tools and policies
 
 | Tool | 行为 | 默认权限 |
@@ -142,6 +247,7 @@ Model response
 | `bash` | 以 workspace 为 `cwd` 执行 shell，返回退出码 | 明确只读时 ALLOW，否则 ASK |
 | `todo_write` | 原子更新当前 run 的内存 Todo | ALLOW |
 | `task` | 运行 fresh-context 子 Agent，只返回最终文本 | ALLOW |
+| `load_skill` | 按目录中的精确名称加载完整 `SKILL.md` | ALLOW |
 | `compact` | 在完整工具批次后请求历史摘要 | ALLOW |
 
 文件工具拒绝 `..` 穿越、workspace 外绝对路径和可解析的符号链接逃逸。`edit_file` 在 anchor 出现 0 次或多次时明确报错，避免静默修改错误位置。工具异常、未知工具和非法 JSON 参数都转换为关联原 call ID 的 `ToolResult`。
@@ -175,6 +281,7 @@ Context Runtime 默认使用 100,000 字符预算。连续会话的历史增长�
 | `--event-log` | 不启用 | 追加写入 JSONL 生命周期日志 |
 | `--goal` | 不启用 | 最终答案的 completion condition |
 | `--max-goal-retries` | `3` | Goal 被拒绝后的自动 continuation 次数 |
+| `--memory` | 不启用 | 启用 workspace 长期 Memory 选择与 Stop Hook 提取 |
 
 项目当前不自动读取 `.env`。
 
@@ -205,19 +312,22 @@ python -m unittest discover -s tests -v
 
 当前本地基线：
 
-- 201 tests executed；
-- 198 passed；
-- 3 skipped：当前 Windows 用户无法创建测试所需的符号链接。
+- 267 tests executed；
+- 261 passed；
+- 6 skipped：当前 Windows 用户无法创建测试所需的符号链接。
 
 ## Trust boundaries
 
 - 文件工具有 workspace 路径边界；`bash` 的只读识别只是保守的审批 UX 规则，它仍只有 `cwd` 约束，**不是 OS sandbox**。
 - Event Log 是 observability trace，不是防篡改 audit log；建议写到 Agent workspace 外。
 - `.tinyharness/context/` 中的 artifact 用于恢复信息，不是可信证据。
+- Skill 的目录元数据和完整正文都是不可信 workspace 内容；`load_skill` 不产生额外权限。
+- Memory 元数据和正文是不可信历史数据；当前请求优先，Memory 不能充当授权、Plan、Todo 或任务来源。
+- Memory archive 保留 consolidation 前的旧正文且暂不自动清理，应按持久敏感数据对待。
 - Goal Evaluator 是停止门，不是形式化证明；workspace/process 条件仍需要实际 tool results。
 - Subagent 共享 workspace、Provider、Permission 和 Hooks，但只有一层且顺序执行。
 - 连续会话只存在于当前 CLI 进程；退出后不会持久化或 Resume。
-- 当前没有 Session Resume、MCP、Memory、并行 Agent、精确 token accounting 或 fallback model。
+- 当前没有 Session Resume、MCP、Dream、Session/Team Memory、并行 Agent、精确 token accounting 或 fallback model；Memory consolidation 没有时间/session 门控、文件锁或 archive 自动清理。
 
 这些是 TinyHarness v1 的明确范围，而不是已经实现但未启用的功能。
 
@@ -227,10 +337,10 @@ python -m unittest discover -s tests -v
 tiny_harness/
 ├─ agent/          # messages, in-process session and explicit Agent Loop
 ├─ models/         # Provider contract and Chat Completions adapter
-├─ tools/          # filesystem, shell, todo, task, compact and registry
-└─ runtime/        # permission, hooks, context, recovery, goal and events
+├─ tools/          # filesystem, shell, skill, todo, task, compact and registry
+└─ runtime/        # permission, hooks, skills, memory, context, recovery, goal and events
 evals/             # fixtures, hidden graders, fault scenarios and reports
-examples/          # Python API examples
+examples/          # Python API and minimal Skill workspace examples
 tests/             # deterministic unit and integration tests
 ```
 
@@ -240,8 +350,8 @@ TinyHarness 选择性参考并重新实现了 `learn-claude-code` 的核心控�
 
 - `s01_agent_loop` / `s02_tool_use`
 - `s03_permission` / `s04_hooks` / `s05_todo_write`
-- `s06_subagent` / `s08_context_compact`
+- `s06_subagent` / `s07_skills` / `s08_context_compact` / `s09_memory`
 - `s15_integrated_harness` 的 bounded retry 思路
 - `s17_goal_loop` 的独立 Evaluator Stop Gate
 
-metadata Event Log、初版 Context Guard 和 Reliability Eval 是 TinyHarness 自己的可靠性扩展。项目没有直接复制 integrated harness，也没有查看或移植 Claude Code 产品源码。
+metadata Event Log、初版 Context Guard 和 Reliability Eval 是 TinyHarness 自己的可靠性扩展。项目没有直接复制 integrated harness，也没有移植 Claude Code 产品源码；CC 细节只作为范围与取舍的对照。

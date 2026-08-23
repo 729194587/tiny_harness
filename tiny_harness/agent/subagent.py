@@ -28,6 +28,7 @@ class SubagentExecutor:
         max_context_chars: int | None,
         tool_hooks: ToolHooks | None,
         recovery_policy: RecoveryPolicy,
+        memory_enabled: bool = False,
     ) -> None:
         self.run_agent = run_agent
         self.provider = provider
@@ -39,6 +40,7 @@ class SubagentExecutor:
         self.max_context_chars = max_context_chars
         self.tool_hooks = tool_hooks
         self.recovery_policy = recovery_policy
+        self.memory_enabled = memory_enabled
 
     def __call__(self, prompt: str, parent_tool_call_id: str) -> str:
         print("\n[子 Agent 已启动]")
@@ -74,6 +76,8 @@ class SubagentExecutor:
                 subagent_max_turns=self.max_turns,
                 allow_subagent=False,
                 recovery_policy=self.recovery_policy,
+                memory_enabled=self.memory_enabled,
+                memory_extraction_enabled=False,
             )
         except Exception:
             print("[子 Agent 执行失败]")

@@ -62,6 +62,34 @@ class StopDecision:
 StopHook = Callable[[StopHookContext], StopDecision]
 
 
+def _validate_stop_decision(decision: object) -> StopDecision:
+    if not isinstance(decision, StopDecision):
+        raise TypeError("Stop hook must return StopDecision")
+    if decision.action not in {"allow", "block"}:
+        raise TypeError("StopDecision action must be 'allow' or 'block'")
+    if not isinstance(decision.reason, str):
+        raise TypeError("StopDecision reason must be a string")
+    return decision
+
+
+def compose_stop_hooks(*hooks: StopHook | None) -> StopHook | None:
+    """Compose ordered stop gates and observers without changing Agent Loop."""
+
+    active = tuple(hook for hook in hooks if hook is not None)
+    if not active:
+        return None
+
+    def composed(context: StopHookContext) -> StopDecision:
+        last = StopDecision("allow")
+        for hook in active:
+            last = _validate_stop_decision(hook(context))
+            if last.action == "block":
+                return last
+        return last
+
+    return composed
+
+
 def run_stop_hook(
     hook: StopHook | None,
     messages: list[dict[str, Any]],
@@ -82,13 +110,7 @@ def run_stop_hook(
             has_next_turn=has_next_turn,
         )
     )
-    if not isinstance(decision, StopDecision):
-        raise TypeError("Stop hook must return StopDecision")
-    if decision.action not in {"allow", "block"}:
-        raise TypeError("StopDecision action must be 'allow' or 'block'")
-    if not isinstance(decision.reason, str):
-        raise TypeError("StopDecision reason must be a string")
-    return decision
+    return _validate_stop_decision(decision)
 
 
 class ToolHooks:

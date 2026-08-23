@@ -41,13 +41,13 @@ def agent_loop(
     context: AgentRunContext,
     active_request: str,
 ) -> str:
-    """执行稳定核心循环，直到返回一个被允许的最终回答。"""
+    """执行稳定核心循环，直到返回最终回答。"""
 
-    initialize_run_state(messages, context)
     context.event_logger.emit(
         EventType.RUN_STARTED,
         run_started_data(context),
     )
+    initialize_run_state(messages, context, active_request)
 
     try:
         for turn in range(1, context.max_turns + 1):
@@ -59,7 +59,7 @@ def agent_loop(
                 active_request,
             )
             if prepared is not None:
-                # 只有四层处理和最终验证全部成功后，才提交 canonical history。
+                # 只有四层处理和最终验证全部成功后，才提交canonical history。
                 messages[:] = prepared.messages
 
             response = call_model(messages, context)
@@ -128,6 +128,8 @@ def run_agent(
     goal_condition: str | None = None,
     max_goal_retries: int = DEFAULT_MAX_GOAL_RETRIES,
     goal_evaluator: GoalEvaluator | None = None,
+    memory_enabled: bool = False,
+    memory_extraction_enabled: bool = True,
 ) -> str:
     """兼容配置入口：装配运行上下文后进入三参数核心循环。"""
 
@@ -146,6 +148,8 @@ def run_agent(
         goal_condition=goal_condition,
         max_goal_retries=max_goal_retries,
         goal_evaluator=goal_evaluator,
+        memory_enabled=memory_enabled,
+        memory_extraction_enabled=memory_extraction_enabled,
     )
     active_request = next(
         (

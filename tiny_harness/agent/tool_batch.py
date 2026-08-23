@@ -98,6 +98,7 @@ def execute_tool_batch(
             tool_hooks=context.tool_hooks,
             todo_manager=context.todo_manager,
             subagent_runner=context.subagent_runner,
+            skill_catalog=context.skill_catalog,
             compaction_request=context.compaction_request,
         )
         messages.append(

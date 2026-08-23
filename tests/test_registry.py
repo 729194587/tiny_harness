@@ -9,6 +9,7 @@ from pathlib import Path
 from tiny_harness.agent.messages import ToolCall
 from tiny_harness.runtime.permissions import PermissionDecision
 from tiny_harness.runtime.context import CompactionRequest
+from tiny_harness.runtime.skills import discover_skills
 from tiny_harness.runtime.todos import TodoManager
 from tiny_harness.tools.registry import dispatch, tool_schemas
 
@@ -67,6 +68,40 @@ class ToolRegistryTest(unittest.TestCase):
             for schema in tool_schemas(include_compact=True)
         ]
         self.assertIn("compact", compact_names)
+
+        skill_names = [
+            schema["function"]["name"]
+            for schema in tool_schemas(include_skill=True)
+        ]
+        self.assertIn("load_skill", skill_names)
+
+    def test_dispatches_load_skill_only_with_injected_catalog(self) -> None:
+        manifest = self.workspace / "skills" / "review" / "SKILL.md"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            "---\nname: review\ndescription: Review code\n---\n\nBODY",
+            encoding="utf-8",
+        )
+        catalog = discover_skills(self.workspace)
+
+        result = self.call(
+            "skill-1",
+            "load_skill",
+            {"name": "review"},
+            skill_catalog=catalog,
+        )
+        missing_catalog = self.call(
+            "skill-2",
+            "load_skill",
+            {"name": "review"},
+        )
+
+        self.assertIn("BEGIN UNTRUSTED SKILL CONTENT", result.content)
+        self.assertIn("BODY", result.content)
+        self.assertEqual(
+            missing_catalog.content,
+            "Error: ValueError: Unknown tool: load_skill",
+        )
 
     def test_dispatches_compact_only_with_run_scoped_request(self) -> None:
         manager = CompactionRequest()

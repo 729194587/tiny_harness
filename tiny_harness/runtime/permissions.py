@@ -164,6 +164,7 @@ class DefaultPermissionPolicy:
             "list_files",
             "todo_write",
             "task",
+            "load_skill",
             "compact",
         }
     )

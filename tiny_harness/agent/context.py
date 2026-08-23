@@ -21,7 +21,17 @@ from tiny_harness.runtime.goal import (
     create_goal_stop_hook,
     upsert_goal_marker,
 )
-from tiny_harness.runtime.hooks import StopHook, ToolHooks
+from tiny_harness.runtime.hooks import StopHook, ToolHooks, compose_stop_hooks
+from tiny_harness.runtime.memory import (
+    LoadedMemories,
+    MemoryCatalog,
+    MemoryComplete,
+    create_memory_stop_hook,
+    discover_memories,
+    empty_memory_catalog,
+    prepare_memory_context,
+    upsert_memory_markers,
+)
 from tiny_harness.runtime.permissions import (
     DEFAULT_PERMISSION_POLICY,
     PermissionPolicy,
@@ -31,6 +41,11 @@ from tiny_harness.runtime.recovery import (
     RecoveryExecutor,
     RecoveryPolicy,
     RecoveryState,
+)
+from tiny_harness.runtime.skills import (
+    SkillCatalog,
+    discover_skills,
+    upsert_skill_catalog_marker,
 )
 from tiny_harness.runtime.todos import TodoManager
 from tiny_harness.tools.registry import tool_schemas
@@ -60,6 +75,10 @@ class AgentRunContext:
     event_logger: EventLogger
     recovery_executor: RecoveryExecutor
     todo_manager: TodoManager
+    skill_catalog: SkillCatalog
+    memory_enabled: bool
+    memory_catalog: MemoryCatalog
+    memory_selection_complete: MemoryComplete | None
     compactor: ContextCompactor | None
     compaction_request: CompactionRequest | None
     subagent_runner: SubagentRunner | None
@@ -83,15 +102,41 @@ def run_started_data(context: AgentRunContext) -> dict[str, Any]:
     if context.goal_state is not None:
         data["goal_enabled"] = True
         data["max_goal_retries"] = context.goal_state.max_retries
+    if context.skill_catalog.manifests or context.skill_catalog.issues:
+        data["skills_available"] = len(context.skill_catalog.manifests)
+        data["skill_discovery_issues"] = len(context.skill_catalog.issues)
+    if context.memory_enabled:
+        data["memory_enabled"] = True
+        data["memories_available"] = len(context.memory_catalog.manifests)
+        data["memory_discovery_issues"] = len(context.memory_catalog.issues)
     return data
 
 
 def initialize_run_state(
     messages: list[dict[str, Any]],
     context: AgentRunContext,
+    active_request: str,
 ) -> None:
     """在第一次模型调用前插入可选的 run-scoped 控制状态。"""
 
+    upsert_skill_catalog_marker(messages, context.skill_catalog)
+    if context.memory_enabled:
+        if context.memory_selection_complete is None:
+            raise RuntimeError("Memory selection requires a completion callback")
+        prepare_memory_context(
+            messages,
+            context.memory_catalog,
+            active_request,
+            context.memory_selection_complete,
+            context.event_logger,
+            max_context_chars=context.max_context_chars,
+        )
+    else:
+        upsert_memory_markers(
+            messages,
+            context.memory_catalog,
+            LoadedMemories("", (), ()),
+        )
     if context.goal_state is not None:
         upsert_goal_marker(messages, context.goal_state)
 
@@ -131,6 +176,8 @@ def create_run_context(
     goal_condition: str | None = None,
     max_goal_retries: int = DEFAULT_MAX_GOAL_RETRIES,
     goal_evaluator: GoalEvaluator | None = None,
+    memory_enabled: bool = False,
+    memory_extraction_enabled: bool = True,
 ) -> AgentRunContext:
     """校验配置并装配一次运行所需的依赖。"""
 
@@ -145,8 +192,15 @@ def create_run_context(
     if goal_evaluator is not None and goal_condition is None:
         raise ValueError("goal_evaluator requires goal_condition")
 
+    skill_catalog = discover_skills(workspace)
+    memory_catalog = (
+        discover_memories(workspace)
+        if memory_enabled
+        else empty_memory_catalog(workspace)
+    )
     tools = tool_schemas(
         include_task=allow_subagent,
+        include_skill=bool(skill_catalog.manifests),
         include_compact=max_context_chars is not None,
     )
     todo_manager = TodoManager()
@@ -173,7 +227,7 @@ def create_run_context(
         )
 
     goal_state: GoalState | None = None
-    stop_hook: StopHook | None = None
+    goal_stop_hook: StopHook | None = None
     if goal_condition is not None:
         evaluator = goal_evaluator or PromptGoalEvaluator(
             lambda messages, schemas: complete_for(
@@ -185,11 +239,28 @@ def create_run_context(
             goal_condition,
             max_retries=max_goal_retries,
         )
-        stop_hook = create_goal_stop_hook(
+        goal_stop_hook = create_goal_stop_hook(
             goal_state,
             evaluator,
             event_logger,
         )
+
+    memory_stop_hook = (
+        create_memory_stop_hook(
+            memory_catalog,
+            lambda messages, schemas: complete_for(
+                "memory_extraction", messages, schemas
+            ),
+            lambda messages, schemas: complete_for(
+                "memory_consolidation", messages, schemas
+            ),
+            event_logger,
+            max_context_chars=max_context_chars,
+        )
+        if memory_enabled and memory_extraction_enabled
+        else None
+    )
+    stop_hook = compose_stop_hooks(goal_stop_hook, memory_stop_hook)
 
     compaction_request = (
         CompactionRequest() if max_context_chars is not None else None
@@ -224,6 +295,7 @@ def create_run_context(
             max_context_chars=max_context_chars,
             tool_hooks=tool_hooks,
             recovery_policy=recovery_policy,
+            memory_enabled=memory_enabled,
         )
 
     context = AgentRunContext(
@@ -241,6 +313,18 @@ def create_run_context(
         event_logger=event_logger,
         recovery_executor=recovery_executor,
         todo_manager=todo_manager,
+        skill_catalog=skill_catalog,
+        memory_enabled=memory_enabled,
+        memory_catalog=memory_catalog,
+        memory_selection_complete=(
+            (
+                lambda messages, schemas: complete_for(
+                    "memory_selection", messages, schemas
+                )
+            )
+            if memory_enabled
+            else None
+        ),
         compactor=compactor,
         compaction_request=compaction_request,
         subagent_runner=subagent_runner,

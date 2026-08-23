@@ -20,6 +20,9 @@ from tiny_harness.runtime.recovery import RecoveryPolicy
 RUN_SCOPED_MARKERS = frozenset(
     {
         "tinyharness_goal_state",
+        "tinyharness_memory_catalog",
+        "tinyharness_relevant_memory",
+        "tinyharness_skill_catalog",
         "tinyharness_todo_state",
     }
 )
@@ -44,6 +47,7 @@ class AgentSession:
         subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS,
         recovery_policy: RecoveryPolicy = RecoveryPolicy(),
         max_goal_retries: int = DEFAULT_MAX_GOAL_RETRIES,
+        memory_enabled: bool = False,
         event_logger_factory: Callable[[], EventLogger] = _null_event_logger,
     ) -> None:
         self.provider = provider
@@ -61,6 +65,7 @@ class AgentSession:
         self.subagent_max_turns = subagent_max_turns
         self.recovery_policy = recovery_policy
         self.max_goal_retries = max_goal_retries
+        self.memory_enabled = memory_enabled
         self.event_logger_factory = event_logger_factory
 
     def submit(
@@ -93,6 +98,7 @@ class AgentSession:
             recovery_policy=self.recovery_policy,
             goal_condition=goal_condition,
             max_goal_retries=self.max_goal_retries,
+            memory_enabled=self.memory_enabled,
         )
         answer = agent_loop(self.messages, context, task)
         self._remove_run_scoped_markers()

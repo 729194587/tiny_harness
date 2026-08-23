@@ -54,7 +54,7 @@ def validate_model_response(response: ModelResponse) -> None:
 def assistant_message_from_response(
     response: ModelResponse,
 ) -> dict[str, Any]:
-    """Convert a validated model response into one assistant message."""
+    """把模型返回的 ModelResponse 转换成标准 assistant message"""
 
     message: dict[str, Any] = {
         "role": "assistant",

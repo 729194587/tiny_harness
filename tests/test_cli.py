@@ -81,6 +81,7 @@ class CliTest(unittest.TestCase):
             session_class.call_args.kwargs["max_goal_retries"],
             DEFAULT_MAX_GOAL_RETRIES,
         )
+        self.assertFalse(session_class.call_args.kwargs["memory_enabled"])
         session_class.return_value.submit.assert_called_once_with(
             "create a file", goal_condition=None
         )
@@ -192,6 +193,28 @@ class CliTest(unittest.TestCase):
 
         self.assertIsNone(session_class.call_args.kwargs["max_context_chars"])
         self.assertNotIn("Use compact", session_class.call_args.args[2])
+
+    @patch("tiny_harness.__main__.AgentSession")
+    @patch("tiny_harness.__main__.ChatCompletionsProvider")
+    def test_can_explicitly_enable_persistent_memory(
+        self, _, session_class
+    ) -> None:
+        session_class.return_value.submit.return_value = "done"
+        with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
+            with contextlib.redirect_stdout(io.StringIO()):
+                main(
+                    [
+                        "remember my preference",
+                        "--workspace",
+                        str(self.workspace),
+                        "--memory",
+                    ]
+                )
+
+        self.assertTrue(session_class.call_args.kwargs["memory_enabled"])
+        system_prompt = session_class.call_args.args[2]
+        self.assertIn("Persistent Memory", system_prompt)
+        self.assertIn("untrusted historical data", system_prompt)
 
     @patch("tiny_harness.__main__.AgentSession")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")
