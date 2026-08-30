@@ -33,6 +33,7 @@ class RunMetrics:
     retries: int = 0
     continuations: int = 0
     tool_calls: int = 0
+    stop_proposals: int = 0
 
 
 @dataclass
@@ -52,6 +53,7 @@ class EvalResult:
     fault_expected: bool = False
     fault_triggered: bool = False
     agent_returned: bool = False
+    invalid_run: bool = False
     error_type: str | None = None
     grader_exit_code: int | None = None
     elapsed_ms: int = 0
@@ -201,6 +203,11 @@ def collect_metrics(events: list[dict[str, Any]]) -> RunMetrics:
         ),
         tool_calls=sum(
             event.get("event_type") == "tool_started"
+            for event in events
+        ),
+        stop_proposals=sum(
+            event.get("event_type") == "stop_proposed"
+            and event.get("data", {}).get("agent_scope") is None
             for event in events
         ),
     )

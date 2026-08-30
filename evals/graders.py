@@ -1,14 +1,20 @@
 """Fresh workspace preparation and model-independent external grading."""
 
 import hashlib
+import json
 import os
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+import tempfile
+import time
+from collections.abc import Callable, Mapping
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from evals.core import EvalCase
+from tiny_harness.runtime.events import EventLogger, EventType
 
 
 @dataclass(frozen=True)
@@ -22,8 +28,28 @@ class PreparedCase:
 
 @dataclass(frozen=True)
 class GradeResult:
-    passed: bool
-    exit_code: int
+    passed: bool | None
+    exit_code: int | None
+    valid: bool = True
+    snapshot_digest: str | None = None
+
+
+@dataclass(frozen=True)
+class ProposalGrade:
+    """External grade metadata retained outside the Agent data path."""
+
+    proposal: int
+    turn: int
+    valid: bool
+    passed: bool | None
+    exit_code: int | None
+    elapsed_ms: int
+    snapshot_digest: str | None
+    gate_action: str | None = None
+
+
+SnapshotGrader = Callable[[PreparedCase], GradeResult]
+POST_RUN_GRADE_FILENAME = "post_run_grade.json"
 
 
 def directory_digest(directory: Path) -> str:
@@ -65,8 +91,9 @@ def prepare_case(
     run_root.mkdir(parents=True)
     workspace = run_root / "workspace"
     hidden_grader = run_root / "hidden_grader"
-    shutil.copytree(source_workspace, workspace)
-    shutil.copytree(source_grader, hidden_grader)
+    ignored = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo")
+    shutil.copytree(source_workspace, workspace, ignore=ignored)
+    shutil.copytree(source_grader, hidden_grader, ignore=ignored)
     return PreparedCase(
         run_root=run_root,
         workspace=workspace,
@@ -85,30 +112,147 @@ def run_hidden_grader(
     *,
     timeout_seconds: int = 30,
 ) -> GradeResult:
-    """Run trusted hidden tests after the Agent has stopped."""
+    """Grade a physical workspace copy and return metadata only."""
 
-    environment = os.environ.copy()
-    environment["TINYHARNESS_EVAL_WORKSPACE"] = str(prepared.workspace)
-    environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "unittest",
-            "discover",
-            "-s",
-            str(prepared.hidden_grader),
-            "-v",
-        ],
-        cwd=prepared.run_root,
-        env=environment,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout_seconds,
-    )
-    return GradeResult(
-        passed=completed.returncode == 0,
-        exit_code=completed.returncode,
-    )
+    try:
+        if hidden_grader_changed(prepared):
+            return GradeResult(None, None, valid=False)
+        with tempfile.TemporaryDirectory(prefix="tinyharness-eval-grade-") as root:
+            grading_root = Path(root)
+            snapshot = grading_root / "workspace"
+            grader = grading_root / "hidden_grader"
+            ignored = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo")
+            for tree in (prepared.workspace, prepared.hidden_grader):
+                if any(path.is_symlink() for path in tree.rglob("*")):
+                    return GradeResult(None, None, valid=False)
+            shutil.copytree(prepared.workspace, snapshot, ignore=ignored)
+            shutil.copytree(prepared.hidden_grader, grader, ignore=ignored)
+            snapshot_digest = directory_digest(snapshot)
+
+            environment = os.environ.copy()
+            environment["TINYHARNESS_EVAL_WORKSPACE"] = str(snapshot)
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "unittest",
+                    "discover",
+                    "-s",
+                    str(grader),
+                    "-v",
+                ],
+                cwd=grading_root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_seconds,
+            )
+            return GradeResult(
+                passed=completed.returncode == 0,
+                exit_code=completed.returncode,
+                snapshot_digest=snapshot_digest,
+            )
+    except (OSError, shutil.Error, subprocess.SubprocessError):
+        return GradeResult(None, None, valid=False)
+
+
+def run_post_run_grade(prepared: PreparedCase) -> dict[str, Any]:
+    """Grade final workspace state after the Agent has completely stopped."""
+
+    started = time.monotonic()
+    try:
+        grade = run_hidden_grader(prepared)
+    except Exception:
+        grade = GradeResult(None, None, valid=False)
+    payload = {
+        "available": True,
+        "valid": grade.valid,
+        "passed": grade.passed if grade.valid else None,
+        "exit_code": grade.exit_code if grade.valid else None,
+        "snapshot_digest": grade.snapshot_digest,
+        "elapsed_ms": round((time.monotonic() - started) * 1000),
+    }
+    try:
+        (prepared.run_root / POST_RUN_GRADE_FILENAME).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    return payload
+
+
+class ProposalGradingEventLogger:
+    """Synchronously grade root stop proposals without publishing results."""
+
+    def __init__(
+        self,
+        logger: EventLogger,
+        prepared: PreparedCase,
+        *,
+        grader: SnapshotGrader | None = None,
+    ) -> None:
+        self._logger = logger
+        self._prepared = prepared
+        self._grader = grader or run_hidden_grader
+        self._records: list[ProposalGrade] = []
+
+    @property
+    def records(self) -> tuple[ProposalGrade, ...]:
+        return tuple(self._records)
+
+    @property
+    def invalid(self) -> bool:
+        return any(not record.valid for record in self._records)
+
+    def emit(
+        self,
+        event_type: EventType,
+        data: Mapping[str, Any] | None = None,
+    ) -> None:
+        event_data = dict(data or {})
+        self._logger.emit(event_type, event_data)
+        if event_data.get("agent_scope") is not None:
+            return
+        if event_type is EventType.STOP_PROPOSED:
+            started = time.monotonic()
+            try:
+                grade = self._grader(self._prepared)
+            except Exception:
+                grade = GradeResult(None, None, valid=False)
+            self._records.append(
+                ProposalGrade(
+                    proposal=len(self._records) + 1,
+                    turn=int(event_data.get("turn", 0)),
+                    valid=grade.valid,
+                    passed=grade.passed if grade.valid else None,
+                    exit_code=grade.exit_code if grade.valid else None,
+                    elapsed_ms=round((time.monotonic() - started) * 1000),
+                    snapshot_digest=grade.snapshot_digest,
+                )
+            )
+        elif event_type is EventType.STOP_DECIDED:
+            turn = int(event_data.get("turn", 0))
+            for index in range(len(self._records) - 1, -1, -1):
+                record = self._records[index]
+                if record.turn == turn and record.gate_action is None:
+                    self._records[index] = replace(
+                        record,
+                        gate_action=str(event_data.get("action") or ""),
+                    )
+                    break
+
+    def write_records(self, path: Path) -> None:
+        """Persist sanitized records only after the Agent run is over."""
+
+        path.write_text(
+            json.dumps(
+                [asdict(record) for record in self._records],
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )

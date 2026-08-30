@@ -43,6 +43,7 @@ class GoalState:
     evaluations: int = 0
     retries_used: int = 0
     last_reason: str | None = None
+    last_outcome: str | None = None
 
 
 @dataclass(frozen=True)
@@ -387,12 +388,15 @@ def evaluate_goal(
     state.evaluations += 1
     state.last_reason = reason
     if evaluation.ok:
-        return GoalDecision("achieved", reason)
-    if evaluation.impossible:
-        return GoalDecision("impossible", reason)
-    if state.retries_used >= state.max_retries:
-        return GoalDecision("limit", reason)
-    return GoalDecision("block", reason)
+        action = "achieved"
+    elif evaluation.impossible:
+        action = "impossible"
+    elif state.retries_used >= state.max_retries:
+        action = "limit"
+    else:
+        action = "block"
+    state.last_outcome = action
+    return GoalDecision(action, reason)
 
 
 def record_goal_continuation(state: GoalState) -> None:

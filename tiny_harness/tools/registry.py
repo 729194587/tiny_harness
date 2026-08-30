@@ -3,6 +3,7 @@
 import copy
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -25,6 +26,8 @@ from tiny_harness.runtime.permissions import (
     PermissionDecision,
     PermissionPolicy,
     PermissionPrompt,
+    PermissionRejectionTracker,
+    permission_denial_feedback,
     resolve_permission,
 )
 from tiny_harness.runtime.skills import SkillCatalog
@@ -36,11 +39,104 @@ from tiny_harness.tools.skill import load_skill
 from tiny_harness.tools.task import SubagentRunner, task
 from tiny_harness.tools.todo import todo_write
 
-ToolEntry = tuple[str, dict[str, Any], Callable[..., str]]
+
+@dataclass(frozen=True)
+class ToolRuntime:
+    """Run-scoped dependencies available to every tool adapter."""
+
+    workspace: Path
+    todo_manager: TodoManager | None
+    subagent_runner: SubagentRunner | None
+    skill_catalog: SkillCatalog | None
+    compaction_request: CompactionRequest | None
 
 
-_TOOL_REGISTRY: dict[str, ToolEntry] = {
-    "read_file": (
+ToolExecutor = Callable[
+    [ToolRuntime, ToolCall, dict[str, Any]],
+    str,
+]
+ToolAvailability = Callable[[ToolRuntime], bool]
+
+
+def _always_available(runtime: ToolRuntime) -> bool:
+    return True
+
+
+@dataclass(frozen=True)
+class ToolAdapter:
+    """Schema plus one uniform runtime-aware execution adapter."""
+
+    description: str
+    parameters: dict[str, Any]
+    execute: ToolExecutor
+    available: ToolAvailability = _always_available
+
+
+def _workspace_tool(handler: Callable[..., str]) -> ToolExecutor:
+    def execute(
+        runtime: ToolRuntime,
+        call: ToolCall,
+        arguments: dict[str, Any],
+    ) -> str:
+        return handler(runtime.workspace, **arguments)
+
+    return execute
+
+
+def _execute_todo(
+    runtime: ToolRuntime,
+    call: ToolCall,
+    arguments: dict[str, Any],
+) -> str:
+    if runtime.todo_manager is None:
+        raise RuntimeError("todo_write requires a TodoManager")
+    return todo_write(runtime.todo_manager, **arguments)
+
+
+def _execute_task(
+    runtime: ToolRuntime,
+    call: ToolCall,
+    arguments: dict[str, Any],
+) -> str:
+    if runtime.subagent_runner is None:
+        raise RuntimeError("task requires a SubagentRunner")
+    return task(runtime.subagent_runner, call.id, **arguments)
+
+
+def _execute_skill(
+    runtime: ToolRuntime,
+    call: ToolCall,
+    arguments: dict[str, Any],
+) -> str:
+    if runtime.skill_catalog is None:
+        raise RuntimeError("load_skill requires a SkillCatalog")
+    return load_skill(runtime.skill_catalog, **arguments)
+
+
+def _execute_compact(
+    runtime: ToolRuntime,
+    call: ToolCall,
+    arguments: dict[str, Any],
+) -> str:
+    if runtime.compaction_request is None:
+        raise RuntimeError("compact requires a CompactionRequest")
+    return compact(runtime.compaction_request, **arguments)
+
+
+def _has_subagent(runtime: ToolRuntime) -> bool:
+    return runtime.subagent_runner is not None
+
+
+def _has_skill_catalog(runtime: ToolRuntime) -> bool:
+    return runtime.skill_catalog is not None
+
+
+def _has_compaction_request(runtime: ToolRuntime) -> bool:
+    return runtime.compaction_request is not None
+
+
+_TOOL_REGISTRY: dict[str, ToolAdapter] = {
+    "read_file": ToolAdapter(
         "Read a UTF-8 text file inside the workspace.",
         {
             "type": "object",
@@ -48,9 +144,9 @@ _TOOL_REGISTRY: dict[str, ToolEntry] = {
             "required": ["path"],
             "additionalProperties": False,
         },
-        read_file,
+        _workspace_tool(read_file),
     ),
-    "write_file": (
+    "write_file": ToolAdapter(
         "Write UTF-8 text to a file inside the workspace.",
         {
             "type": "object",
@@ -61,9 +157,9 @@ _TOOL_REGISTRY: dict[str, ToolEntry] = {
             "required": ["path", "content"],
             "additionalProperties": False,
         },
-        write_file,
+        _workspace_tool(write_file),
     ),
-    "edit_file": (
+    "edit_file": ToolAdapter(
         "Replace exact text in a workspace file when it occurs exactly once.",
         {
             "type": "object",
@@ -75,18 +171,18 @@ _TOOL_REGISTRY: dict[str, ToolEntry] = {
             "required": ["path", "old_text", "new_text"],
             "additionalProperties": False,
         },
-        edit_file,
+        _workspace_tool(edit_file),
     ),
-    "list_files": (
+    "list_files": ToolAdapter(
         "List the direct children of a directory inside the workspace.",
         {
             "type": "object",
             "properties": {"path": {"type": "string"}},
             "additionalProperties": False,
         },
-        list_files,
+        _workspace_tool(list_files),
     ),
-    "bash": (
+    "bash": ToolAdapter(
         "Run a shell command with the workspace as the working directory.",
         {
             "type": "object",
@@ -94,9 +190,9 @@ _TOOL_REGISTRY: dict[str, ToolEntry] = {
             "required": ["command"],
             "additionalProperties": False,
         },
-        bash,
+        _workspace_tool(bash),
     ),
-    "todo_write": (
+    "todo_write": ToolAdapter(
         "Create and manage a task list for the current coding run.",
         {
             "type": "object",
@@ -125,9 +221,9 @@ _TOOL_REGISTRY: dict[str, ToolEntry] = {
             "required": ["todos"],
             "additionalProperties": False,
         },
-        todo_write,
+        _execute_todo,
     ),
-    "task": (
+    "task": ToolAdapter(
         "Run a subagent with fresh context and return its final text.",
         {
             "type": "object",
@@ -137,9 +233,10 @@ _TOOL_REGISTRY: dict[str, ToolEntry] = {
             "required": ["prompt"],
             "additionalProperties": False,
         },
-        task,
+        _execute_task,
+        _has_subagent,
     ),
-    "load_skill": (
+    "load_skill": ToolAdapter(
         "Load one workspace Skill by its exact catalog name.",
         {
             "type": "object",
@@ -149,16 +246,18 @@ _TOOL_REGISTRY: dict[str, ToolEntry] = {
             "required": ["name"],
             "additionalProperties": False,
         },
-        load_skill,
+        _execute_skill,
+        _has_skill_catalog,
     ),
-    "compact": (
+    "compact": ToolAdapter(
         "Summarize earlier conversation after the current tool batch.",
         {
             "type": "object",
             "properties": {},
             "additionalProperties": False,
         },
-        compact,
+        _execute_compact,
+        _has_compaction_request,
     ),
 }
 
@@ -176,11 +275,11 @@ def tool_schemas(
             "type": "function",
             "function": {
                 "name": name,
-                "description": description,
-                "parameters": parameters,
+                "description": adapter.description,
+                "parameters": adapter.parameters,
             },
         }
-        for name, (description, parameters, _) in _TOOL_REGISTRY.items()
+        for name, adapter in _TOOL_REGISTRY.items()
         if (include_task or name != "task")
         and (include_skill or name != "load_skill")
         and (include_compact or name != "compact")
@@ -199,17 +298,20 @@ def dispatch(
     subagent_runner: SubagentRunner | None = None,
     skill_catalog: SkillCatalog | None = None,
     compaction_request: CompactionRequest | None = None,
+    permission_rejections: PermissionRejectionTracker | None = None,
 ) -> ToolResult:
     """Authorize and execute one tool call, converting failures to text."""
 
+    runtime = ToolRuntime(
+        workspace=workspace,
+        todo_manager=todo_manager,
+        subagent_runner=subagent_runner,
+        skill_catalog=skill_catalog,
+        compaction_request=compaction_request,
+    )
     try:
         entry = _TOOL_REGISTRY.get(call.name)
-        if (
-            entry is None
-            or (call.name == "task" and subagent_runner is None)
-            or (call.name == "load_skill" and skill_catalog is None)
-            or (call.name == "compact" and compaction_request is None)
-        ):
+        if entry is None or not entry.available(runtime):
             raise ValueError(f"Unknown tool: {call.name}")
 
         arguments = json.loads(call.arguments_json)
@@ -263,8 +365,7 @@ def dispatch(
             return ToolResult(
                 tool_call_id=call.id,
                 content=(
-                    "Error: Tool call blocked by PreToolUse hook: "
-                    f"{decision.reason}"
+                    "Error: Tool call blocked by PreToolUse hook: " f"{decision.reason}"
                 ),
             )
 
@@ -275,17 +376,33 @@ def dispatch(
         permission_prompt,
     )
     if permission is PermissionDecision.DENY:
+        denial_streak = 1
+        recovery_prompted = False
+        if permission_rejections is not None:
+            denial_streak, recovery_prompted = (
+                permission_rejections.record_denial(call.name)
+            )
         event_logger.emit(
             EventType.TOOL_DENIED,
             {
                 "tool_call_id": call.id,
                 "tool_name": call.name,
+                "denial_streak": denial_streak,
+                "recovery_prompted": recovery_prompted,
             },
         )
         return ToolResult(
             tool_call_id=call.id,
-            content=f"Error: Permission denied for tool {call.name}",
+            content=permission_denial_feedback(
+                permission_policy,
+                call.name,
+                arguments,
+                repeated=recovery_prompted,
+            ),
         )
+
+    if permission_rejections is not None:
+        permission_rejections.record_allowed()
 
     event_logger.emit(
         EventType.TOOL_STARTED,
@@ -294,20 +411,8 @@ def dispatch(
             "tool_name": call.name,
         },
     )
-    handler = entry[2]
     try:
-        if call.name == "todo_write":
-            if todo_manager is None:
-                raise RuntimeError("todo_write requires a TodoManager")
-            content = handler(todo_manager, **arguments)
-        elif call.name == "task":
-            content = handler(subagent_runner, call.id, **arguments)
-        elif call.name == "load_skill":
-            content = handler(skill_catalog, **arguments)
-        elif call.name == "compact":
-            content = handler(compaction_request, **arguments)
-        else:
-            content = handler(workspace, **arguments)
+        content = entry.execute(runtime, call, arguments)
         outcome = "returned"
     except EventLogError:
         raise

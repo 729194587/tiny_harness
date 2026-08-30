@@ -259,7 +259,9 @@ class ToolRegistryTest(unittest.TestCase):
         )
 
         self.assertEqual(result.tool_call_id, "bash-denied")
-        self.assertEqual(result.content, "Error: Permission denied for tool bash")
+        self.assertIn("current shell command is not allowed", result.content)
+        self.assertIn("Do not retry", result.content)
+        self.assertIn("provide the final answer", result.content)
         self.assertFalse((self.workspace / "blocked.txt").exists())
 
     def test_read_only_bash_without_prompt_is_allowed(self) -> None:
@@ -274,7 +276,7 @@ class ToolRegistryTest(unittest.TestCase):
             {"command": 'python -c "print(\'no\')"'},
         )
 
-        self.assertEqual(result.content, "Error: Permission denied for tool bash")
+        self.assertIn("current shell command is not allowed", result.content)
 
     def test_explicit_deny_does_not_execute_handler(self) -> None:
         class DenyPolicy:
@@ -289,10 +291,8 @@ class ToolRegistryTest(unittest.TestCase):
         )
 
         self.assertEqual(result.tool_call_id, "write-denied")
-        self.assertEqual(
-            result.content,
-            "Error: Permission denied for tool write_file",
-        )
+        self.assertIn("requested write_file operation is not allowed", result.content)
+        self.assertIn("provide the final answer", result.content)
         self.assertFalse((self.workspace / "blocked.txt").exists())
 
     def test_file_tools_do_not_prompt(self) -> None:

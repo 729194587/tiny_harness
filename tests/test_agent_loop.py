@@ -12,6 +12,7 @@ from tiny_harness.agent.loop import agent_loop as core_agent_loop
 from tiny_harness.agent.loop import run_agent as agent_loop
 from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.runtime.context import ContextProtocolError
+from tiny_harness.runtime.errors import MaxTurnsExceededError
 
 
 class FakeProvider:
@@ -204,10 +205,39 @@ class AgentLoopTest(unittest.TestCase):
             [message["tool_call_id"] for message in tool_messages],
             ["write-call", "bash-call"],
         )
-        self.assertEqual(
+        self.assertIn(
+            "current shell command is not allowed",
             tool_messages[1]["content"],
-            "Error: Permission denied for tool bash",
         )
+
+    def test_repeated_bash_denials_prompt_replanning_without_forcing_stop(self):
+        denied_calls = [
+            ToolCall(
+                f"bash-{index}",
+                "bash",
+                json.dumps({"command": f"python verify_{index}.py"}),
+            )
+            for index in (1, 2)
+        ]
+        provider = FakeProvider(
+            [
+                ModelResponse(None, None, denied_calls, "tool_calls"),
+                ModelResponse("finished after replanning", None, [], "stop"),
+            ]
+        )
+
+        answer = agent_loop(provider, self.workspace, [], max_turns=2)
+
+        self.assertEqual(answer, "finished after replanning")
+        self.assertEqual(len(provider.calls), 2)
+        tool_results = [
+            message
+            for message in provider.calls[1]["messages"]
+            if message.get("role") == "tool"
+        ]
+        self.assertNotIn("Previous shell actions", tool_results[-2]["content"])
+        self.assertIn("Previous shell actions", tool_results[-1]["content"])
+        self.assertIn("choose another available tool", tool_results[-1]["content"])
 
     def test_passes_all_registered_tool_schemas(self) -> None:
         provider = FakeProvider([ModelResponse("done", None, [], "stop")])
@@ -470,7 +500,10 @@ class AgentLoopTest(unittest.TestCase):
             ]
         )
 
-        with self.assertRaisesRegex(RuntimeError, "Maximum model turns reached: 1"):
+        with self.assertRaisesRegex(
+            MaxTurnsExceededError,
+            "Maximum model turns reached: 1",
+        ):
             agent_loop(provider, self.workspace, [], max_turns=1)
 
         self.assertEqual(len(provider.calls), 1)

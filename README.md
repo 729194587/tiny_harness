@@ -39,6 +39,8 @@ flowchart LR
 
 ## Reliability results
 
+本节保留的是旧版 bundled `basic_ablation` / `reliable` Eval 的历史结果，不代表当前 Goal Gate 单变量实验。当前 Real Coding profiles 已改为 `baseline` / `goal_gated`，阶段 1 尚未调用真实 API 生成新结果。
+
 正式评测使用 `deepseek-v4-flash`，包含 5 个 coding fixtures、两个 profile、每组重复 3 次，共 30 个真实 Agent run。正确性由 Agent workspace 外的 deterministic hidden tests 判定，不使用 LLM-as-judge。
 
 | Profile | Verified | False success | Explicit failure | Avg model attempts | Avg turns |

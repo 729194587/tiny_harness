@@ -8,6 +8,7 @@ from tiny_harness.agent.loop import run_agent as agent_loop
 from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.models.base import ModelErrorKind, ModelProviderError
 from tiny_harness.runtime.context import ContextLimitError, context_char_count
+from tiny_harness.runtime.errors import MaxTurnsExceededError
 from tiny_harness.runtime.goal import (
     GOAL_MARKER_NAME,
     MAX_GOAL_REASON_CHARS,
@@ -442,6 +443,33 @@ class GoalAgentLoopTest(unittest.TestCase):
         self.assertNotIn("PRIVATE_REASON", serialized)
         self.assertNotIn("PRIVATE_CANDIDATE", serialized)
 
+    def test_goal_verification_can_skip_initial_agent_context(self):
+        provider = FakeProvider(
+            [ModelResponse("candidate", None, [], "stop")]
+        )
+        evaluator = RecordingEvaluator(
+            [GoalEvaluation(True, "verified")]
+        )
+        messages = [{"role": "user", "content": "task"}]
+
+        answer = agent_loop(
+            provider,
+            self.workspace,
+            messages,
+            goal_condition="EVALUATOR_ONLY_GOAL",
+            goal_evaluator=evaluator,
+            inject_goal_context=False,
+        )
+
+        self.assertEqual(answer, "candidate")
+        first_request = json.dumps(provider.calls[0]["messages"])
+        self.assertNotIn("EVALUATOR_ONLY_GOAL", first_request)
+        self.assertNotIn(GOAL_MARKER_NAME, first_request)
+        self.assertEqual(
+            evaluator.calls[0]["condition"],
+            "EVALUATOR_ONLY_GOAL",
+        )
+
     def test_rejected_candidate_is_not_committed_and_loop_continues(self):
         provider = FakeProvider(
             [
@@ -600,6 +628,40 @@ class GoalAgentLoopTest(unittest.TestCase):
         )
         self.assertEqual(evaluated["data"]["outcome"], "block")
         self.assertEqual(evaluated["data"]["retries_used"], 0)
+
+    def test_goal_enabled_without_stop_proposal_uses_turn_limit_error(self):
+        evaluator = RecordingEvaluator([GoalEvaluation(True, "unused")])
+        provider = FakeProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [
+                        ToolCall(
+                            "write-1",
+                            "write_file",
+                            '{"path":"done.txt","content":"done"}',
+                        )
+                    ],
+                    "tool_calls",
+                )
+            ]
+        )
+
+        with self.assertRaisesRegex(
+            MaxTurnsExceededError,
+            "before any stop proposal was evaluated",
+        ):
+            agent_loop(
+                provider,
+                self.workspace,
+                [],
+                max_turns=1,
+                goal_condition="goal",
+                goal_evaluator=evaluator,
+            )
+
+        self.assertEqual(evaluator.calls, [])
 
     def test_default_evaluator_uses_recovery_without_consuming_main_turn(self):
         provider = FakeProvider(

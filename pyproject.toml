@@ -11,3 +11,6 @@ dependencies = ["openai>=1.0", "PyYAML>=6.0"]
 
 [project.scripts]
 tinyharness = "tiny_harness.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

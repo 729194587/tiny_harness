@@ -41,7 +41,7 @@ def agent_loop(
     context: AgentRunContext,
     active_request: str,
 ) -> str:
-    """执行稳定核心循环，直到返回最终回答。"""
+    """执行循环，直到返回最终回答。"""
 
     context.event_logger.emit(
         EventType.RUN_STARTED,
@@ -67,12 +67,27 @@ def agent_loop(
 
             if not response.tool_calls:
                 answer = response.content or ""
+                context.event_logger.emit(
+                    EventType.STOP_PROPOSED,
+                    {
+                        "turn": turn,
+                        "answer_length": len(answer),
+                        "has_next_turn": turn < context.max_turns,
+                    },
+                )
                 stop_decision = run_stop_hook(
                     context.stop_hook,
                     messages,
                     answer,
                     turn=turn,
                     has_next_turn=turn < context.max_turns,
+                )
+                context.event_logger.emit(
+                    EventType.STOP_DECIDED,
+                    {
+                        "turn": turn,
+                        "action": stop_decision.action,
+                    },
                 )
                 if stop_decision.action == "block":
                     continue
@@ -128,6 +143,7 @@ def run_agent(
     goal_condition: str | None = None,
     max_goal_retries: int = DEFAULT_MAX_GOAL_RETRIES,
     goal_evaluator: GoalEvaluator | None = None,
+    inject_goal_context: bool = True,
     memory_enabled: bool = False,
     memory_extraction_enabled: bool = True,
 ) -> str:
@@ -148,6 +164,7 @@ def run_agent(
         goal_condition=goal_condition,
         max_goal_retries=max_goal_retries,
         goal_evaluator=goal_evaluator,
+        inject_goal_context=inject_goal_context,
         memory_enabled=memory_enabled,
         memory_extraction_enabled=memory_extraction_enabled,
     )

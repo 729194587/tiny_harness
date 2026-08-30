@@ -3,6 +3,8 @@
 import argparse
 import json
 import os
+import re
+import shlex
 import statistics
 import time
 from collections.abc import Mapping, Sequence
@@ -18,25 +20,177 @@ from evals.core import (
     read_jsonl_events,
 )
 from evals.graders import (
+    ProposalGradingEventLogger,
     hidden_grader_changed,
     prepare_case,
-    run_hidden_grader,
+    run_post_run_grade,
 )
 from evals.scenarios import run_offline_scenarios
 from tiny_harness.__main__ import DEFAULT_BASE_URL, DEFAULT_MODEL
 from tiny_harness.agent.loop import run_agent as agent_loop
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
+from tiny_harness.runtime.errors import MaxTurnsExceededError
 from tiny_harness.runtime.events import JsonlEventLogger
+from tiny_harness.runtime.goal import GoalNotAchievedError
 from tiny_harness.runtime.permissions import PermissionDecision
 from tiny_harness.runtime.recovery import RecoveryPolicy
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CASES = ROOT / "cases.json"
 DEFAULT_FIXTURES = ROOT / "fixtures"
+REAL_PROFILES = ("baseline", "goal_gated")
+
+_UNSAFE_TEST_SHELL = re.compile(r"[;&|<>\r\n()`$%^!]")
+_TEST_MODULE = re.compile(
+    r"(?:tests(?:\.[A-Za-z_][A-Za-z0-9_]*)*|"
+    r"test_[A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
+)
+_TEST_PATTERN = re.compile(r"test[A-Za-z0-9_.*?\[\]-]*\.py")
+_TEST_NAME_PATTERN = re.compile(r"[A-Za-z0-9_.*?\[\]-]+")
+
+
+def _is_local_test_path(value: str, *, allow_current: bool = False) -> bool:
+    normalized = value.replace("\\", "/").rstrip("/") or "."
+    if normalized == ".":
+        return allow_current
+    if normalized.startswith("/") or normalized.startswith("~/"):
+        return False
+    parts = [part for part in normalized.split("/") if part not in {"", "."}]
+    if not parts or ".." in parts or ":" in parts[0]:
+        return False
+    return parts[0] == "tests" or parts[-1].startswith("test_")
+
+
+def _is_safe_unittest_command(command: object) -> bool:
+    """Allow only bounded local ``python -m unittest`` invocations."""
+
+    if not isinstance(command, str) or not command.strip():
+        return False
+    if _UNSAFE_TEST_SHELL.search(command):
+        return False
+    try:
+        lexer = shlex.shlex(command, posix=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        lexer.escape = ""
+        words = list(lexer)
+    except ValueError:
+        return False
+    if len(words) < 3:
+        return False
+    executable = words[0].casefold()
+    if executable not in {"python", "python.exe", "python3", "python3.exe"}:
+        return False
+    if words[1:3] != ["-m", "unittest"]:
+        return False
+
+    arguments = words[3:]
+    discover = False
+    discover_positionals: list[str] = []
+    test_targets: list[str] = []
+    index = 0
+    no_value_options = {
+        "-v",
+        "--verbose",
+        "-q",
+        "--quiet",
+        "-f",
+        "--failfast",
+        "-c",
+        "--catch",
+        "-b",
+        "--buffer",
+        "--locals",
+    }
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument in no_value_options:
+            index += 1
+            continue
+        if argument == "discover":
+            if index != 0 or discover or test_targets:
+                return False
+            discover = True
+            index += 1
+            continue
+
+        option, separator, inline_value = argument.partition("=")
+        if option in {"-k", "--durations"}:
+            if separator:
+                value = inline_value
+            else:
+                index += 1
+                if index >= len(arguments):
+                    return False
+                value = arguments[index]
+            if option == "--durations":
+                if not value.isdecimal():
+                    return False
+            elif not _TEST_NAME_PATTERN.fullmatch(value):
+                return False
+            index += 1
+            continue
+
+        if option in {
+            "-s",
+            "--start-directory",
+            "-p",
+            "--pattern",
+            "-t",
+            "--top-level-directory",
+        }:
+            if not discover:
+                return False
+            if separator:
+                value = inline_value
+            else:
+                index += 1
+                if index >= len(arguments):
+                    return False
+                value = arguments[index]
+            if option in {"-p", "--pattern"}:
+                if not _TEST_PATTERN.fullmatch(value):
+                    return False
+            elif not _is_local_test_path(value, allow_current=True):
+                return False
+            index += 1
+            continue
+
+        if argument.startswith("-"):
+            return False
+        if discover:
+            discover_positionals.append(argument)
+            if len(discover_positionals) > 3:
+                return False
+        else:
+            test_targets.append(argument)
+        index += 1
+
+    if discover:
+        if discover_positionals:
+            if not _is_local_test_path(
+                discover_positionals[0], allow_current=True
+            ):
+                return False
+        if len(discover_positionals) >= 2:
+            if not _TEST_PATTERN.fullmatch(discover_positionals[1]):
+                return False
+        if len(discover_positionals) == 3:
+            if not _is_local_test_path(
+                discover_positionals[2], allow_current=True
+            ):
+                return False
+        return True
+
+    return all(
+        _TEST_MODULE.fullmatch(target)
+        or _is_local_test_path(target)
+        for target in test_targets
+    )
 
 
 class EvalPermissionPolicy:
-    """Use identical tool access and an exact Bash allowlist in both profiles."""
+    """Use identical tools and bounded semantic test permission in both arms."""
 
     _NON_SHELL = frozenset(
         {
@@ -52,6 +206,9 @@ class EvalPermissionPolicy:
 
     def __init__(self, allowed_bash: Sequence[str]) -> None:
         self.allowed_bash = frozenset(allowed_bash)
+        self._allows_unittest = any(
+            _is_safe_unittest_command(command) for command in self.allowed_bash
+        )
 
     def decide(
         self,
@@ -60,22 +217,44 @@ class EvalPermissionPolicy:
     ) -> PermissionDecision:
         if tool_name in self._NON_SHELL:
             return PermissionDecision.ALLOW
-        if (
-            tool_name == "bash"
-            and arguments.get("command") in self.allowed_bash
-        ):
-            return PermissionDecision.ALLOW
+        if tool_name == "bash":
+            command = arguments.get("command")
+            if command in self.allowed_bash:
+                return PermissionDecision.ALLOW
+            if self._allows_unittest and _is_safe_unittest_command(command):
+                return PermissionDecision.ALLOW
         return PermissionDecision.DENY
 
+    def denial_guidance(
+        self,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+    ) -> str | None:
+        if tool_name != "bash" or not self._allows_unittest:
+            return None
+        return (
+            "Allowed verification path: run python -m unittest with local "
+            "test targets or unittest discovery under tests (for example, "
+            "python -m unittest discover -s tests -v)."
+        )
 
-def _system_prompt(workspace: Path) -> str:
+
+def _system_prompt() -> str:
     return (
-        f"You are a coding agent working in {workspace}. Complete the task "
-        "using available tools. Do not modify tests. Use todo_write for "
+        "You are a coding agent working in the provided workspace. Complete "
+        "the task, using available tools as needed. Do not modify tests. "
+        "Use todo_write for "
         "multi-step work. Use task only for a focused delegated subtask. "
-        "Run the task's declared verification command and rely on direct tool "
-        "results rather than unsupported completion claims."
+        "Verify your changes when appropriate."
     )
+
+
+def _is_explicit_completion_failure(error: Exception | None) -> bool:
+    """Distinguish exhausted completion from runner/provider infrastructure."""
+
+    if isinstance(error, (GoalNotAchievedError, MaxTurnsExceededError)):
+        return True
+    return False
 
 
 def run_real_case(
@@ -87,6 +266,8 @@ def run_real_case(
     fixtures_root: Path,
     results_root: Path,
 ) -> EvalResult:
+    if profile not in REAL_PROFILES:
+        raise ValueError(f"Unknown real coding profile: {profile}")
     prepared = prepare_case(
         case,
         fixtures_root=fixtures_root,
@@ -94,9 +275,12 @@ def run_real_case(
         profile=profile,
         repetition=repetition,
     )
-    logger = JsonlEventLogger(prepared.event_log)
+    logger = ProposalGradingEventLogger(
+        JsonlEventLogger(prepared.event_log),
+        prepared,
+    )
     messages = [
-        {"role": "system", "content": _system_prompt(prepared.workspace)},
+        {"role": "system", "content": _system_prompt()},
         {"role": "user", "content": case.task},
     ]
     started = time.monotonic()
@@ -114,19 +298,37 @@ def run_real_case(
             subagent_max_turns=case.max_turns,
             allow_subagent=True,
             recovery_policy=RecoveryPolicy(
-                max_retries=2 if profile == "reliable" else 0,
+                max_retries=2,
             ),
-            goal_condition=case.goal if profile == "reliable" else None,
+            goal_condition=case.goal if profile == "goal_gated" else None,
             max_goal_retries=2,
+            inject_goal_context=False,
         )
         returned = True
     except Exception as caught:
         error = caught
     elapsed_ms = round((time.monotonic() - started) * 1000)
 
+    logger.write_records(prepared.run_root / "proposal_grades.json")
+    run_post_run_grade(prepared)
     grader_was_changed = hidden_grader_changed(prepared)
-    grade = run_hidden_grader(prepared)
-    verified = returned and grade.passed and not grader_was_changed
+    grades = logger.records
+    last_grade = grades[-1] if grades else None
+    invalid = (
+        grader_was_changed
+        or logger.invalid
+        or (returned and last_grade is None)
+        or (
+            error is not None
+            and not _is_explicit_completion_failure(error)
+        )
+    )
+    verified = bool(
+        returned
+        and not invalid
+        and last_grade is not None
+        and last_grade.passed is True
+    )
     events = read_jsonl_events(prepared.event_log)
     return EvalResult(
         category="real_coding",
@@ -134,12 +336,22 @@ def run_real_case(
         profile=profile,
         repetition=repetition,
         verified_success=verified,
-        false_success=returned and not verified,
-        explicit_failure=not returned,
+        false_success=bool(
+            returned
+            and not invalid
+            and last_grade is not None
+            and last_grade.passed is False
+        ),
+        explicit_failure=bool(
+            not returned
+            and not invalid
+            and _is_explicit_completion_failure(error)
+        ),
         side_effect_violation=grader_was_changed,
         agent_returned=returned,
+        invalid_run=invalid,
         error_type=type(error).__name__ if error is not None else None,
-        grader_exit_code=grade.exit_code,
+        grader_exit_code=last_grade.exit_code if last_grade else None,
         elapsed_ms=elapsed_ms,
         metrics=collect_metrics(events),
     )
@@ -157,9 +369,14 @@ def run_real_suite(
     if not api_key:
         raise RuntimeError("TINYHARNESS_API_KEY is required for real evals")
     results = []
-    for case in cases:
-        for profile in profiles:
-            for repetition in range(1, repetitions + 1):
+    for case_index, case in enumerate(cases):
+        for repetition in range(1, repetitions + 1):
+            ordered_profiles = balanced_profile_order(
+                profiles,
+                case_index=case_index,
+                repetition=repetition,
+            )
+            for profile in ordered_profiles:
                 provider = ChatCompletionsProvider(
                     api_key=api_key,
                     model=os.getenv("TINYHARNESS_MODEL", DEFAULT_MODEL),
@@ -182,6 +399,20 @@ def run_real_suite(
     return results
 
 
+def balanced_profile_order(
+    profiles: Sequence[str],
+    *,
+    case_index: int,
+    repetition: int,
+) -> tuple[str, ...]:
+    """Deterministically cross-balance the two real-coding arms."""
+
+    ordered = tuple(profiles)
+    if set(ordered) != set(REAL_PROFILES) or len(ordered) != 2:
+        return ordered
+    return ordered if (case_index + repetition) % 2 == 0 else ordered[::-1]
+
+
 def _mean(results: list[EvalResult], field: str) -> str:
     if not results:
         return "0.0"
@@ -193,14 +424,14 @@ def render_markdown(results: list[EvalResult]) -> str:
     lines = [
         "# TinyHarness Reliability Eval Report",
         "",
-        "## Real Coding: Basic vs Reliable",
+        "## Real Coding: Baseline vs Goal Gated",
         "",
         "| Profile | Runs | Verified | False success | Explicit failure "
         "| Avg main | Avg goal | Avg summary | Avg total | Avg turns |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     real = [result for result in results if result.category == "real_coding"]
-    for profile in ("basic_ablation", "reliable"):
+    for profile in REAL_PROFILES:
         selected = [result for result in real if result.profile == profile]
         lines.append(
             f"| {profile} | {len(selected)} | "
@@ -312,7 +543,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--profile",
-        choices=("both", "basic_ablation", "reliable"),
+        choices=("both", *REAL_PROFILES),
         default="both",
     )
     parser.add_argument("--repetitions", type=_positive_int, default=1)
@@ -343,7 +574,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if missing:
                 raise ValueError("Unknown eval cases: " + ", ".join(sorted(missing)))
         profiles = (
-            ("basic_ablation", "reliable")
+            REAL_PROFILES
             if args.profile == "both"
             else (args.profile,)
         )

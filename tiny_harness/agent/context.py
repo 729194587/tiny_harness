@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from tiny_harness.agent.subagent import SubagentExecutor
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.context import CompactionRequest, ContextCompactor
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger
+from tiny_harness.runtime.errors import MaxTurnsExceededError
 from tiny_harness.runtime.goal import (
     DEFAULT_MAX_GOAL_RETRIES,
     GoalEvaluator,
@@ -36,6 +38,7 @@ from tiny_harness.runtime.permissions import (
     DEFAULT_PERMISSION_POLICY,
     PermissionPolicy,
     PermissionPrompt,
+    PermissionRejectionTracker,
 )
 from tiny_harness.runtime.recovery import (
     RecoveryExecutor,
@@ -83,7 +86,9 @@ class AgentRunContext:
     compaction_request: CompactionRequest | None
     subagent_runner: SubagentRunner | None
     goal_state: GoalState | None
+    inject_goal_context: bool
     stop_hook: StopHook | None
+    permission_rejections: PermissionRejectionTracker
     current_turn: int = 0
     rounds_since_todo: int = 0
 
@@ -137,7 +142,7 @@ def initialize_run_state(
             context.memory_catalog,
             LoadedMemories("", (), ()),
         )
-    if context.goal_state is not None:
+    if context.goal_state is not None and context.inject_goal_context:
         upsert_goal_marker(messages, context.goal_state)
 
 
@@ -150,14 +155,200 @@ def run_finished_data(context: AgentRunContext) -> dict[str, Any]:
 
 
 def turn_limit_error(context: AgentRunContext) -> Exception:
-    """根据是否启用 Goal 返回明确的轮次上限错误。"""
+    """Classify turn exhaustion by whether Goal actually rejected a stop."""
 
-    if context.goal_state is not None:
+    if (
+        context.goal_state is not None
+        and context.goal_state.last_outcome in {"block", "limit", "impossible"}
+    ):
         return GoalNotAchievedError(
-            "Maximum model turns reached before goal verification: "
+            "Maximum model turns reached after goal verification failed: "
             f"{context.max_turns}"
         )
-    return RuntimeError(f"Maximum model turns reached: {context.max_turns}")
+    if context.goal_state is not None:
+        return MaxTurnsExceededError(
+            "Maximum model turns reached before any stop proposal was "
+            f"evaluated by the Goal Gate: {context.max_turns}"
+        )
+    return MaxTurnsExceededError(
+        f"Maximum model turns reached: {context.max_turns}"
+    )
+
+
+ModelCompletion = Callable[
+    [str, list[dict[str, Any]], list[dict[str, Any]]],
+    ModelResponse,
+]
+
+
+@dataclass(frozen=True)
+class GoalRuntime:
+    state: GoalState | None
+    stop_hook: StopHook | None
+
+
+@dataclass(frozen=True)
+class CompactionRuntime:
+    compactor: ContextCompactor | None
+    request: CompactionRequest | None
+
+
+def _validate_run_configuration(
+    *,
+    max_turns: int,
+    max_context_chars: int | None,
+    subagent_max_turns: int,
+    max_goal_retries: int,
+    goal_condition: str | None,
+    goal_evaluator: GoalEvaluator | None,
+) -> None:
+    if max_turns < 1:
+        raise ValueError("max_turns must be at least 1")
+    if max_context_chars is not None and max_context_chars < 1:
+        raise ValueError("max_context_chars must be at least 1")
+    if subagent_max_turns < 1:
+        raise ValueError("subagent_max_turns must be at least 1")
+    if max_goal_retries < 0:
+        raise ValueError("max_goal_retries must be at least 0")
+    if goal_evaluator is not None and goal_condition is None:
+        raise ValueError("goal_evaluator requires goal_condition")
+
+
+def _memory_catalog(workspace: Path, enabled: bool) -> MemoryCatalog:
+    return discover_memories(workspace) if enabled else empty_memory_catalog(workspace)
+
+
+def _completion_router(
+    provider: ModelProvider,
+    recovery: RecoveryExecutor,
+    current_turn: Callable[[], int],
+) -> ModelCompletion:
+    def complete_for(
+        purpose: str,
+        request_messages: list[dict[str, Any]],
+        request_tools: list[dict[str, Any]],
+    ) -> ModelResponse:
+        return recovery.complete(
+            provider,
+            request_messages,
+            request_tools,
+            purpose=purpose,
+            turn=current_turn(),
+            state=RecoveryState(),
+        )
+
+    return complete_for
+
+
+def _goal_runtime(
+    condition: str | None,
+    evaluator: GoalEvaluator | None,
+    max_retries: int,
+    complete_for: ModelCompletion,
+    event_logger: EventLogger,
+    max_context_chars: int | None,
+) -> GoalRuntime:
+    if condition is None:
+        return GoalRuntime(None, None)
+
+    resolved_evaluator = evaluator or PromptGoalEvaluator(
+        lambda messages, schemas: complete_for("goal_evaluation", messages, schemas),
+        max_context_chars=max_context_chars,
+    )
+    state = create_goal_state(condition, max_retries=max_retries)
+    return GoalRuntime(
+        state,
+        create_goal_stop_hook(state, resolved_evaluator, event_logger),
+    )
+
+
+def _compaction_runtime(
+    workspace: Path,
+    provider: ModelProvider,
+    tools: list[dict[str, Any]],
+    max_context_chars: int | None,
+    complete_for: ModelCompletion,
+    event_logger: EventLogger,
+) -> CompactionRuntime:
+    if max_context_chars is None:
+        return CompactionRuntime(None, None)
+    return CompactionRuntime(
+        ContextCompactor(
+            workspace,
+            provider,
+            tools,
+            max_context_chars,
+            event_logger=event_logger,
+            summary_complete=lambda messages, schemas: complete_for(
+                "summary", messages, schemas
+            ),
+        ),
+        CompactionRequest(),
+    )
+
+
+def _subagent_runner(
+    *,
+    enabled: bool,
+    provider: ModelProvider,
+    workspace: Path,
+    max_turns: int,
+    permission_policy: PermissionPolicy,
+    permission_prompt: PermissionPrompt | None,
+    event_logger: EventLogger,
+    max_context_chars: int | None,
+    tool_hooks: ToolHooks | None,
+    recovery_policy: RecoveryPolicy,
+    memory_enabled: bool,
+) -> SubagentRunner | None:
+    if not enabled:
+        return None
+
+    # Import the composition entry point lazily to avoid context <-> loop
+    # initialization recursion. The core Agent Loop remains dependency-free.
+    from tiny_harness.agent.loop import run_agent
+
+    return SubagentExecutor(
+        run_agent,
+        provider,
+        workspace,
+        max_turns=max_turns,
+        permission_policy=permission_policy,
+        permission_prompt=permission_prompt,
+        event_logger=event_logger,
+        max_context_chars=max_context_chars,
+        tool_hooks=tool_hooks,
+        recovery_policy=recovery_policy,
+        memory_enabled=memory_enabled,
+    )
+
+
+def _stop_hooks(
+    goal_hook: StopHook | None,
+    *,
+    memory_enabled: bool,
+    memory_extraction_enabled: bool,
+    memory_catalog: MemoryCatalog,
+    complete_for: ModelCompletion,
+    event_logger: EventLogger,
+    max_context_chars: int | None,
+) -> StopHook | None:
+    memory_hook = (
+        create_memory_stop_hook(
+            memory_catalog,
+            lambda messages, schemas: complete_for(
+                "memory_extraction", messages, schemas
+            ),
+            lambda messages, schemas: complete_for(
+                "memory_consolidation", messages, schemas
+            ),
+            event_logger,
+            max_context_chars=max_context_chars,
+        )
+        if memory_enabled and memory_extraction_enabled
+        else None
+    )
+    return compose_stop_hooks(goal_hook, memory_hook)
 
 
 def create_run_context(
@@ -176,127 +367,76 @@ def create_run_context(
     goal_condition: str | None = None,
     max_goal_retries: int = DEFAULT_MAX_GOAL_RETRIES,
     goal_evaluator: GoalEvaluator | None = None,
+    inject_goal_context: bool = True,
     memory_enabled: bool = False,
     memory_extraction_enabled: bool = True,
 ) -> AgentRunContext:
-    """校验配置并装配一次运行所需的依赖。"""
+    """Compose one run from top-level policy to concrete runtime state."""
 
-    if max_turns < 1:
-        raise ValueError("max_turns must be at least 1")
-    if max_context_chars is not None and max_context_chars < 1:
-        raise ValueError("max_context_chars must be at least 1")
-    if subagent_max_turns < 1:
-        raise ValueError("subagent_max_turns must be at least 1")
-    if max_goal_retries < 0:
-        raise ValueError("max_goal_retries must be at least 0")
-    if goal_evaluator is not None and goal_condition is None:
-        raise ValueError("goal_evaluator requires goal_condition")
+    _validate_run_configuration(
+        max_turns=max_turns,
+        max_context_chars=max_context_chars,
+        subagent_max_turns=subagent_max_turns,
+        max_goal_retries=max_goal_retries,
+        goal_condition=goal_condition,
+        goal_evaluator=goal_evaluator,
+    )
 
     skill_catalog = discover_skills(workspace)
-    memory_catalog = (
-        discover_memories(workspace)
-        if memory_enabled
-        else empty_memory_catalog(workspace)
-    )
+    memory_catalog = _memory_catalog(workspace, memory_enabled)
     tools = tool_schemas(
         include_task=allow_subagent,
         include_skill=bool(skill_catalog.manifests),
         include_compact=max_context_chars is not None,
     )
     todo_manager = TodoManager()
-    recovery_executor = RecoveryExecutor(
-        recovery_policy,
+
+    recovery = RecoveryExecutor(recovery_policy, event_logger=event_logger)
+    context: AgentRunContext
+    complete_for = _completion_router(
+        provider,
+        recovery,
+        lambda: context.current_turn,
+    )
+
+    goal = _goal_runtime(
+        goal_condition,
+        goal_evaluator,
+        max_goal_retries,
+        complete_for,
+        event_logger,
+        max_context_chars,
+    )
+    compaction = _compaction_runtime(
+        workspace,
+        provider,
+        tools,
+        max_context_chars,
+        complete_for,
+        event_logger,
+    )
+    subagent = _subagent_runner(
+        enabled=allow_subagent,
+        provider=provider,
+        workspace=workspace,
+        max_turns=subagent_max_turns,
+        permission_policy=permission_policy,
+        permission_prompt=permission_prompt,
         event_logger=event_logger,
+        max_context_chars=max_context_chars,
+        tool_hooks=tool_hooks,
+        recovery_policy=recovery_policy,
+        memory_enabled=memory_enabled,
     )
-
-    # 闭包需要读取当前物理请求所属的逻辑 turn；context 在下方装配完成。
-    context_ref: list[AgentRunContext] = []
-
-    def complete_for(
-        purpose: str,
-        request_messages: list[dict[str, Any]],
-        request_tools: list[dict[str, Any]],
-    ) -> ModelResponse:
-        return recovery_executor.complete(
-            provider,
-            request_messages,
-            request_tools,
-            purpose=purpose,
-            turn=context_ref[0].current_turn,
-            state=RecoveryState(),
-        )
-
-    goal_state: GoalState | None = None
-    goal_stop_hook: StopHook | None = None
-    if goal_condition is not None:
-        evaluator = goal_evaluator or PromptGoalEvaluator(
-            lambda messages, schemas: complete_for(
-                "goal_evaluation", messages, schemas
-            ),
-            max_context_chars=max_context_chars,
-        )
-        goal_state = create_goal_state(
-            goal_condition,
-            max_retries=max_goal_retries,
-        )
-        goal_stop_hook = create_goal_stop_hook(
-            goal_state,
-            evaluator,
-            event_logger,
-        )
-
-    memory_stop_hook = (
-        create_memory_stop_hook(
-            memory_catalog,
-            lambda messages, schemas: complete_for(
-                "memory_extraction", messages, schemas
-            ),
-            lambda messages, schemas: complete_for(
-                "memory_consolidation", messages, schemas
-            ),
-            event_logger,
-            max_context_chars=max_context_chars,
-        )
-        if memory_enabled and memory_extraction_enabled
-        else None
+    stop_hook = _stop_hooks(
+        goal.stop_hook,
+        memory_enabled=memory_enabled,
+        memory_extraction_enabled=memory_extraction_enabled,
+        memory_catalog=memory_catalog,
+        complete_for=complete_for,
+        event_logger=event_logger,
+        max_context_chars=max_context_chars,
     )
-    stop_hook = compose_stop_hooks(goal_stop_hook, memory_stop_hook)
-
-    compaction_request = (
-        CompactionRequest() if max_context_chars is not None else None
-    )
-    compactor = (
-        ContextCompactor(
-            workspace,
-            provider,
-            tools,
-            max_context_chars,
-            event_logger=event_logger,
-            summary_complete=lambda messages, schemas: complete_for(
-                "summary", messages, schemas
-            ),
-        )
-        if max_context_chars is not None
-        else None
-    )
-    subagent_runner = None
-    if allow_subagent:
-        # 局部导入避免 composition 层与核心循环形成模块初始化环。
-        from tiny_harness.agent.loop import run_agent
-
-        subagent_runner = SubagentExecutor(
-            run_agent,
-            provider,
-            workspace,
-            max_turns=subagent_max_turns,
-            permission_policy=permission_policy,
-            permission_prompt=permission_prompt,
-            event_logger=event_logger,
-            max_context_chars=max_context_chars,
-            tool_hooks=tool_hooks,
-            recovery_policy=recovery_policy,
-            memory_enabled=memory_enabled,
-        )
 
     context = AgentRunContext(
         provider=provider,
@@ -311,7 +451,7 @@ def create_run_context(
         tool_hooks=tool_hooks,
         recovery_policy=recovery_policy,
         event_logger=event_logger,
-        recovery_executor=recovery_executor,
+        recovery_executor=recovery,
         todo_manager=todo_manager,
         skill_catalog=skill_catalog,
         memory_enabled=memory_enabled,
@@ -325,11 +465,12 @@ def create_run_context(
             if memory_enabled
             else None
         ),
-        compactor=compactor,
-        compaction_request=compaction_request,
-        subagent_runner=subagent_runner,
-        goal_state=goal_state,
+        compactor=compaction.compactor,
+        compaction_request=compaction.request,
+        subagent_runner=subagent,
+        goal_state=goal.state,
+        inject_goal_context=inject_goal_context,
         stop_hook=stop_hook,
+        permission_rejections=PermissionRejectionTracker(),
     )
-    context_ref.append(context)
     return context

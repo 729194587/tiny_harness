@@ -200,9 +200,9 @@ class SkillRuntimeTest(unittest.TestCase):
             for message in second_request["messages"]
             if message.get("role") == "tool"
         )
-        self.assertEqual(
+        self.assertIn(
+            "requested load_skill operation is not allowed",
             tool_result["content"],
-            "Error: Permission denied for tool load_skill",
         )
         self.assertNotIn(
             "PRIVATE_SKILL_BODY_SENTINEL",

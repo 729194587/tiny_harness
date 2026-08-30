@@ -55,16 +55,16 @@ python -m evals.run `
 
 ### Real Coding
 
-`basic_ablation` 与 `reliable` 使用相同模型、seed workspace、工具 schemas、Subagent 能力、Bash 白名单和 `max_turns`。
+`baseline` 与 `goal_gated` 使用相同模型、messages、seed workspace、工具 schemas、Subagent 能力、Bash 白名单、Retry、Context Policy 和 `max_turns`。运行顺序按 case/repetition 确定性交叉平衡。
 
 差异只有：
 
 | Profile | Goal Gate | transient retry |
 |---|---:|---:|
-| `basic_ablation` | 关闭 | 0 |
-| `reliable` | 开启 | 2 |
+| `baseline` | 关闭 | 2 |
+| `goal_gated` | 开启 | 2 |
 
-Real Coding 不启用 Context Compaction，因此两个 profile 都没有 `compact` 工具。`basic_ablation` 是当前 Runtime 的消融配置，不是早期 Runtime 快照。
+Real Coding 不启用 Context Compaction，因此两个 profile 都没有 `compact` 工具。Goal verification 不向首次 Agent 请求注入 Goal context；只有 Gate 拒绝 stop proposal 后，`goal_gated` 才会收到 rejection feedback。
 
 ### Controlled Failure Recovery
 
@@ -83,7 +83,7 @@ Real Coding 不启用 Context Compaction，因此两个 profile 都没有 `compa
 - Permission deny 不产生文件副作用；
 - 非法 finish reason 携带 write call 时不执行工具。
 
-Invariant 不进入 Basic/Reliable 提升百分比。
+Invariant 不进入 Baseline/Goal Gated 对比。
 
 ## External Grader
 
@@ -97,19 +97,23 @@ run-root/
 └─ result metadata
 ```
 
-Runner 在 Agent 开始前复制 seed 和 hidden grader。Agent 只获得 `workspace/`。结束后 Runner：
+Runner 在 Agent 开始前复制 seed 和 hidden grader。Agent 只获得 `workspace/`。每次 root Agent 产生合法 stop proposal、任何 Stop Gate 尚未执行前，Runner：
 
 1. 比较 hidden grader 前后摘要；
-2. 在 workspace 外启动 hidden unittest；
-3. 通过环境变量把 workspace 路径交给 grader；
-4. 只记录退出码，不把 grader stdout 写进报告。
+2. 把当前 workspace 和 hidden grader 物理复制到独立临时目录；
+3. 通过环境变量把 workspace snapshot 路径交给 grader；
+4. 同步运行 hidden unittest 后删除 snapshot；
+5. 只在 Runner 内存中保留 sanitized metadata，Agent 结束后才写入 `proposal_grades.json`。
+
+grader result、stdout/stderr 和 failure reason 不写入 Runtime event、Agent messages、Goal Evaluator input 或 Agent workspace。grading error 标记为 `invalid_run`，不计为 hidden FAIL。Subagent final 带有 `agent_scope=subagent`，不会触发 task-level grading。
 
 Real Coding 的 Bash 使用精确字符串白名单，两个 profile 完全相同。它避免普通 Agent 命令访问 hidden grader，但不是 OS sandbox；恶意 shell 进程隔离不属于当前 Eval v1。
 
 ## 指标语义
 
 - `verified_success`：Agent 正常返回、hidden grader 通过且 grader 未被改动；
-- `false_success`：Agent 正常返回，但 external grader 或副作用检查失败；
+- `false_success`：Agent 正常返回，proposal-time external grader 明确 FAIL；
+- `invalid_run`：proposal grading 不可用或 hidden grader 完整性失效，不计为 PASS/FAIL；
 - `explicit_failure`：Agent 明确抛错或达到限制，没有声称成功；
 - `recovery_success`：确定性故障已触发，且 Reliable 恢复完成；
 - `side_effect_violation`：workspace 外 hidden grader 被改动；
