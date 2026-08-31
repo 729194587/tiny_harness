@@ -144,22 +144,12 @@ class EventLifecycleTest(unittest.TestCase):
                 "run_started",
                 "model_requested",
                 "model_responded",
-                "stop_proposed",
-                "stop_decided",
                 "run_finished",
             ],
         )
         self.assertEqual(logger.events[2]["data"]["tool_call_count"], 0)
         self.assertEqual(
             logger.events[3]["data"],
-            {"turn": 1, "answer_length": 4, "has_next_turn": True},
-        )
-        self.assertEqual(
-            logger.events[4]["data"],
-            {"turn": 1, "action": "allow"},
-        )
-        self.assertEqual(
-            logger.events[5]["data"],
             {"turns": 1, "answer_length": 4},
         )
 

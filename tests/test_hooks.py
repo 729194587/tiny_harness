@@ -9,9 +9,8 @@ from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.runtime.hooks import (
     HookBlock,
     HookExecutionError,
-    StopDecision,
     ToolHooks,
-    run_stop_hook,
+    run_final_answer_hook,
 )
 from tiny_harness.runtime.permissions import PermissionDecision
 from tiny_harness.tools.registry import dispatch
@@ -426,58 +425,45 @@ class ToolHooksTest(unittest.TestCase):
         self.assertIn("Current todos:\nNo todos.", blocked_result)
 
 
-class StopHookTest(unittest.TestCase):
-    def test_missing_stop_hook_allows_candidate(self) -> None:
-        decision = run_stop_hook(
+class FinalAnswerHookTest(unittest.TestCase):
+    def test_missing_final_answer_hook_is_a_no_op(self) -> None:
+        result = run_final_answer_hook(
             None,
             [{"role": "user", "content": "task"}],
             "done",
             turn=1,
-            has_next_turn=False,
         )
 
-        self.assertEqual(decision, StopDecision("allow"))
+        self.assertIsNone(result)
 
-    def test_stop_hook_receives_candidate_without_committing_it(self) -> None:
+    def test_final_answer_hook_observes_without_controlling_termination(self) -> None:
         messages = [{"role": "user", "content": "task"}]
         observed = []
 
-        def block(context):
+        def observe(context):
             observed.append(context)
-            return StopDecision("block", "missing evidence")
 
-        decision = run_stop_hook(
-            block,
+        result = run_final_answer_hook(
+            observe,
             messages,
-            "premature",
+            "finished",
             turn=2,
-            has_next_turn=True,
         )
 
-        self.assertEqual(decision.action, "block")
+        self.assertIsNone(result)
         self.assertEqual(observed[0].messages, messages)
-        self.assertEqual(observed[0].candidate_answer, "premature")
+        self.assertEqual(observed[0].final_answer, "finished")
         self.assertEqual(observed[0].turn, 2)
-        self.assertTrue(observed[0].has_next_turn)
-        self.assertNotIn("premature", json.dumps(messages))
+        self.assertNotIn("finished", json.dumps(messages))
 
-    def test_stop_hook_rejects_untyped_or_invalid_decisions(self) -> None:
-        invalid_hooks = [
-            lambda context: True,
-            lambda context: StopDecision("invalid"),
-            lambda context: StopDecision("allow", None),
-        ]
-
-        for hook in invalid_hooks:
-            with self.subTest(hook=hook):
-                with self.assertRaises(TypeError):
-                    run_stop_hook(
-                        hook,
-                        [],
-                        "candidate",
-                        turn=1,
-                        has_next_turn=False,
-                    )
+    def test_final_answer_hook_must_be_observer_only(self) -> None:
+        with self.assertRaises(TypeError):
+            run_final_answer_hook(
+                lambda context: True,
+                [],
+                "answer",
+                turn=1,
+            )
 
 
 if __name__ == "__main__":

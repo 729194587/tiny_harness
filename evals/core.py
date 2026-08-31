@@ -16,7 +16,6 @@ class EvalCase:
 
     id: str
     task: str
-    goal: str
     max_turns: int
     allowed_bash: tuple[str, ...] = ()
 
@@ -26,14 +25,12 @@ class RunMetrics:
     """Control-flow counts derived only from Event Log metadata."""
 
     main_model_attempts: int = 0
-    goal_model_attempts: int = 0
     summary_model_attempts: int = 0
     total_model_attempts: int = 0
     turns: int = 0
     retries: int = 0
-    continuations: int = 0
     tool_calls: int = 0
-    stop_proposals: int = 0
+    run_tests_calls: int = 0
 
 
 @dataclass
@@ -97,7 +94,6 @@ def load_cases(path: Path) -> list[EvalCase]:
         allowed_fields = {
             "id",
             "task",
-            "goal",
             "max_turns",
             "allowed_bash",
         }
@@ -108,7 +104,6 @@ def load_cases(path: Path) -> list[EvalCase]:
             )
         case_id = raw.get("id")
         task = raw.get("task")
-        goal = raw.get("goal")
         max_turns = raw.get("max_turns")
         allowed_bash = raw.get("allowed_bash", [])
         if not isinstance(case_id, str) or not case_id.strip():
@@ -121,8 +116,6 @@ def load_cases(path: Path) -> list[EvalCase]:
             raise ValueError(f"Duplicate eval case id: {case_id}")
         if not isinstance(task, str) or not task.strip():
             raise ValueError(f"Eval case {case_id} requires a task")
-        if not isinstance(goal, str) or not goal.strip():
-            raise ValueError(f"Eval case {case_id} requires a goal")
         if not isinstance(max_turns, int) or isinstance(max_turns, bool):
             raise ValueError(f"Eval case {case_id} max_turns must be an integer")
         if max_turns < 1:
@@ -139,7 +132,6 @@ def load_cases(path: Path) -> list[EvalCase]:
             EvalCase(
                 id=case_id,
                 task=task.strip(),
-                goal=goal.strip(),
                 max_turns=max_turns,
                 allowed_bash=tuple(allowed_bash),
             )
@@ -178,15 +170,8 @@ def collect_metrics(events: list[dict[str, Any]]) -> RunMetrics:
         if event.get("data", {}).get("purpose") == "main"
         and event.get("data", {}).get("agent_scope") is None
     ]
-    goal_events = [
-        event
-        for event in events
-        if event.get("event_type") == "goal_evaluated"
-        and event.get("data", {}).get("agent_scope") is None
-    ]
     return RunMetrics(
         main_model_attempts=attempts("main"),
-        goal_model_attempts=attempts("goal_evaluation"),
         summary_model_attempts=attempts("summary"),
         total_model_attempts=len(requested),
         turns=max(parent_main_turns, default=0),
@@ -194,20 +179,13 @@ def collect_metrics(events: list[dict[str, Any]]) -> RunMetrics:
             event.get("event_type") == "model_retry_scheduled"
             for event in events
         ),
-        continuations=max(
-            (
-                event.get("data", {}).get("retries_used", 0)
-                for event in goal_events
-            ),
-            default=0,
-        ),
         tool_calls=sum(
             event.get("event_type") == "tool_started"
             for event in events
         ),
-        stop_proposals=sum(
-            event.get("event_type") == "stop_proposed"
-            and event.get("data", {}).get("agent_scope") is None
+        run_tests_calls=sum(
+            event.get("event_type") == "tool_started"
+            and event.get("data", {}).get("tool_name") == "run_tests"
             for event in events
         ),
     )

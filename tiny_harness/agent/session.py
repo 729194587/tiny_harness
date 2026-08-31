@@ -12,14 +12,12 @@ from tiny_harness.agent.context import (
 from tiny_harness.agent.loop import agent_loop
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger
-from tiny_harness.runtime.goal import DEFAULT_MAX_GOAL_RETRIES
 from tiny_harness.runtime.permissions import PermissionPrompt
 from tiny_harness.runtime.recovery import RecoveryPolicy
 
 
 RUN_SCOPED_MARKERS = frozenset(
     {
-        "tinyharness_goal_state",
         "tinyharness_memory_catalog",
         "tinyharness_relevant_memory",
         "tinyharness_skill_catalog",
@@ -46,7 +44,6 @@ class AgentSession:
         max_context_chars: int | None = None,
         subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS,
         recovery_policy: RecoveryPolicy = RecoveryPolicy(),
-        max_goal_retries: int = DEFAULT_MAX_GOAL_RETRIES,
         memory_enabled: bool = False,
         event_logger_factory: Callable[[], EventLogger] = _null_event_logger,
     ) -> None:
@@ -64,27 +61,14 @@ class AgentSession:
         self.max_context_chars = max_context_chars
         self.subagent_max_turns = subagent_max_turns
         self.recovery_policy = recovery_policy
-        self.max_goal_retries = max_goal_retries
         self.memory_enabled = memory_enabled
         self.event_logger_factory = event_logger_factory
 
-    def submit(
-        self,
-        task: str,
-        *,
-        goal_condition: str | None = None,
-    ) -> str:
+    def submit(self, task: str) -> str:
         """Append one user turn and run the agent against shared history."""
 
         if not task.strip():
             raise ValueError("task cannot be empty")
-        if goal_condition is not None and any(
-            message.get("role") == "user" for message in self.messages
-        ):
-            raise ValueError(
-                "goal_condition is only supported on the first submit "
-                "of a fresh AgentSession"
-            )
         self._remove_run_scoped_markers()
         self.messages.append({"role": "user", "content": task})
         context = create_run_context(
@@ -96,8 +80,6 @@ class AgentSession:
             max_context_chars=self.max_context_chars,
             subagent_max_turns=self.subagent_max_turns,
             recovery_policy=self.recovery_policy,
-            goal_condition=goal_condition,
-            max_goal_retries=self.max_goal_retries,
             memory_enabled=self.memory_enabled,
         )
         answer = agent_loop(self.messages, context, task)

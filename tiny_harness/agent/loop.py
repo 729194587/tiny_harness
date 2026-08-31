@@ -8,7 +8,6 @@ from tiny_harness.agent.context import (
     AgentRunContext,
     create_run_context,
     initialize_run_state,
-    run_finished_data,
     run_started_data,
     turn_limit_error,
 )
@@ -23,11 +22,7 @@ from tiny_harness.runtime.events import (
     EventLogger,
     EventType,
 )
-from tiny_harness.runtime.goal import (
-    DEFAULT_MAX_GOAL_RETRIES,
-    GoalEvaluator,
-)
-from tiny_harness.runtime.hooks import ToolHooks, run_stop_hook
+from tiny_harness.runtime.hooks import ToolHooks, run_final_answer_hook
 from tiny_harness.runtime.permissions import (
     DEFAULT_PERMISSION_POLICY,
     PermissionPolicy,
@@ -68,37 +63,18 @@ def agent_loop(
 
             if not response.tool_calls:
                 answer = response.content or ""
-                context.event_logger.emit(
-                    EventType.STOP_PROPOSED,
-                    {
-                        "turn": turn,
-                        "answer_length": len(answer),
-                        "has_next_turn": turn < context.max_turns,
-                    },
-                )
-                stop_decision = run_stop_hook(
-                    context.stop_hook,
+                run_final_answer_hook(
+                    context.final_answer_hook,
                     messages,
                     answer,
                     turn=turn,
-                    has_next_turn=turn < context.max_turns,
                 )
-                context.event_logger.emit(
-                    EventType.STOP_DECIDED,
-                    {
-                        "turn": turn,
-                        "action": stop_decision.action,
-                    },
-                )
-                if stop_decision.action == "block":
-                    continue
 
                 messages.append(assistant_message)
                 finish_data = {
                     "turns": turn,
                     "answer_length": len(answer),
                 }
-                finish_data.update(run_finished_data(context))
                 context.event_logger.emit(
                     EventType.RUN_FINISHED,
                     finish_data,
@@ -141,10 +117,6 @@ def run_agent(
     subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS,
     allow_subagent: bool = True,
     recovery_policy: RecoveryPolicy = RecoveryPolicy(),
-    goal_condition: str | None = None,
-    max_goal_retries: int = DEFAULT_MAX_GOAL_RETRIES,
-    goal_evaluator: GoalEvaluator | None = None,
-    inject_goal_context: bool = True,
     test_runner: TestRunner | None = None,
     memory_enabled: bool = False,
     memory_extraction_enabled: bool = True,
@@ -163,10 +135,6 @@ def run_agent(
         subagent_max_turns=subagent_max_turns,
         allow_subagent=allow_subagent,
         recovery_policy=recovery_policy,
-        goal_condition=goal_condition,
-        max_goal_retries=max_goal_retries,
-        goal_evaluator=goal_evaluator,
-        inject_goal_context=inject_goal_context,
         test_runner=test_runner,
         memory_enabled=memory_enabled,
         memory_extraction_enabled=memory_extraction_enabled,

@@ -141,7 +141,6 @@ class AgentSessionTest(unittest.TestCase):
         session.messages.extend(
             [
                 {"role": "user", "name": "tinyharness_todo_state", "content": "old"},
-                {"role": "user", "name": "tinyharness_goal_state", "content": "old"},
                 {
                     "role": "user",
                     "name": "tinyharness_context_summary",
@@ -154,7 +153,6 @@ class AgentSessionTest(unittest.TestCase):
 
         names = [message.get("name") for message in provider.calls[0]["messages"]]
         self.assertNotIn("tinyharness_todo_state", names)
-        self.assertNotIn("tinyharness_goal_state", names)
         self.assertIn("tinyharness_context_summary", names)
 
     def test_clear_keeps_only_a_fresh_system_message(self) -> None:
@@ -205,67 +203,6 @@ class AgentSessionTest(unittest.TestCase):
             session.submit("   ")
 
         self.assertEqual(provider.calls, [])
-
-    def test_goal_is_allowed_on_first_submit(self) -> None:
-        provider = FakeProvider([])
-        session = AgentSession(provider, self.workspace, "system")
-
-        with patch(
-            "tiny_harness.agent.session.create_run_context",
-            return_value=object(),
-        ) as create_context:
-            with patch(
-                "tiny_harness.agent.session.agent_loop",
-                return_value="done",
-            ):
-                answer = session.submit(
-                    "task", goal_condition="tests pass"
-                )
-
-        self.assertEqual(answer, "done")
-        self.assertEqual(
-            create_context.call_args.kwargs["goal_condition"],
-            "tests pass",
-        )
-
-    def test_goal_is_rejected_after_a_previous_user_turn(self) -> None:
-        provider = FakeProvider([ModelResponse("first", None, [], "stop")])
-        session = AgentSession(provider, self.workspace, "system")
-        session.submit("first task")
-        before = copy.deepcopy(session.messages)
-
-        with self.assertRaisesRegex(
-            ValueError,
-            "only supported on the first submit",
-        ):
-            session.submit("second task", goal_condition="new tests pass")
-
-        self.assertEqual(len(provider.calls), 1)
-        self.assertEqual(session.messages, before)
-
-    def test_clear_makes_the_session_fresh_for_a_goal(self) -> None:
-        provider = FakeProvider([ModelResponse("first", None, [], "stop")])
-        session = AgentSession(provider, self.workspace, "system")
-        session.submit("first task")
-        session.clear()
-
-        with patch(
-            "tiny_harness.agent.session.create_run_context",
-            return_value=object(),
-        ) as create_context:
-            with patch(
-                "tiny_harness.agent.session.agent_loop",
-                return_value="done",
-            ):
-                answer = session.submit(
-                    "fresh task", goal_condition="tests pass"
-                )
-
-        self.assertEqual(answer, "done")
-        self.assertEqual(
-            create_context.call_args.kwargs["goal_condition"],
-            "tests pass",
-        )
 
 
 if __name__ == "__main__":

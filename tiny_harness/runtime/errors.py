@@ -1,4 +1,4 @@
-"""Runtime termination errors that are independent of Goal evaluation."""
+"""Runtime termination errors."""
 
 
 class MaxTurnsExceededError(RuntimeError):

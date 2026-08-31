@@ -37,15 +37,6 @@ class RecordingRunner:
         return "Exit code: 0\nRan 1 test\n\nOK"
 
 
-class RecordingEvaluator:
-    def __init__(self) -> None:
-        self.calls = []
-
-    def evaluate(self, condition, messages, candidate_answer):
-        self.calls.append((condition, messages, candidate_answer))
-        raise AssertionError("Goal evaluator must not run without a stop proposal")
-
-
 class RecordingEventLogger:
     def __init__(self) -> None:
         self.events = []
@@ -186,9 +177,8 @@ class RunTestsRuntimeSemanticsTest(unittest.TestCase):
             "Exit code: 0\nRan 1 test\n\nOK",
         )
 
-    def test_passing_tests_do_not_propose_stop_or_call_goal_evaluator(self) -> None:
+    def test_passing_tests_are_an_ordinary_tool_result(self) -> None:
         runner = RecordingRunner()
-        evaluator = RecordingEvaluator()
         logger = RecordingEventLogger()
         provider = ScriptedProvider(
             [
@@ -207,16 +197,13 @@ class RunTestsRuntimeSemanticsTest(unittest.TestCase):
                 self.workspace,
                 [{"role": "user", "content": "task"}],
                 max_turns=1,
-                goal_condition="goal",
-                goal_evaluator=evaluator,
                 test_runner=runner,
                 event_logger=logger,
             )
 
         event_names = [event["event_type"] for event in logger.events]
-        self.assertNotIn("stop_proposed", event_names)
-        self.assertNotIn("goal_evaluation_requested", event_names)
-        self.assertEqual(evaluator.calls, [])
+        self.assertNotIn("run_finished", event_names)
+        self.assertEqual(runner.workspaces, [self.workspace])
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ from evals.core import (
     read_jsonl_events,
 )
 from evals.graders import (
-    ProposalGradingEventLogger,
+    FinalAnswerGradingEventLogger,
     hidden_grader_changed,
     prepare_case,
     run_post_run_grade,
@@ -31,7 +31,6 @@ from tiny_harness.agent.loop import run_agent as agent_loop
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
 from tiny_harness.runtime.errors import MaxTurnsExceededError
 from tiny_harness.runtime.events import JsonlEventLogger
-from tiny_harness.runtime.goal import GoalNotAchievedError
 from tiny_harness.runtime.permissions import PermissionDecision
 from tiny_harness.runtime.recovery import RecoveryPolicy
 from tiny_harness.runtime.test_runner import SubprocessTestRunner, TestRunner
@@ -39,7 +38,7 @@ from tiny_harness.runtime.test_runner import SubprocessTestRunner, TestRunner
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CASES = ROOT / "cases.json"
 DEFAULT_FIXTURES = ROOT / "fixtures"
-REAL_PROFILES = ("baseline", "goal_gated")
+REAL_PROFILE = "harness"
 
 _UNSAFE_TEST_SHELL = re.compile(r"[;&|<>\r\n()`$%^!]")
 _TEST_MODULE = re.compile(
@@ -290,7 +289,7 @@ def _system_prompt() -> str:
 def _is_explicit_completion_failure(error: Exception | None) -> bool:
     """Distinguish exhausted completion from runner/provider infrastructure."""
 
-    if isinstance(error, (GoalNotAchievedError, MaxTurnsExceededError)):
+    if isinstance(error, MaxTurnsExceededError):
         return True
     return False
 
@@ -298,22 +297,19 @@ def _is_explicit_completion_failure(error: Exception | None) -> bool:
 def run_real_case(
     case: EvalCase,
     *,
-    profile: str,
     repetition: int,
     provider: ChatCompletionsProvider,
     fixtures_root: Path,
     results_root: Path,
 ) -> EvalResult:
-    if profile not in REAL_PROFILES:
-        raise ValueError(f"Unknown real coding profile: {profile}")
     prepared = prepare_case(
         case,
         fixtures_root=fixtures_root,
         results_root=results_root,
-        profile=profile,
+        profile=REAL_PROFILE,
         repetition=repetition,
     )
-    logger = ProposalGradingEventLogger(
+    logger = FinalAnswerGradingEventLogger(
         JsonlEventLogger(prepared.event_log),
         prepared,
     )
@@ -340,24 +336,20 @@ def run_real_case(
             recovery_policy=RecoveryPolicy(
                 max_retries=2,
             ),
-            goal_condition=case.goal if profile == "goal_gated" else None,
-            max_goal_retries=2,
-            inject_goal_context=False,
         )
         returned = True
     except Exception as caught:
         error = caught
     elapsed_ms = round((time.monotonic() - started) * 1000)
 
-    logger.write_records(prepared.run_root / "proposal_grades.json")
+    logger.write_record(prepared.run_root / "terminal_grade.json")
     run_post_run_grade(prepared)
     grader_was_changed = hidden_grader_changed(prepared)
-    grades = logger.records
-    last_grade = grades[-1] if grades else None
+    terminal_grade = logger.record
     invalid = (
         grader_was_changed
         or logger.invalid
-        or (returned and last_grade is None)
+        or (returned and terminal_grade is None)
         or (
             error is not None
             and not _is_explicit_completion_failure(error)
@@ -366,21 +358,21 @@ def run_real_case(
     verified = bool(
         returned
         and not invalid
-        and last_grade is not None
-        and last_grade.passed is True
+        and terminal_grade is not None
+        and terminal_grade.passed is True
     )
     events = read_jsonl_events(prepared.event_log)
     return EvalResult(
         category="real_coding",
         case_id=case.id,
-        profile=profile,
+        profile=REAL_PROFILE,
         repetition=repetition,
         verified_success=verified,
         false_success=bool(
             returned
             and not invalid
-            and last_grade is not None
-            and last_grade.passed is False
+            and terminal_grade is not None
+            and terminal_grade.passed is False
         ),
         explicit_failure=bool(
             not returned
@@ -391,7 +383,7 @@ def run_real_case(
         agent_returned=returned,
         invalid_run=invalid,
         error_type=type(error).__name__ if error is not None else None,
-        grader_exit_code=last_grade.exit_code if last_grade else None,
+        grader_exit_code=terminal_grade.exit_code if terminal_grade else None,
         elapsed_ms=elapsed_ms,
         metrics=collect_metrics(events),
     )
@@ -400,7 +392,6 @@ def run_real_case(
 def run_real_suite(
     cases: list[EvalCase],
     *,
-    profiles: Sequence[str],
     repetitions: int,
     fixtures_root: Path,
     results_root: Path,
@@ -409,48 +400,24 @@ def run_real_suite(
     if not api_key:
         raise RuntimeError("TINYHARNESS_API_KEY is required for real evals")
     results = []
-    for case_index, case in enumerate(cases):
+    for case in cases:
         for repetition in range(1, repetitions + 1):
-            ordered_profiles = balanced_profile_order(
-                profiles,
-                case_index=case_index,
-                repetition=repetition,
+            provider = ChatCompletionsProvider(
+                api_key=api_key,
+                model=os.getenv("TINYHARNESS_MODEL", DEFAULT_MODEL),
+                base_url=os.getenv("TINYHARNESS_BASE_URL", DEFAULT_BASE_URL),
             )
-            for profile in ordered_profiles:
-                provider = ChatCompletionsProvider(
-                    api_key=api_key,
-                    model=os.getenv("TINYHARNESS_MODEL", DEFAULT_MODEL),
-                    base_url=os.getenv(
-                        "TINYHARNESS_BASE_URL",
-                        DEFAULT_BASE_URL,
-                    ),
+            print(f"[eval] {case.id} / run {repetition}")
+            results.append(
+                run_real_case(
+                    case,
+                    repetition=repetition,
+                    provider=provider,
+                    fixtures_root=fixtures_root,
+                    results_root=results_root,
                 )
-                print(f"[eval] {case.id} / {profile} / run {repetition}")
-                results.append(
-                    run_real_case(
-                        case,
-                        profile=profile,
-                        repetition=repetition,
-                        provider=provider,
-                        fixtures_root=fixtures_root,
-                        results_root=results_root,
-                    )
-                )
+            )
     return results
-
-
-def balanced_profile_order(
-    profiles: Sequence[str],
-    *,
-    case_index: int,
-    repetition: int,
-) -> tuple[str, ...]:
-    """Deterministically cross-balance the two real-coding arms."""
-
-    ordered = tuple(profiles)
-    if set(ordered) != set(REAL_PROFILES) or len(ordered) != 2:
-        return ordered
-    return ordered if (case_index + repetition) % 2 == 0 else ordered[::-1]
 
 
 def _mean(results: list[EvalResult], field: str) -> str:
@@ -464,44 +431,40 @@ def render_markdown(results: list[EvalResult]) -> str:
     lines = [
         "# TinyHarness Reliability Eval Report",
         "",
-        "## Real Coding: Baseline vs Goal Gated",
+        "## Real Coding",
         "",
-        "| Profile | Runs | Verified | False success | Explicit failure "
-        "| Avg main | Avg goal | Avg summary | Avg total | Avg turns |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Runs | Verified | Premature terminal | Explicit failure "
+        "| Avg main | Avg summary | Avg total | Avg turns |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     real = [result for result in results if result.category == "real_coding"]
-    for profile in REAL_PROFILES:
-        selected = [result for result in real if result.profile == profile]
-        lines.append(
-            f"| {profile} | {len(selected)} | "
-            f"{sum(result.verified_success for result in selected)} | "
-            f"{sum(result.false_success for result in selected)} | "
-            f"{sum(result.explicit_failure for result in selected)} | "
-            f"{_mean(selected, 'main_model_attempts')} | "
-            f"{_mean(selected, 'goal_model_attempts')} | "
-            f"{_mean(selected, 'summary_model_attempts')} | "
-            f"{_mean(selected, 'total_model_attempts')} | "
-            f"{_mean(selected, 'turns')} |"
-        )
+    lines.append(
+        f"| {len(real)} | {sum(r.verified_success for r in real)} | "
+        f"{sum(r.false_success for r in real)} | "
+        f"{sum(r.explicit_failure for r in real)} | "
+        f"{_mean(real, 'main_model_attempts')} | "
+        f"{_mean(real, 'summary_model_attempts')} | "
+        f"{_mean(real, 'total_model_attempts')} | {_mean(real, 'turns')} |"
+    )
 
     lines.extend(
         [
             "",
             "### Real Coding Per-run Results",
             "",
-            "| Case | Profile | Run | Verified | False success | Explicit "
-            "failure | Model attempts | Turns | Tool calls |",
-            "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+            "| Case | Run | Verified | Premature terminal | Explicit failure "
+            "| Model attempts | Turns | Tool calls | run_tests |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for result in real:
         lines.append(
-            f"| {result.case_id} | {result.profile} | {result.repetition} | "
+            f"| {result.case_id} | {result.repetition} | "
             f"{int(result.verified_success)} | {int(result.false_success)} | "
             f"{int(result.explicit_failure)} | "
             f"{result.metrics.total_model_attempts} | "
-            f"{result.metrics.turns} | {result.metrics.tool_calls} |"
+            f"{result.metrics.turns} | {result.metrics.tool_calls} | "
+            f"{result.metrics.run_tests_calls} |"
         )
 
     lines.extend(
@@ -510,8 +473,8 @@ def render_markdown(results: list[EvalResult]) -> str:
             "## Controlled Failure Recovery",
             "",
             "| Scenario | Profile | Fault triggered | Recovered | Attempts "
-            "| Retries | Continuations |",
-            "|---|---|---:|---:|---:|---:|---:|",
+            "| Retries |",
+            "|---|---|---:|---:|---:|---:|",
         ]
     )
     controlled = [
@@ -524,8 +487,7 @@ def render_markdown(results: list[EvalResult]) -> str:
             f"| {result.case_id} | {result.profile} | "
             f"{int(result.fault_triggered)} | "
             f"{int(bool(result.recovery_success))} | "
-            f"{result.metrics.total_model_attempts} | "
-            f"{result.metrics.retries} | {result.metrics.continuations} |"
+            f"{result.metrics.total_model_attempts} | {result.metrics.retries} |"
         )
 
     lines.extend(
@@ -581,11 +543,6 @@ def _parser() -> argparse.ArgumentParser:
         choices=("offline", "real", "all"),
         default="offline",
     )
-    parser.add_argument(
-        "--profile",
-        choices=("both", *REAL_PROFILES),
-        default="both",
-    )
     parser.add_argument("--repetitions", type=_positive_int, default=1)
     parser.add_argument("--case", action="append", dest="case_ids")
     parser.add_argument("--cases-file", type=Path, default=DEFAULT_CASES)
@@ -613,15 +570,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             missing = selected - {case.id for case in cases}
             if missing:
                 raise ValueError("Unknown eval cases: " + ", ".join(sorted(missing)))
-        profiles = (
-            REAL_PROFILES
-            if args.profile == "both"
-            else (args.profile,)
-        )
         results.extend(
             run_real_suite(
                 cases,
-                profiles=profiles,
                 repetitions=args.repetitions,
                 fixtures_root=args.fixtures_root.resolve(),
                 results_root=results_root,

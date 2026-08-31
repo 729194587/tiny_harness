@@ -1,125 +1,64 @@
-# TinyHarness Reliability Eval v1
+# TinyHarness Reliability Eval
 
-TinyHarness 使用一个专用、同步、标准库实现的 runner，回答三个问题：
+当前 Eval 使用单一普通 `harness` profile，评估 Runtime 的自然 Final Answer 路径以及 Permission、Recovery、Context 和验证能力。
 
-1. Harness 是否降低 `false_success`；
-2. 是否能恢复确定性注入的故障；
-3. 可靠性增加了多少模型调用和执行开销。
+## Pilot
 
-它不是通用 benchmark SDK，也不使用 LLM-as-judge。
-
-## 快速运行
-
-离线场景不需要 API Key：
+Pilot 保留 6 个 coding tasks、seed workspace、visible tests 和 workspace 外的 hidden grader。Runner 为每次运行创建独立目录，Agent 只能访问 `workspace/`；hidden grader 在 root Agent 自然结束时对物理快照评分，并在运行完全结束后再做一次 final workspace grade。
 
 ```powershell
-cd D:\learn-claude-code\tinyharness
-python -m evals.run --suite offline
+python -m evals.pilot run `
+  --repetitions 2 `
+  --results-dir .\pilot-results
 ```
 
-结果写到 `evals/results/<timestamp>/report.json` 和 `report.md`。该目录已加入 `.gitignore`。
-
-开发阶段运行一次真实 DeepSeek 对比：
+选择部分任务时重复 `--task`：
 
 ```powershell
-python -m evals.run --suite real --repetitions 1
+python -m evals.pilot run `
+  --task free_shipping_policy `
+  --task contact_name_order `
+  --results-dir .\pilot-results
 ```
 
-只运行一个 case：
+离线重建报告不会调用模型：
 
 ```powershell
-python -m evals.run `
-  --suite real `
-  --case single_file_slugify `
-  --repetitions 1
+python -m evals.pilot summarize .\pilot-results
 ```
 
-正式报告运行两个 profile、5 个 case、每组重复 3 次，共 30 个 Agent run：
+## 结果与诊断
+
+每个 run 保存：
+
+- `events.jsonl`：不含 prompt、tool payload 或 grader output 的 Runtime metadata。
+- `terminal_grade.json`：自然 Final Answer 时的外部 hidden grade。
+- `post_run_grade.json`：Agent 完全停止后的 final workspace diagnostic。
+- `run.json`：归一化 ledger。
+
+根目录报告为 `summary.json`、`summary.md` 与 `runs.csv`，包含：
+
+- Verified
+- Premature terminal completion
+- Explicit failure
+- MaxTurnsExceeded
+- Tool denied 与 Bash verification denial
+- `run_tests` calls
+- turn、tool call 与 model attempt 数
+- final workspace grade
+
+grader 的 stdout/stderr、failure reason 与 private fixture 内容不会进入 Agent messages、Runtime events 或 workspace。grading error 记为 `invalid_run`，不会伪装成任务失败。
+
+## `run_tests` 协议
+
+Eval 从 case 的受限 unittest 配置创建 `SubprocessTestRunner`。测试执行通过无参数 `run_tests()` capability 完成；相同 unittest 命令经 Bash 调用会被 DENY，并得到指向 `run_tests` 的 actionable feedback。
+
+`run_tests` 使用固定 argv、workspace cwd、`shell=False`、timeout 与 `PYTHONDONTWRITEBYTECODE=1`。它的结果始终是普通 Tool Result，不会自动结束 Agent Loop。
+
+## Offline suite
+
+不调用真实 API 的 deterministic recovery 与 safety checks：
 
 ```powershell
-python -m evals.run `
-  --suite all `
-  --profile both `
-  --repetitions 3
+python -m evals.run --suite offline --results-dir .\eval-results
 ```
-
-真实评测读取与主 CLI 相同的环境变量：
-
-- `TINYHARNESS_API_KEY`；
-- `TINYHARNESS_MODEL`；
-- `TINYHARNESS_BASE_URL`。
-
-不要在尚未确认 API 成本时直接运行正式 30-run 命令。
-
-## 三类结果
-
-### Real Coding
-
-`baseline` 与 `goal_gated` 使用相同模型、messages、seed workspace、工具 schemas、Subagent 能力、Bash 白名单、Retry、Context Policy 和 `max_turns`。运行顺序按 case/repetition 确定性交叉平衡。
-
-差异只有：
-
-| Profile | Goal Gate | transient retry |
-|---|---:|---:|
-| `baseline` | 关闭 | 2 |
-| `goal_gated` | 开启 | 2 |
-
-Real Coding 不启用 Context Compaction，因此两个 profile 都没有 `compact` 工具。Goal verification 不向首次 Agent 请求注入 Goal context；只有 Gate 拒绝 stop proposal 后，`goal_gated` 才会收到 rejection feedback。
-
-### Controlled Failure Recovery
-
-使用 Scripted Provider 确定性触发：
-
-- transient server failure；
-- context rejection；
-- premature final answer。
-
-每项必须记录 `fault_expected=true` 和 `fault_triggered=true`。没有实际触发故障的 run 不能计为 recovery success。
-
-### Safety Invariants
-
-只验证当前 Runtime 必须始终成立的性质：
-
-- Permission deny 不产生文件副作用；
-- 非法 finish reason 携带 write call 时不执行工具。
-
-Invariant 不进入 Baseline/Goal Gated 对比。
-
-## External Grader
-
-每个真实 run 使用：
-
-```text
-run-root/
-├─ workspace/       Agent workspace
-├─ hidden_grader/   external hidden tests
-├─ events.jsonl
-└─ result metadata
-```
-
-Runner 在 Agent 开始前复制 seed 和 hidden grader。Agent 只获得 `workspace/`。每次 root Agent 产生合法 stop proposal、任何 Stop Gate 尚未执行前，Runner：
-
-1. 比较 hidden grader 前后摘要；
-2. 把当前 workspace 和 hidden grader 物理复制到独立临时目录；
-3. 通过环境变量把 workspace snapshot 路径交给 grader；
-4. 同步运行 hidden unittest 后删除 snapshot；
-5. 只在 Runner 内存中保留 sanitized metadata，Agent 结束后才写入 `proposal_grades.json`。
-
-grader result、stdout/stderr 和 failure reason 不写入 Runtime event、Agent messages、Goal Evaluator input 或 Agent workspace。grading error 标记为 `invalid_run`，不计为 hidden FAIL。Subagent final 带有 `agent_scope=subagent`，不会触发 task-level grading。
-
-Real Coding 的 Bash 使用精确字符串白名单，两个 profile 完全相同。它避免普通 Agent 命令访问 hidden grader，但不是 OS sandbox；恶意 shell 进程隔离不属于当前 Eval v1。
-
-## 指标语义
-
-- `verified_success`：Agent 正常返回、hidden grader 通过且 grader 未被改动；
-- `false_success`：Agent 正常返回，proposal-time external grader 明确 FAIL；
-- `invalid_run`：proposal grading 不可用或 hidden grader 完整性失效，不计为 PASS/FAIL；
-- `explicit_failure`：Agent 明确抛错或达到限制，没有声称成功；
-- `recovery_success`：确定性故障已触发，且 Reliable 恢复完成；
-- `side_effect_violation`：workspace 外 hidden grader 被改动；
-- `main/goal/summary_model_attempts`：按 Event Log `purpose` 统计物理请求；
-- `turns/retries/continuations/tool_calls`：只来自控制流 metadata。
-
-报告不保存 API Key、prompt、reasoning、工具正文、最终答案或异常正文。
-
-离线命令在 fault 未触发、Reliable 未恢复或 Safety Invariant 失败时返回非零。Real Coding 的任务失败是评测结果，不会让 runner 提前停止。

@@ -15,7 +15,6 @@ from tiny_harness.__main__ import (
 )
 from tiny_harness.agent.context import DEFAULT_SUBAGENT_MAX_TURNS
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, JsonlEventLogger
-from tiny_harness.runtime.goal import DEFAULT_MAX_GOAL_RETRIES, MAX_GOAL_LENGTH
 from tiny_harness.runtime.recovery import RecoveryPolicy
 
 
@@ -77,14 +76,8 @@ class CliTest(unittest.TestCase):
             session_class.call_args.kwargs["recovery_policy"],
             RecoveryPolicy(max_retries=2),
         )
-        self.assertEqual(
-            session_class.call_args.kwargs["max_goal_retries"],
-            DEFAULT_MAX_GOAL_RETRIES,
-        )
         self.assertFalse(session_class.call_args.kwargs["memory_enabled"])
-        session_class.return_value.submit.assert_called_once_with(
-            "create a file", goal_condition=None
-        )
+        session_class.return_value.submit.assert_called_once_with("create a file")
 
     @patch("tiny_harness.__main__.AgentSession")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")
@@ -218,32 +211,6 @@ class CliTest(unittest.TestCase):
 
     @patch("tiny_harness.__main__.AgentSession")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")
-    def test_passes_goal_to_one_shot_submit(self, _, session_class) -> None:
-        session_class.return_value.submit.return_value = "done"
-        with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
-            with contextlib.redirect_stdout(io.StringIO()):
-                main(
-                    [
-                        "task",
-                        "--workspace",
-                        str(self.workspace),
-                        "--goal",
-                        "tests pass",
-                        "--max-goal-retries",
-                        "1",
-                    ]
-                )
-
-        session_class.return_value.submit.assert_called_once_with(
-            "task", goal_condition="tests pass"
-        )
-        self.assertEqual(session_class.call_args.kwargs["max_goal_retries"], 1)
-        system_prompt = session_class.call_args.args[2]
-        self.assertIn("independent evaluator", system_prompt)
-        self.assertIn("concrete tool results", system_prompt)
-
-    @patch("tiny_harness.__main__.AgentSession")
-    @patch("tiny_harness.__main__.ChatCompletionsProvider")
     def test_no_task_starts_repl_and_reuses_one_session(self, _, session_class) -> None:
         session = session_class.return_value
         session.submit.side_effect = ["first answer", "second answer"]
@@ -310,7 +277,6 @@ class CliTest(unittest.TestCase):
             (["task", "--max-context-chars", "0"], "必须大于或等于 1"),
             (["task", "--subagent-max-turns", "0"], "必须大于或等于 1"),
             (["task", "--max-model-retries", "-1"], "必须大于或等于 0"),
-            (["task", "--max-goal-retries", "-1"], "必须大于或等于 0"),
         ]
         for arguments, expected in cases:
             with self.subTest(arguments=arguments):
@@ -338,23 +304,6 @@ class CliTest(unittest.TestCase):
                             ),
                             0,
                         )
-
-    def test_rejects_invalid_goal_arguments_before_provider_setup(self) -> None:
-        cases = [
-            (["task", "--goal", "   "], "goal 不能为空"),
-            (
-                ["task", "--goal", "x" * (MAX_GOAL_LENGTH + 1)],
-                f"goal 不能超过 {MAX_GOAL_LENGTH}",
-            ),
-            (["--goal", "tests pass"], "只支持单次任务模式"),
-        ]
-        for arguments, expected in cases:
-            with self.subTest(expected=expected):
-                stderr = io.StringIO()
-                with contextlib.redirect_stderr(stderr):
-                    with self.assertRaisesRegex(SystemExit, "2"):
-                        main(arguments)
-                self.assertIn(expected, stderr.getvalue())
 
     def test_context_options_are_mutually_exclusive(self) -> None:
         stderr = io.StringIO()

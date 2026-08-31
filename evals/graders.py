@@ -9,7 +9,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -35,17 +35,15 @@ class GradeResult:
 
 
 @dataclass(frozen=True)
-class ProposalGrade:
-    """External grade metadata retained outside the Agent data path."""
+class TerminalGrade:
+    """External grade captured at the root Agent's natural final answer."""
 
-    proposal: int
     turn: int
     valid: bool
     passed: bool | None
     exit_code: int | None
     elapsed_ms: int
     snapshot_digest: str | None
-    gate_action: str | None = None
 
 
 SnapshotGrader = Callable[[PreparedCase], GradeResult]
@@ -185,8 +183,8 @@ def run_post_run_grade(prepared: PreparedCase) -> dict[str, Any]:
     return payload
 
 
-class ProposalGradingEventLogger:
-    """Synchronously grade root stop proposals without publishing results."""
+class FinalAnswerGradingEventLogger:
+    """Synchronously grade a root final answer without publishing results."""
 
     def __init__(
         self,
@@ -198,15 +196,15 @@ class ProposalGradingEventLogger:
         self._logger = logger
         self._prepared = prepared
         self._grader = grader or run_hidden_grader
-        self._records: list[ProposalGrade] = []
+        self._record: TerminalGrade | None = None
 
     @property
-    def records(self) -> tuple[ProposalGrade, ...]:
-        return tuple(self._records)
+    def record(self) -> TerminalGrade | None:
+        return self._record
 
     @property
     def invalid(self) -> bool:
-        return any(not record.valid for record in self._records)
+        return self._record is not None and not self._record.valid
 
     def emit(
         self,
@@ -217,40 +215,27 @@ class ProposalGradingEventLogger:
         self._logger.emit(event_type, event_data)
         if event_data.get("agent_scope") is not None:
             return
-        if event_type is EventType.STOP_PROPOSED:
+        if event_type is EventType.RUN_FINISHED:
             started = time.monotonic()
             try:
                 grade = self._grader(self._prepared)
             except Exception:
                 grade = GradeResult(None, None, valid=False)
-            self._records.append(
-                ProposalGrade(
-                    proposal=len(self._records) + 1,
-                    turn=int(event_data.get("turn", 0)),
-                    valid=grade.valid,
-                    passed=grade.passed if grade.valid else None,
-                    exit_code=grade.exit_code if grade.valid else None,
-                    elapsed_ms=round((time.monotonic() - started) * 1000),
-                    snapshot_digest=grade.snapshot_digest,
-                )
+            self._record = TerminalGrade(
+                turn=int(event_data.get("turns", 0)),
+                valid=grade.valid,
+                passed=grade.passed if grade.valid else None,
+                exit_code=grade.exit_code if grade.valid else None,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+                snapshot_digest=grade.snapshot_digest,
             )
-        elif event_type is EventType.STOP_DECIDED:
-            turn = int(event_data.get("turn", 0))
-            for index in range(len(self._records) - 1, -1, -1):
-                record = self._records[index]
-                if record.turn == turn and record.gate_action is None:
-                    self._records[index] = replace(
-                        record,
-                        gate_action=str(event_data.get("action") or ""),
-                    )
-                    break
 
-    def write_records(self, path: Path) -> None:
-        """Persist sanitized records only after the Agent run is over."""
+    def write_record(self, path: Path) -> None:
+        """Persist the sanitized terminal grade after the Agent run is over."""
 
         path.write_text(
             json.dumps(
-                [asdict(record) for record in self._records],
+                asdict(self._record) if self._record is not None else None,
                 ensure_ascii=False,
                 indent=2,
             ),

@@ -82,7 +82,6 @@ class SubagentExecutorTest(unittest.TestCase):
         )
         self.assertFalse(calls[0]["options"]["allow_subagent"])
         self.assertIs(calls[0]["options"]["test_runner"], test_runner)
-        self.assertNotIn("goal_condition", calls[0]["options"])
         self.assertEqual(
             logger.events[0]["data"],
             {

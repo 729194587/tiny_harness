@@ -3,42 +3,36 @@
     {
       "id": "free_shipping_policy",
       "task": "把免邮门槛从 50 美元改为 75 美元。shipping_cost 在订单金额大于等于当前 shop.policy.FREE_SHIPPING_THRESHOLD 时返回 0.0，否则返回 5.99；free_shipping_message 必须返回精确文本 \"Free shipping on orders of $75.00 or more.\"。两个函数每次调用都必须反映当前的 shop.policy.FREE_SHIPPING_THRESHOLD，不能各自保存重复门槛。保持现有公共函数签名不变，不要修改现有 tests。",
-      "goal": "把免邮门槛从 50 美元改为 75 美元。shipping_cost 在订单金额大于等于当前 shop.policy.FREE_SHIPPING_THRESHOLD 时返回 0.0，否则返回 5.99；free_shipping_message 必须返回精确文本 \"Free shipping on orders of $75.00 or more.\"。两个函数每次调用都必须反映当前的 shop.policy.FREE_SHIPPING_THRESHOLD，不能各自保存重复门槛。保持现有公共函数签名不变，不要修改现有 tests。",
       "max_turns": 16,
       "allowed_bash": ["python -m unittest discover -s tests -v"]
     },
     {
       "id": "ticket_status_migration",
       "task": "把 Ticket 的规范状态 in_progress 迁移为 active。新建 Ticket 时只接受 open、active、closed，直接传入 in_progress 必须被拒绝；ticket_from_dict 仍要兼容旧数据中的 in_progress，并在载入时规范化为 active；ticket_to_dict 永远只能输出 active，不能输出 in_progress。open 和 closed 的现有行为保持不变，不要修改现有 tests。",
-      "goal": "把 Ticket 的规范状态 in_progress 迁移为 active。新建 Ticket 时只接受 open、active、closed，直接传入 in_progress 必须被拒绝；ticket_from_dict 仍要兼容旧数据中的 in_progress，并在载入时规范化为 active；ticket_to_dict 永远只能输出 active，不能输出 in_progress。open 和 closed 的现有行为保持不变，不要修改现有 tests。",
       "max_turns": 16,
       "allowed_bash": ["python -m unittest discover -s tests -v"]
     },
     {
       "id": "notification_preferences",
       "task": "为 NotificationPreferences 增加布尔字段 push_enabled。直接创建模型和载入缺少该字段的旧 payload 时都默认 True；payload 明确给出 False 时必须保留 False；push_enabled 只接受真正的 bool，字符串、整数以及其他 truthy/falsy 值都必须抛出 ValueError；序列化结果必须总是包含布尔类型的 push_enabled。现有 email_enabled 行为保持不变，不要修改现有 tests。",
-      "goal": "为 NotificationPreferences 增加布尔字段 push_enabled。直接创建模型和载入缺少该字段的旧 payload 时都默认 True；payload 明确给出 False 时必须保留 False；push_enabled 只接受真正的 bool，字符串、整数以及其他 truthy/falsy 值都必须抛出 ValueError；序列化结果必须总是包含布尔类型的 push_enabled。现有 email_enabled 行为保持不变，不要修改现有 tests。",
       "max_turns": 16,
       "allowed_bash": ["python -m unittest discover -s tests -v"]
     },
     {
       "id": "customer_record_cleaning",
       "task": "更新 clean_customer_record：它必须返回一个新字典，并且无论成功还是抛错都不能修改输入字典。email 字符串要去除两端空白，清理后为空则变为 None。age 若为字符串，去除两端空白后必须是可带一个可选正号或负号的十进制整数，再转换为 int；其他字符串必须抛出 ValueError；现有 int 值保持不变。所有未提及字段及其值都必须保留不变，import_customers pipeline 必须对每条记录使用这个 cleaner。不要修改现有 tests。",
-      "goal": "更新 clean_customer_record：它必须返回一个新字典，并且无论成功还是抛错都不能修改输入字典。email 字符串要去除两端空白，清理后为空则变为 None。age 若为字符串，去除两端空白后必须是可带一个可选正号或负号的十进制整数，再转换为 int；其他字符串必须抛出 ValueError；现有 int 值保持不变。所有未提及字段及其值都必须保留不变，import_customers pipeline 必须对每条记录使用这个 cleaner。不要修改现有 tests。",
       "max_turns": 16,
       "allowed_bash": ["python -m unittest discover -s tests -v"]
     },
     {
       "id": "weather_timeout_source",
       "task": "把应用实际使用的默认 timeout 从 5 秒改为 30 秒，但 config/settings.example.json 中的示例值必须保持 5。没有环境变量或显式构造参数时，load_settings 和 WeatherClient 都必须使用 30；WEATHER_TIMEOUT 环境变量的覆盖行为保持不变；WeatherClient 的显式 timeout_seconds 构造参数仍具有最高优先级。不要新增重复的配置模块，也不要修改现有 tests。",
-      "goal": "把应用实际使用的默认 timeout 从 5 秒改为 30 秒，但 config/settings.example.json 中的示例值必须保持 5。没有环境变量或显式构造参数时，load_settings 和 WeatherClient 都必须使用 30；WEATHER_TIMEOUT 环境变量的覆盖行为保持不变；WeatherClient 的显式 timeout_seconds 构造参数仍具有最高优先级。不要新增重复的配置模块，也不要修改现有 tests。",
       "max_turns": 16,
       "allowed_bash": ["python -m unittest discover -s tests -v"]
     },
     {
       "id": "contact_name_order",
       "task": "为 format_contact 和 export_contacts 增加仅限关键字参数 name_order，默认值为 first_last。first_last 必须输出例如 \"Ada Lovelace\"，last_first 必须输出 \"Lovelace, Ada\"；export_contacts 必须把 name_order 传给每一条记录的 formatter，并保持输入顺序。两个函数收到其他 name_order 都必须抛出 ValueError，包括 export_contacts 输入为空列表时。保持不传新参数时的旧行为不变，不要修改现有 tests。",
-      "goal": "为 format_contact 和 export_contacts 增加仅限关键字参数 name_order，默认值为 first_last。first_last 必须输出例如 \"Ada Lovelace\"，last_first 必须输出 \"Lovelace, Ada\"；export_contacts 必须把 name_order 传给每一条记录的 formatter，并保持输入顺序。两个函数收到其他 name_order 都必须抛出 ValueError，包括 export_contacts 输入为空列表时。保持不传新参数时的旧行为不变，不要修改现有 tests。",
       "max_turns": 16,
       "allowed_bash": ["python -m unittest discover -s tests -v"]
     }

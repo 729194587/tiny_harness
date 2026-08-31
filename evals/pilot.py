@@ -10,12 +10,12 @@ from pathlib import Path
 
 from evals.core import EvalCase, EvalResult, RunMetrics, load_cases
 from evals.pilot_metrics import (
-    PROPOSAL_RECORDS,
+    TERMINAL_GRADE,
     load_run_ledgers,
     write_reports,
     write_run_ledger,
 )
-from evals.run import REAL_PROFILES, balanced_profile_order, run_real_case
+from evals.run import REAL_PROFILE, run_real_case
 from tiny_harness.__main__ import DEFAULT_BASE_URL, DEFAULT_MODEL
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
 
@@ -59,14 +59,13 @@ def select_cases(case_ids: Sequence[str] | None) -> list[EvalCase]:
 
 def _infra_result(
     case: EvalCase,
-    profile: str,
     repetition: int,
     error: Exception,
 ) -> EvalResult:
     return EvalResult(
         category="real_coding",
         case_id=case.id,
-        profile=profile,
+        profile=REAL_PROFILE,
         repetition=repetition,
         invalid_run=True,
         error_type=type(error).__name__,
@@ -77,7 +76,6 @@ def _infra_result(
 def run_pilot(
     *,
     cases: Sequence[EvalCase],
-    profiles: Sequence[str],
     repetitions: int,
     results_root: Path,
     provider_factory: ProviderFactory = _default_provider_factory,
@@ -85,47 +83,33 @@ def run_pilot(
     """Run selected Pilot cells and persist each ledger immediately."""
 
     ledgers = []
-    for case_index, case in enumerate(cases):
+    for case in cases:
         for repetition in range(1, repetitions + 1):
-            ordered_profiles = balanced_profile_order(
-                profiles,
-                case_index=case_index,
-                repetition=repetition,
+            run_root = (
+                results_root / "runs" / f"{case.id}-{REAL_PROFILE}-{repetition}"
             )
-            for profile in ordered_profiles:
-                run_root = (
-                    results_root
-                    / "runs"
-                    / f"{case.id}-{profile}-{repetition}"
+            if run_root.exists():
+                raise FileExistsError(
+                    f"Pilot run directory already exists: {run_root}"
                 )
-                if run_root.exists():
-                    raise FileExistsError(
-                        f"Pilot run directory already exists: {run_root}"
-                    )
-                try:
-                    provider = provider_factory()
-                    result = run_real_case(
-                        case,
-                        profile=profile,
-                        repetition=repetition,
-                        provider=provider,
-                        fixtures_root=PILOT_FIXTURES,
-                        results_root=results_root,
-                    )
-                except Exception as error:
-                    run_root.mkdir(parents=True, exist_ok=True)
-                    proposal_path = run_root / PROPOSAL_RECORDS
-                    if not proposal_path.exists():
-                        proposal_path.write_text("[]\n", encoding="utf-8")
-                    result = _infra_result(
-                        case,
-                        profile,
-                        repetition,
-                        error,
-                    )
-                ledger = write_run_ledger(result, run_root)
-                ledgers.append(ledger)
-                write_reports(results_root, ledgers)
+            try:
+                provider = provider_factory()
+                result = run_real_case(
+                    case,
+                    repetition=repetition,
+                    provider=provider,
+                    fixtures_root=PILOT_FIXTURES,
+                    results_root=results_root,
+                )
+            except Exception as error:
+                run_root.mkdir(parents=True, exist_ok=True)
+                terminal_path = run_root / TERMINAL_GRADE
+                if not terminal_path.exists():
+                    terminal_path.write_text("null\n", encoding="utf-8")
+                result = _infra_result(case, repetition, error)
+            ledger = write_run_ledger(result, run_root)
+            ledgers.append(ledger)
+            write_reports(results_root, ledgers)
     return ledgers
 
 
@@ -137,7 +121,7 @@ def summarize_existing(results_root: Path) -> list[dict]:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run or summarize the Goal Gate Completion Pilot"
+        description="Run or summarize the TinyHarness Coding Pilot"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -147,11 +131,6 @@ def _parser() -> argparse.ArgumentParser:
         action="append",
         dest="task_ids",
         help="Pilot task id; repeat to select multiple tasks",
-    )
-    run_parser.add_argument(
-        "--profile",
-        choices=("both", *REAL_PROFILES),
-        default="both",
     )
     run_parser.add_argument("--repetitions", type=_positive_int, default=1)
     run_parser.add_argument("--results-dir", type=Path)
@@ -178,10 +157,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         else (DEFAULT_RESULTS / stamp).resolve()
     )
     cases = select_cases(args.task_ids)
-    profiles = REAL_PROFILES if args.profile == "both" else (args.profile,)
     ledgers = run_pilot(
         cases=cases,
-        profiles=profiles,
         repetitions=args.repetitions,
         results_root=results_root,
     )

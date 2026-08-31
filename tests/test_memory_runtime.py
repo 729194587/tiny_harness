@@ -7,7 +7,6 @@ from pathlib import Path
 from tiny_harness.agent.loop import run_agent
 from tiny_harness.agent.messages import ModelResponse
 from tiny_harness.agent.session import AgentSession
-from tiny_harness.runtime.goal import GoalEvaluation
 
 
 class FakeProvider:
@@ -38,16 +37,6 @@ class RecordingEventLogger:
         self.events.append(
             {"event_type": event_type.value, "data": dict(data or {})}
         )
-
-
-class RecordingGoalEvaluator:
-    def __init__(self, evaluations) -> None:
-        self.evaluations = list(evaluations)
-        self.calls = []
-
-    def evaluate(self, condition, messages, candidate_answer):
-        self.calls.append((condition, copy.deepcopy(messages), candidate_answer))
-        return self.evaluations.pop(0)
 
 
 class MemoryRuntimeTest(unittest.TestCase):
@@ -265,43 +254,6 @@ class MemoryRuntimeTest(unittest.TestCase):
         )
         self.assertEqual(failed["data"]["error_type"], "MemoryExtractionError")
         self.assertNotIn("PRIVATE_INVALID_OUTPUT", json.dumps(logger.events))
-
-    def test_goal_gate_runs_before_memory_extraction(self) -> None:
-        provider = FakeProvider(
-            [
-                ModelResponse("premature", None, [], "stop"),
-                ModelResponse("verified", None, [], "stop"),
-                ModelResponse('{"memories":[]}', None, [], "stop"),
-            ]
-        )
-        evaluator = RecordingGoalEvaluator(
-            [
-                GoalEvaluation(False, "need evidence"),
-                GoalEvaluation(True, "verified"),
-            ]
-        )
-        logger = RecordingEventLogger()
-
-        answer = run_agent(
-            provider,
-            self.workspace,
-            [{"role": "user", "content": "task"}],
-            max_turns=2,
-            goal_condition="done",
-            goal_evaluator=evaluator,
-            memory_enabled=True,
-            event_logger=logger,
-        )
-
-        self.assertEqual(answer, "verified")
-        self.assertEqual(len(provider.calls), 3)
-        extraction_events = [
-            event
-            for event in logger.events
-            if event["event_type"] == "memory_extraction_requested"
-        ]
-        self.assertEqual(len(extraction_events), 1)
-        self.assertEqual(extraction_events[0]["data"]["turn"], 2)
 
     def test_memory_is_opt_in(self) -> None:
         self.write_memory()

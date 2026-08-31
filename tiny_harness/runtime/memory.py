@@ -18,7 +18,7 @@ from typing import Any
 
 from tiny_harness.agent.messages import ModelResponse
 from tiny_harness.runtime.events import EventLogError, EventLogger, EventType
-from tiny_harness.runtime.hooks import StopDecision, StopHook, StopHookContext
+from tiny_harness.runtime.hooks import FinalAnswerHook, FinalAnswerHookContext
 from tiny_harness.runtime.memory_consolidation import (
     ConsolidationMemory,
     MemoryConsolidationCommit,
@@ -121,17 +121,17 @@ def prepare_memory_context(
     return selection
 
 
-def create_memory_stop_hook(
+def create_memory_final_answer_hook(
     catalog: MemoryCatalog,
     extraction_complete: MemoryComplete,
     consolidation_complete: MemoryComplete,
     event_logger: EventLogger,
     *,
     max_context_chars: int | None = None,
-) -> StopHook:
-    """Create a fail-open observer that extracts after an accepted stop gate."""
+) -> FinalAnswerHook:
+    """Create a fail-open observer that extracts before returning an answer."""
 
-    def memory_stop_hook(context: StopHookContext) -> StopDecision:
+    def memory_final_answer_hook(context: FinalAnswerHookContext) -> None:
         event_logger.emit(
             EventType.MEMORY_EXTRACTION_REQUESTED,
             {"turn": context.turn},
@@ -140,7 +140,7 @@ def create_memory_stop_hook(
             result = extract_and_write_memories(
                 catalog,
                 context.messages,
-                context.candidate_answer,
+                context.final_answer,
                 extraction_complete,
                 max_context_chars=max_context_chars,
             )
@@ -154,7 +154,7 @@ def create_memory_stop_hook(
                     "error_type": type(error).__name__,
                 },
             )
-            return StopDecision("allow")
+            return
         event_logger.emit(
             EventType.MEMORY_EXTRACTION_COMPLETED,
             {
@@ -170,9 +170,8 @@ def create_memory_stop_hook(
                 event_logger,
                 max_context_chars=max_context_chars,
             )
-        return StopDecision("allow")
 
-    return memory_stop_hook
+    return memory_final_answer_hook
 
 
 # Selection, loading, and injection -----------------------------------------

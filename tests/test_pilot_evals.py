@@ -249,12 +249,12 @@ def run_visible_tests(workspace: Path) -> subprocess.CompletedProcess[str]:
 
 
 class PilotCaseContractTest(unittest.TestCase):
-    def test_six_cases_have_identical_user_task_and_goal_condition(self):
+    def test_six_cases_have_complete_user_tasks(self):
         cases = load_cases(PILOT_CASES)
 
         self.assertEqual(len(cases), 6)
         self.assertEqual({case.id for case in cases}, set(EXPECTED_FILES))
-        self.assertTrue(all(case.task == case.goal for case in cases))
+        self.assertTrue(all(case.task for case in cases))
         self.assertTrue(all(case.max_turns == 16 for case in cases))
         self.assertTrue(
             all(
