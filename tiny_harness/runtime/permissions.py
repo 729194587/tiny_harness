@@ -256,6 +256,7 @@ class DefaultPermissionPolicy:
             "task",
             "load_skill",
             "compact",
+            "run_tests",
         }
     )
 

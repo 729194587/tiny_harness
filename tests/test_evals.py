@@ -25,6 +25,7 @@ from evals.run import (
     DEFAULT_CASES,
     DEFAULT_FIXTURES,
     EvalPermissionPolicy,
+    _configured_test_runner,
     balanced_profile_order,
     main,
     render_markdown,
@@ -123,15 +124,7 @@ class EvalContractTest(unittest.TestCase):
         self.assertEqual(metrics.continuations, 1)
         self.assertEqual(metrics.tool_calls, 1)
 
-    def test_eval_permission_policy_allows_safe_unittest_variants(self):
-        policy = EvalPermissionPolicy(
-            ["python -m unittest discover -s tests -v"]
-        )
-
-        self.assertIs(
-            policy.decide("read_file", {"path": "x"}),
-            PermissionDecision.ALLOW,
-        )
+    def test_unittest_parser_builds_fixed_argv_from_safe_configurations(self):
         commands = (
             "python -m unittest",
             "python -m unittest -v",
@@ -146,10 +139,46 @@ class EvalContractTest(unittest.TestCase):
         )
         for command in commands:
             with self.subTest(command=command):
+                runner = _configured_test_runner([command])
+                self.assertIsNotNone(runner)
+                self.assertEqual(runner.argv[:3], (runner.argv[0], "-m", "unittest"))
+
+    def test_eval_permission_policy_reserves_unittest_for_run_tests(self):
+        canonical = "python -m unittest discover -s tests -v"
+        policy = EvalPermissionPolicy([canonical, "git status --short"])
+
+        self.assertIs(
+            policy.decide("read_file", {"path": "x"}),
+            PermissionDecision.ALLOW,
+        )
+        self.assertIs(
+            policy.decide("run_tests", {}),
+            PermissionDecision.ALLOW,
+        )
+        for command in (
+            canonical,
+            "python -m unittest tests.test_models -v",
+            r"python -m unittest tests\test_models.py -v",
+        ):
+            with self.subTest(command=command):
                 self.assertIs(
                     policy.decide("bash", {"command": command}),
-                    PermissionDecision.ALLOW,
+                    PermissionDecision.DENY,
                 )
+        self.assertIs(
+            policy.decide("bash", {"command": "git status --short"}),
+            PermissionDecision.ALLOW,
+        )
+        self.assertEqual(policy.allowed_bash, frozenset({"git status --short"}))
+
+    def test_unsafe_configured_unittest_command_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "not safe"):
+            _configured_test_runner(
+                [
+                    "python -m unittest discover -s tests "
+                    "&& del important.txt"
+                ]
+            )
 
     def test_eval_permission_policy_still_denies_unsafe_or_non_test_bash(self):
         policy = EvalPermissionPolicy(
@@ -157,6 +186,7 @@ class EvalContractTest(unittest.TestCase):
         )
         commands = (
             "python -c 'print(1)'",
+            "python verify.py",
             "pytest -q",
             "python -m unittest discover -s ..",
             r"python -m unittest discover -s tests\..\secret -v",
@@ -173,8 +203,12 @@ class EvalContractTest(unittest.TestCase):
                     PermissionDecision.DENY,
                 )
 
-        guidance = policy.denial_guidance("bash", {"command": "pytest -q"})
-        self.assertIn("Allowed verification path", guidance)
+        guidance = policy.denial_guidance(
+            "bash",
+            {"command": "python -m unittest discover -s tests -v"},
+        )
+        self.assertIn("Test execution through Bash is not allowed", guidance)
+        self.assertIn("run_tests", guidance)
         self.assertNotIn("grader", guidance.casefold())
 
         feedback = permission_denial_feedback(
@@ -183,7 +217,7 @@ class EvalContractTest(unittest.TestCase):
             {"command": "pytest -q"},
         )
         self.assertIn("current shell command is not allowed", feedback)
-        self.assertIn("python -m unittest", feedback)
+        self.assertIn("run_tests", feedback)
         self.assertIn("provide the final answer", feedback)
 
 
@@ -542,6 +576,25 @@ class ProfileComparisonTest(unittest.TestCase):
             baseline.kwargs["permission_policy"].allowed_bash,
             goal_gated.kwargs["permission_policy"].allowed_bash,
         )
+        self.assertEqual(
+            baseline.kwargs["test_runner"],
+            goal_gated.kwargs["test_runner"],
+        )
+        self.assertEqual(
+            baseline.kwargs["test_runner"].argv,
+            ("python", "-m", "unittest", "discover", "-s", "tests", "-v"),
+        )
+        self.assertIs(
+            baseline.kwargs["permission_policy"].decide("run_tests", {}),
+            PermissionDecision.ALLOW,
+        )
+        self.assertIs(
+            baseline.kwargs["permission_policy"].decide(
+                "bash",
+                {"command": case.allowed_bash[0]},
+            ),
+            PermissionDecision.DENY,
+        )
         baseline_config = dict(baseline.kwargs)
         goal_config = dict(goal_gated.kwargs)
         baseline_logger = baseline_config.pop("event_logger")
@@ -610,6 +663,11 @@ class ProfileComparisonTest(unittest.TestCase):
             baseline_provider.calls[0]["tools"],
             gated_provider.calls[0]["tools"],
         )
+        first_tool_names = {
+            tool["function"]["name"]
+            for tool in baseline_provider.calls[0]["tools"]
+        }
+        self.assertIn("run_tests", first_tool_names)
         system_prompt = gated_provider.calls[0]["messages"][0]["content"]
         self.assertIn("Verify your changes when appropriate.", system_prompt)
         self.assertNotIn("declared verification command", system_prompt)

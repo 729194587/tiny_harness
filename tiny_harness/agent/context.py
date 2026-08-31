@@ -50,6 +50,7 @@ from tiny_harness.runtime.skills import (
     discover_skills,
     upsert_skill_catalog_marker,
 )
+from tiny_harness.runtime.test_runner import TestRunner
 from tiny_harness.runtime.todos import TodoManager
 from tiny_harness.tools.registry import tool_schemas
 from tiny_harness.tools.task import SubagentRunner
@@ -88,6 +89,7 @@ class AgentRunContext:
     goal_state: GoalState | None
     inject_goal_context: bool
     stop_hook: StopHook | None
+    test_runner: TestRunner | None
     permission_rejections: PermissionRejectionTracker
     current_turn: int = 0
     rounds_since_todo: int = 0
@@ -300,6 +302,7 @@ def _subagent_runner(
     tool_hooks: ToolHooks | None,
     recovery_policy: RecoveryPolicy,
     memory_enabled: bool,
+    test_runner: TestRunner | None,
 ) -> SubagentRunner | None:
     if not enabled:
         return None
@@ -320,6 +323,7 @@ def _subagent_runner(
         tool_hooks=tool_hooks,
         recovery_policy=recovery_policy,
         memory_enabled=memory_enabled,
+        test_runner=test_runner,
     )
 
 
@@ -368,6 +372,7 @@ def create_run_context(
     max_goal_retries: int = DEFAULT_MAX_GOAL_RETRIES,
     goal_evaluator: GoalEvaluator | None = None,
     inject_goal_context: bool = True,
+    test_runner: TestRunner | None = None,
     memory_enabled: bool = False,
     memory_extraction_enabled: bool = True,
 ) -> AgentRunContext:
@@ -388,6 +393,7 @@ def create_run_context(
         include_task=allow_subagent,
         include_skill=bool(skill_catalog.manifests),
         include_compact=max_context_chars is not None,
+        include_run_tests=test_runner is not None,
     )
     todo_manager = TodoManager()
 
@@ -427,6 +433,7 @@ def create_run_context(
         tool_hooks=tool_hooks,
         recovery_policy=recovery_policy,
         memory_enabled=memory_enabled,
+        test_runner=test_runner,
     )
     stop_hook = _stop_hooks(
         goal.stop_hook,
@@ -471,6 +478,7 @@ def create_run_context(
         goal_state=goal.state,
         inject_goal_context=inject_goal_context,
         stop_hook=stop_hook,
+        test_runner=test_runner,
         permission_rejections=PermissionRejectionTracker(),
     )
     return context

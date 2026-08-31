@@ -31,6 +31,7 @@ from tiny_harness.runtime.permissions import (
     resolve_permission,
 )
 from tiny_harness.runtime.skills import SkillCatalog
+from tiny_harness.runtime.test_runner import TestRunner
 from tiny_harness.runtime.todos import TodoManager
 from tiny_harness.tools.filesystem import edit_file, list_files, read_file, write_file
 from tiny_harness.tools.compact import compact
@@ -49,6 +50,7 @@ class ToolRuntime:
     subagent_runner: SubagentRunner | None
     skill_catalog: SkillCatalog | None
     compaction_request: CompactionRequest | None
+    test_runner: TestRunner | None
 
 
 ToolExecutor = Callable[
@@ -123,6 +125,18 @@ def _execute_compact(
     return compact(runtime.compaction_request, **arguments)
 
 
+def _execute_tests(
+    runtime: ToolRuntime,
+    call: ToolCall,
+    arguments: dict[str, Any],
+) -> str:
+    if runtime.test_runner is None:
+        raise RuntimeError("run_tests requires a configured TestRunner")
+    if arguments:
+        raise TypeError("run_tests does not accept arguments")
+    return runtime.test_runner.run(runtime.workspace)
+
+
 def _has_subagent(runtime: ToolRuntime) -> bool:
     return runtime.subagent_runner is not None
 
@@ -133,6 +147,10 @@ def _has_skill_catalog(runtime: ToolRuntime) -> bool:
 
 def _has_compaction_request(runtime: ToolRuntime) -> bool:
     return runtime.compaction_request is not None
+
+
+def _has_test_runner(runtime: ToolRuntime) -> bool:
+    return runtime.test_runner is not None
 
 
 _TOOL_REGISTRY: dict[str, ToolAdapter] = {
@@ -191,6 +209,16 @@ _TOOL_REGISTRY: dict[str, ToolAdapter] = {
             "additionalProperties": False,
         },
         _workspace_tool(bash),
+    ),
+    "run_tests": ToolAdapter(
+        "Run the configured repository test suite.",
+        {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        _execute_tests,
+        _has_test_runner,
     ),
     "todo_write": ToolAdapter(
         "Create and manage a task list for the current coding run.",
@@ -267,6 +295,7 @@ def tool_schemas(
     include_task: bool = True,
     include_skill: bool = False,
     include_compact: bool = False,
+    include_run_tests: bool = False,
 ) -> list[dict[str, Any]]:
     """Return all registered tools in Chat Completions function-tool format."""
 
@@ -283,6 +312,7 @@ def tool_schemas(
         if (include_task or name != "task")
         and (include_skill or name != "load_skill")
         and (include_compact or name != "compact")
+        and (include_run_tests or name != "run_tests")
     ]
 
 
@@ -298,6 +328,7 @@ def dispatch(
     subagent_runner: SubagentRunner | None = None,
     skill_catalog: SkillCatalog | None = None,
     compaction_request: CompactionRequest | None = None,
+    test_runner: TestRunner | None = None,
     permission_rejections: PermissionRejectionTracker | None = None,
 ) -> ToolResult:
     """Authorize and execute one tool call, converting failures to text."""
@@ -308,6 +339,7 @@ def dispatch(
         subagent_runner=subagent_runner,
         skill_catalog=skill_catalog,
         compaction_request=compaction_request,
+        test_runner=test_runner,
     )
     try:
         entry = _TOOL_REGISTRY.get(call.name)

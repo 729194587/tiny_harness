@@ -34,6 +34,7 @@ from tiny_harness.runtime.events import JsonlEventLogger
 from tiny_harness.runtime.goal import GoalNotAchievedError
 from tiny_harness.runtime.permissions import PermissionDecision
 from tiny_harness.runtime.recovery import RecoveryPolicy
+from tiny_harness.runtime.test_runner import SubprocessTestRunner, TestRunner
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CASES = ROOT / "cases.json"
@@ -47,6 +48,10 @@ _TEST_MODULE = re.compile(
 )
 _TEST_PATTERN = re.compile(r"test[A-Za-z0-9_.*?\[\]-]*\.py")
 _TEST_NAME_PATTERN = re.compile(r"[A-Za-z0-9_.*?\[\]-]+")
+_UNITTEST_COMMAND_PREFIX = re.compile(
+    r"^\s*python(?:3)?(?:\.exe)?\s+-m\s+unittest(?:\s|$)",
+    re.IGNORECASE,
+)
 
 
 def _is_local_test_path(value: str, *, allow_current: bool = False) -> bool:
@@ -61,13 +66,13 @@ def _is_local_test_path(value: str, *, allow_current: bool = False) -> bool:
     return parts[0] == "tests" or parts[-1].startswith("test_")
 
 
-def _is_safe_unittest_command(command: object) -> bool:
-    """Allow only bounded local ``python -m unittest`` invocations."""
+def _parse_safe_unittest_command(command: object) -> tuple[str, ...] | None:
+    """Validate one configured unittest command and return immutable argv."""
 
     if not isinstance(command, str) or not command.strip():
-        return False
+        return None
     if _UNSAFE_TEST_SHELL.search(command):
-        return False
+        return None
     try:
         lexer = shlex.shlex(command, posix=True)
         lexer.whitespace_split = True
@@ -75,14 +80,14 @@ def _is_safe_unittest_command(command: object) -> bool:
         lexer.escape = ""
         words = list(lexer)
     except ValueError:
-        return False
+        return None
     if len(words) < 3:
-        return False
+        return None
     executable = words[0].casefold()
     if executable not in {"python", "python.exe", "python3", "python3.exe"}:
-        return False
+        return None
     if words[1:3] != ["-m", "unittest"]:
-        return False
+        return None
 
     arguments = words[3:]
     discover = False
@@ -109,7 +114,7 @@ def _is_safe_unittest_command(command: object) -> bool:
             continue
         if argument == "discover":
             if index != 0 or discover or test_targets:
-                return False
+                return None
             discover = True
             index += 1
             continue
@@ -121,13 +126,13 @@ def _is_safe_unittest_command(command: object) -> bool:
             else:
                 index += 1
                 if index >= len(arguments):
-                    return False
+                    return None
                 value = arguments[index]
             if option == "--durations":
                 if not value.isdecimal():
-                    return False
+                    return None
             elif not _TEST_NAME_PATTERN.fullmatch(value):
-                return False
+                return None
             index += 1
             continue
 
@@ -140,28 +145,28 @@ def _is_safe_unittest_command(command: object) -> bool:
             "--top-level-directory",
         }:
             if not discover:
-                return False
+                return None
             if separator:
                 value = inline_value
             else:
                 index += 1
                 if index >= len(arguments):
-                    return False
+                    return None
                 value = arguments[index]
             if option in {"-p", "--pattern"}:
                 if not _TEST_PATTERN.fullmatch(value):
-                    return False
+                    return None
             elif not _is_local_test_path(value, allow_current=True):
-                return False
+                return None
             index += 1
             continue
 
         if argument.startswith("-"):
-            return False
+            return None
         if discover:
             discover_positionals.append(argument)
             if len(discover_positionals) > 3:
-                return False
+                return None
         else:
             test_targets.append(argument)
         index += 1
@@ -171,26 +176,57 @@ def _is_safe_unittest_command(command: object) -> bool:
             if not _is_local_test_path(
                 discover_positionals[0], allow_current=True
             ):
-                return False
+                return None
         if len(discover_positionals) >= 2:
             if not _TEST_PATTERN.fullmatch(discover_positionals[1]):
-                return False
+                return None
         if len(discover_positionals) == 3:
             if not _is_local_test_path(
                 discover_positionals[2], allow_current=True
             ):
-                return False
-        return True
+                return None
+        return tuple(words)
 
-    return all(
+    if not all(
         _TEST_MODULE.fullmatch(target)
         or _is_local_test_path(target)
         for target in test_targets
+    ):
+        return None
+    return tuple(words)
+
+
+def _is_safe_unittest_command(command: object) -> bool:
+    """Return whether a configured command is a bounded unittest suite."""
+
+    return _parse_safe_unittest_command(command) is not None
+
+
+def _looks_like_unittest_command(command: object) -> bool:
+    return isinstance(command, str) and bool(
+        _UNITTEST_COMMAND_PREFIX.search(command)
     )
 
 
+def _configured_test_runner(allowed_bash: Sequence[str]) -> TestRunner | None:
+    candidates = [
+        command for command in allowed_bash if _looks_like_unittest_command(command)
+    ]
+    configured = set()
+    for command in candidates:
+        argv = _parse_safe_unittest_command(command)
+        if argv is None:
+            raise ValueError("Configured unittest command is not safe")
+        configured.add(argv)
+    if not configured:
+        return None
+    if len(configured) != 1:
+        raise ValueError("Eval case must configure exactly one canonical test suite")
+    return SubprocessTestRunner(next(iter(configured)))
+
+
 class EvalPermissionPolicy:
-    """Use identical tools and bounded semantic test permission in both arms."""
+    """Allow bounded tools while reserving test execution for run_tests."""
 
     _NON_SHELL = frozenset(
         {
@@ -205,10 +241,13 @@ class EvalPermissionPolicy:
     )
 
     def __init__(self, allowed_bash: Sequence[str]) -> None:
-        self.allowed_bash = frozenset(allowed_bash)
-        self._allows_unittest = any(
-            _is_safe_unittest_command(command) for command in self.allowed_bash
+        test_commands = frozenset(
+            command
+            for command in allowed_bash
+            if _looks_like_unittest_command(command)
         )
+        self.allowed_bash = frozenset(allowed_bash) - test_commands
+        self.test_runner_available = bool(test_commands)
 
     def decide(
         self,
@@ -217,11 +256,11 @@ class EvalPermissionPolicy:
     ) -> PermissionDecision:
         if tool_name in self._NON_SHELL:
             return PermissionDecision.ALLOW
+        if tool_name == "run_tests" and self.test_runner_available:
+            return PermissionDecision.ALLOW
         if tool_name == "bash":
             command = arguments.get("command")
             if command in self.allowed_bash:
-                return PermissionDecision.ALLOW
-            if self._allows_unittest and _is_safe_unittest_command(command):
                 return PermissionDecision.ALLOW
         return PermissionDecision.DENY
 
@@ -230,12 +269,11 @@ class EvalPermissionPolicy:
         tool_name: str,
         arguments: Mapping[str, Any],
     ) -> str | None:
-        if tool_name != "bash" or not self._allows_unittest:
+        if tool_name != "bash" or not self.test_runner_available:
             return None
         return (
-            "Allowed verification path: run python -m unittest with local "
-            "test targets or unittest discovery under tests (for example, "
-            "python -m unittest discover -s tests -v)."
+            "Test execution through Bash is not allowed by the active policy. "
+            "Use the run_tests tool for the configured repository test suite."
         )
 
 
@@ -283,6 +321,7 @@ def run_real_case(
         {"role": "system", "content": _system_prompt()},
         {"role": "user", "content": case.task},
     ]
+    test_runner = _configured_test_runner(case.allowed_bash)
     started = time.monotonic()
     returned = False
     error: Exception | None = None
@@ -293,6 +332,7 @@ def run_real_case(
             messages,
             max_turns=case.max_turns,
             permission_policy=EvalPermissionPolicy(case.allowed_bash),
+            test_runner=test_runner,
             event_logger=logger,
             max_context_chars=None,
             subagent_max_turns=case.max_turns,

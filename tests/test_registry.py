@@ -14,6 +14,16 @@ from tiny_harness.runtime.todos import TodoManager
 from tiny_harness.tools.registry import dispatch, tool_schemas
 
 
+class RecordingTestRunner:
+    def __init__(self, output: str = "Exit code: 0\nOK") -> None:
+        self.output = output
+        self.workspaces = []
+
+    def run(self, workspace: Path) -> str:
+        self.workspaces.append(workspace)
+        return self.output
+
+
 class ToolRegistryTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
@@ -74,6 +84,55 @@ class ToolRegistryTest(unittest.TestCase):
             for schema in tool_schemas(include_skill=True)
         ]
         self.assertIn("load_skill", skill_names)
+
+        default_names = [
+            schema["function"]["name"] for schema in tool_schemas()
+        ]
+        configured_names = [
+            schema["function"]["name"]
+            for schema in tool_schemas(include_run_tests=True)
+        ]
+        self.assertNotIn("run_tests", default_names)
+        self.assertIn("run_tests", configured_names)
+        run_tests_schema = next(
+            schema
+            for schema in tool_schemas(include_run_tests=True)
+            if schema["function"]["name"] == "run_tests"
+        )
+        self.assertEqual(
+            run_tests_schema["function"]["parameters"],
+            {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        )
+
+    def test_run_tests_requires_capability_and_accepts_no_arguments(self) -> None:
+        unavailable = self.call("tests-missing", "run_tests", {})
+        self.assertEqual(
+            unavailable.content,
+            "Error: ValueError: Unknown tool: run_tests",
+        )
+
+        runner = RecordingTestRunner()
+        result = self.call(
+            "tests-1",
+            "run_tests",
+            {},
+            test_runner=runner,
+        )
+        self.assertEqual(result.content, "Exit code: 0\nOK")
+        self.assertEqual(runner.workspaces, [self.workspace])
+
+        rejected = self.call(
+            "tests-args",
+            "run_tests",
+            {"target": "tests.test_model"},
+            test_runner=runner,
+        )
+        self.assertIn("run_tests does not accept arguments", rejected.content)
+        self.assertEqual(runner.workspaces, [self.workspace])
 
     def test_dispatches_load_skill_only_with_injected_catalog(self) -> None:
         manifest = self.workspace / "skills" / "review" / "SKILL.md"

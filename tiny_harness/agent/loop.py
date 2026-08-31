@@ -34,6 +34,7 @@ from tiny_harness.runtime.permissions import (
     PermissionPrompt,
 )
 from tiny_harness.runtime.recovery import RecoveryPolicy
+from tiny_harness.runtime.test_runner import TestRunner
 
 
 def agent_loop(
@@ -144,6 +145,7 @@ def run_agent(
     max_goal_retries: int = DEFAULT_MAX_GOAL_RETRIES,
     goal_evaluator: GoalEvaluator | None = None,
     inject_goal_context: bool = True,
+    test_runner: TestRunner | None = None,
     memory_enabled: bool = False,
     memory_extraction_enabled: bool = True,
 ) -> str:
@@ -165,6 +167,7 @@ def run_agent(
         max_goal_retries=max_goal_retries,
         goal_evaluator=goal_evaluator,
         inject_goal_context=inject_goal_context,
+        test_runner=test_runner,
         memory_enabled=memory_enabled,
         memory_extraction_enabled=memory_extraction_enabled,
     )

@@ -45,6 +45,15 @@ class RecordingEventLogger:
         )
 
 
+class RecordingTestRunner:
+    def __init__(self) -> None:
+        self.workspaces = []
+
+    def run(self, workspace: Path) -> str:
+        self.workspaces.append(workspace)
+        return "Exit code: 0\nOK"
+
+
 class ChildFailingEventLogger(RecordingEventLogger):
     def emit(self, event_type, data=None) -> None:
         event_data = dict(data or {})
@@ -172,6 +181,44 @@ class SubagentTest(unittest.TestCase):
         )
         self.assertIn("[子 Agent 已启动]", stdout.getvalue())
         self.assertIn("[子 Agent 已完成]", stdout.getvalue())
+
+    def test_child_inherits_and_can_call_run_tests_capability(self) -> None:
+        runner = RecordingTestRunner()
+        provider = ScriptedProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("task-1", "task", '{"prompt":"verify"}')],
+                    "tool_calls",
+                ),
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("child-tests", "run_tests", "{}")],
+                    "tool_calls",
+                ),
+                ModelResponse("child verified", None, [], "stop"),
+                ModelResponse("parent done", None, [], "stop"),
+            ]
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            answer = agent_loop(
+                provider,
+                self.workspace,
+                [],
+                test_runner=runner,
+            )
+
+        self.assertEqual(answer, "parent done")
+        self.assertIn("run_tests", tool_names(provider.calls[1]))
+        self.assertNotIn("task", tool_names(provider.calls[1]))
+        self.assertEqual(runner.workspaces, [self.workspace])
+        self.assertEqual(
+            provider.calls[2]["messages"][-1]["content"],
+            "Exit code: 0\nOK",
+        )
 
     def test_child_discovers_and_loads_workspace_skill_in_isolated_history(self) -> None:
         skill_path = self.workspace / "skills" / "review" / "SKILL.md"

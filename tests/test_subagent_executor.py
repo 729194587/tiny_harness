@@ -10,6 +10,11 @@ from tiny_harness.runtime.permissions import DEFAULT_PERMISSION_POLICY
 from tiny_harness.runtime.recovery import RecoveryPolicy
 
 
+class FakeTestRunner:
+    def run(self, workspace: Path) -> str:
+        return "Exit code: 0"
+
+
 class RecordingEventLogger:
     def __init__(self) -> None:
         self.events = []
@@ -46,6 +51,7 @@ class SubagentExecutorTest(unittest.TestCase):
             return "child final"
 
         provider = FakeProvider()
+        test_runner = FakeTestRunner()
         executor = SubagentExecutor(
             run_agent,
             provider,
@@ -57,6 +63,7 @@ class SubagentExecutorTest(unittest.TestCase):
             max_context_chars=10_000,
             tool_hooks=None,
             recovery_policy=RecoveryPolicy(max_retries=0),
+            test_runner=test_runner,
         )
 
         with contextlib.redirect_stdout(io.StringIO()):
@@ -74,6 +81,7 @@ class SubagentExecutorTest(unittest.TestCase):
             "delegated work",
         )
         self.assertFalse(calls[0]["options"]["allow_subagent"])
+        self.assertIs(calls[0]["options"]["test_runner"], test_runner)
         self.assertNotIn("goal_condition", calls[0]["options"])
         self.assertEqual(
             logger.events[0]["data"],

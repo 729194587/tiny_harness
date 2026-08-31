@@ -100,6 +100,7 @@ def execute_tool_batch(
             subagent_runner=context.subagent_runner,
             skill_catalog=context.skill_catalog,
             compaction_request=context.compaction_request,
+            test_runner=context.test_runner,
             permission_rejections=context.permission_rejections,
         )
         messages.append(
