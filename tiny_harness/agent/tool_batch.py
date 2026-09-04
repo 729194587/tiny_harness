@@ -90,17 +90,12 @@ def execute_tool_batch(
 
     for call in calls:
         result = dispatch(
-            context.workspace,
+            context.tool_registry,
             call,
             permission_policy=context.permission_policy,
             permission_prompt=context.permission_prompt,
             event_logger=context.event_logger,
             tool_hooks=context.tool_hooks,
-            todo_manager=context.todo_manager,
-            subagent_runner=context.subagent_runner,
-            skill_catalog=context.skill_catalog,
-            compaction_request=context.compaction_request,
-            test_runner=context.test_runner,
             permission_rejections=context.permission_rejections,
         )
         messages.append(

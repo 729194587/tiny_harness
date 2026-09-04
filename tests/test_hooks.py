@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from tiny_harness.agent.loop import run_agent as agent_loop
 from tiny_harness.agent.messages import ModelResponse, ToolCall
@@ -13,7 +14,26 @@ from tiny_harness.runtime.hooks import (
     run_final_answer_hook,
 )
 from tiny_harness.runtime.permissions import PermissionDecision
-from tiny_harness.tools.registry import dispatch
+from tiny_harness.runtime.skills import discover_skills
+from tiny_harness.runtime.todos import TodoManager
+from tiny_harness.tools.discovery import discover_tools
+from tiny_harness.tools.registry import dispatch as dispatch_registered
+
+
+def dispatch(workspace, call, **options):
+    """Exercise the real pipeline with the built-ins available to this test run."""
+
+    registry = discover_tools(
+        SimpleNamespace(
+            workspace=workspace,
+            todo_manager=TodoManager(),
+            subagent_runner=None,
+            skill_catalog=discover_skills(workspace),
+            compaction_request=None,
+            test_runner=None,
+        )
+    )
+    return dispatch_registered(registry, call, **options)
 
 
 class RecordingEventLogger:

@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from tiny_harness.agent.context import create_run_context
 from tiny_harness.agent.messages import ToolCall
 from tiny_harness.agent.tool_batch import execute_tool_batch
-from tiny_harness.runtime.context import CompactionRequest
 
 
 class RecordingEventLogger:
@@ -42,10 +41,12 @@ class ExecuteToolBatchTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def context(self, *, event_logger=None):
+    def context(self, *, event_logger=None, max_context_chars=None):
         keyword_arguments = {"allow_subagent": False}
         if event_logger is not None:
             keyword_arguments["event_logger"] = event_logger
+        if max_context_chars is not None:
+            keyword_arguments["max_context_chars"] = max_context_chars
         return create_run_context(
             object(),
             self.workspace,
@@ -94,11 +95,9 @@ class ExecuteToolBatchTest(unittest.TestCase):
         self.assertEqual(reminder["data"]["rounds_since_todo"], 3)
 
     def test_manual_compaction_runs_after_the_complete_batch(self) -> None:
-        request = CompactionRequest()
         compactor = RecordingCompactor()
-        context = self.context()
+        context = self.context(max_context_chars=100_000)
         context.compactor = compactor
-        context.compaction_request = request
         context.current_turn = 1
         messages = []
 

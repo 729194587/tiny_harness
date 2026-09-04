@@ -1,3 +1,0 @@
-"""Application defaults."""
-
-CURRENCY = "USD"

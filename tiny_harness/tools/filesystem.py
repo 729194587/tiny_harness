@@ -1,6 +1,15 @@
 """Filesystem tools constrained to a workspace directory."""
 
+from __future__ import annotations
+
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from tiny_harness.tools.definition import ToolDefinition
+
+if TYPE_CHECKING:
+    from tiny_harness.agent.context import AgentRunContext
 
 
 def _resolve_path(workspace: Path, path: str) -> Path:
@@ -67,3 +76,75 @@ def list_files(workspace: Path, path: str = ".") -> str:
         relative_path = entry.relative_to(workspace).as_posix()
         lines.append(f"{relative_path}/" if entry.is_dir() else relative_path)
     return "\n".join(lines)
+
+
+def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
+    """Bind all filesystem Tool definitions to this run's workspace."""
+
+    workspace = context.workspace
+
+    def definition(
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        handler: Callable[..., str],
+    ) -> ToolDefinition:
+        return ToolDefinition(
+            name=name,
+            description=description,
+            parameters=parameters,
+            execute=lambda call, arguments: handler(workspace, **arguments),
+        )
+
+    return (
+        definition(
+            "read_file",
+            "Read a UTF-8 text file inside the workspace.",
+            {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+            read_file,
+        ),
+        definition(
+            "write_file",
+            "Write UTF-8 text to a file inside the workspace.",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["path", "content"],
+                "additionalProperties": False,
+            },
+            write_file,
+        ),
+        definition(
+            "edit_file",
+            "Replace exact text in a workspace file when it occurs exactly once.",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "old_text": {"type": "string"},
+                    "new_text": {"type": "string"},
+                },
+                "required": ["path", "old_text", "new_text"],
+                "additionalProperties": False,
+            },
+            edit_file,
+        ),
+        definition(
+            "list_files",
+            "List the direct children of a directory inside the workspace.",
+            {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "additionalProperties": False,
+            },
+            list_files,
+        ),
+    )

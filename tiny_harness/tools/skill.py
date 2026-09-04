@@ -1,6 +1,14 @@
 """Tool adapter for loading untrusted workspace Skill instructions."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from tiny_harness.runtime.skills import SkillCatalog, load_skill as load_skill_content
+from tiny_harness.tools.definition import ToolDefinition
+
+if TYPE_CHECKING:
+    from tiny_harness.agent.context import AgentRunContext
 
 
 def load_skill(catalog: SkillCatalog, name: str) -> str:
@@ -17,4 +25,27 @@ def load_skill(catalog: SkillCatalog, name: str) -> str:
         f"{content}\n"
         "--- END UNTRUSTED SKILL CONTENT ---\n"
         "</loaded-skill>"
+    )
+
+
+def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
+    """Build load_skill only when the current catalog contains Skills."""
+
+    catalog = context.skill_catalog
+    if catalog is None or not catalog.manifests:
+        return ()
+    return (
+        ToolDefinition(
+            name="load_skill",
+            description="Load one workspace Skill by its exact catalog name.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1},
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+            execute=lambda call, arguments: load_skill(catalog, **arguments),
+        ),
     )

@@ -2,6 +2,7 @@ import copy
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from tiny_harness.agent.context import create_run_context
 from tiny_harness.agent.messages import ModelResponse, ToolCall
@@ -48,7 +49,9 @@ class CallModelTest(unittest.TestCase):
             ),
         )
         if tools is not None:
-            context.tools = tools
+            context.tool_registry = SimpleNamespace(
+                model_schemas=lambda: copy.deepcopy(tools)
+            )
         return context
 
     def test_returns_protocol_valid_response_without_committing_it(self) -> None:

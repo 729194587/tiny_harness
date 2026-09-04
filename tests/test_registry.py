@@ -5,13 +5,15 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from tiny_harness.agent.messages import ToolCall
 from tiny_harness.runtime.permissions import PermissionDecision
 from tiny_harness.runtime.context import CompactionRequest
 from tiny_harness.runtime.skills import discover_skills
 from tiny_harness.runtime.todos import TodoManager
-from tiny_harness.tools.registry import dispatch, tool_schemas
+from tiny_harness.tools.discovery import discover_tools
+from tiny_harness.tools.registry import dispatch
 
 
 class RecordingTestRunner:
@@ -29,19 +31,41 @@ class ToolRegistryTest(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.workspace = Path(self.temporary_directory.name) / "workspace"
         self.workspace.mkdir()
+        self.todo_manager = TodoManager()
+        self.registry = self.make_registry()
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def call(self, call_id: str, name: str, arguments: object, **dispatch_options):
+    def make_registry(self, **overrides):
+        capabilities = {
+            "workspace": self.workspace,
+            "todo_manager": self.todo_manager,
+            "subagent_runner": lambda prompt, call_id: "child summary",
+            "skill_catalog": discover_skills(self.workspace),
+            "compaction_request": None,
+            "test_runner": None,
+        }
+        capabilities.update(overrides)
+        return discover_tools(SimpleNamespace(**capabilities))
+
+    def call(
+        self,
+        call_id: str,
+        name: str,
+        arguments: object,
+        *,
+        registry=None,
+        **dispatch_options,
+    ):
         return dispatch(
-            self.workspace,
+            registry or self.registry,
             ToolCall(call_id, name, json.dumps(arguments)),
             **dispatch_options,
         )
 
     def test_schemas_contain_all_default_runtime_tools(self) -> None:
-        schemas = tool_schemas()
+        schemas = self.registry.model_schemas()
 
         self.assertEqual(
             [schema["function"]["name"] for schema in schemas],
@@ -51,8 +75,8 @@ class ToolRegistryTest(unittest.TestCase):
                 "edit_file",
                 "list_files",
                 "bash",
-                "todo_write",
                 "task",
+                "todo_write",
             ],
         )
         for schema in schemas:
@@ -69,34 +93,47 @@ class ToolRegistryTest(unittest.TestCase):
 
         child_names = [
             schema["function"]["name"]
-            for schema in tool_schemas(include_task=False)
+            for schema in self.make_registry(
+                subagent_runner=None
+            ).model_schemas()
         ]
         self.assertNotIn("task", child_names)
 
         compact_names = [
             schema["function"]["name"]
-            for schema in tool_schemas(include_compact=True)
+            for schema in self.make_registry(
+                compaction_request=CompactionRequest()
+            ).model_schemas()
         ]
         self.assertIn("compact", compact_names)
 
+        manifest = self.workspace / "skills" / "review" / "SKILL.md"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            "---\nname: review\ndescription: Review code\n---\n\nBODY",
+            encoding="utf-8",
+        )
         skill_names = [
             schema["function"]["name"]
-            for schema in tool_schemas(include_skill=True)
+            for schema in self.make_registry(
+                skill_catalog=discover_skills(self.workspace)
+            ).model_schemas()
         ]
         self.assertIn("load_skill", skill_names)
 
         default_names = [
-            schema["function"]["name"] for schema in tool_schemas()
+            schema["function"]["name"] for schema in self.registry.model_schemas()
         ]
+        configured_registry = self.make_registry(test_runner=RecordingTestRunner())
         configured_names = [
             schema["function"]["name"]
-            for schema in tool_schemas(include_run_tests=True)
+            for schema in configured_registry.model_schemas()
         ]
         self.assertNotIn("run_tests", default_names)
         self.assertIn("run_tests", configured_names)
         run_tests_schema = next(
             schema
-            for schema in tool_schemas(include_run_tests=True)
+            for schema in configured_registry.model_schemas()
             if schema["function"]["name"] == "run_tests"
         )
         self.assertEqual(
@@ -116,11 +153,12 @@ class ToolRegistryTest(unittest.TestCase):
         )
 
         runner = RecordingTestRunner()
+        configured = self.make_registry(test_runner=runner)
         result = self.call(
             "tests-1",
             "run_tests",
             {},
-            test_runner=runner,
+            registry=configured,
         )
         self.assertEqual(result.content, "Exit code: 0\nOK")
         self.assertEqual(runner.workspaces, [self.workspace])
@@ -129,7 +167,7 @@ class ToolRegistryTest(unittest.TestCase):
             "tests-args",
             "run_tests",
             {"target": "tests.test_model"},
-            test_runner=runner,
+            registry=configured,
         )
         self.assertIn("run_tests does not accept arguments", rejected.content)
         self.assertEqual(runner.workspaces, [self.workspace])
@@ -147,7 +185,7 @@ class ToolRegistryTest(unittest.TestCase):
             "skill-1",
             "load_skill",
             {"name": "review"},
-            skill_catalog=catalog,
+            registry=self.make_registry(skill_catalog=catalog),
         )
         missing_catalog = self.call(
             "skill-2",
@@ -169,7 +207,7 @@ class ToolRegistryTest(unittest.TestCase):
             "compact-1",
             "compact",
             {},
-            compaction_request=manager,
+            registry=self.make_registry(compaction_request=manager),
         )
 
         self.assertEqual(manager.revision, 1)
@@ -186,14 +224,17 @@ class ToolRegistryTest(unittest.TestCase):
 
     def test_dispatches_task_through_injected_runner(self) -> None:
         observed = []
+        registry = self.make_registry(
+            subagent_runner=lambda prompt, call_id: (
+                observed.append((prompt, call_id)) or "child summary"
+            )
+        )
 
         result = self.call(
             "task-1",
             "task",
             {"prompt": " inspect the project "},
-            subagent_runner=lambda prompt, call_id: (
-                observed.append((prompt, call_id)) or "child summary"
-            ),
+            registry=registry,
         )
 
         self.assertEqual(observed, [("inspect the project", "task-1")])
@@ -205,6 +246,7 @@ class ToolRegistryTest(unittest.TestCase):
             "task-1",
             "task",
             {"prompt": "inspect"},
+            registry=self.make_registry(subagent_runner=None),
         )
 
         self.assertEqual(
@@ -214,14 +256,17 @@ class ToolRegistryTest(unittest.TestCase):
 
     def test_empty_task_prompt_does_not_call_runner(self) -> None:
         observed = []
+        registry = self.make_registry(
+            subagent_runner=lambda prompt, call_id: observed.append(
+                (prompt, call_id)
+            )
+        )
 
         result = self.call(
             "task-1",
             "task",
             {"prompt": "   "},
-            subagent_runner=lambda prompt, call_id: observed.append(
-                (prompt, call_id)
-            ),
+            registry=registry,
         )
 
         self.assertEqual(observed, [])
@@ -245,24 +290,25 @@ class ToolRegistryTest(unittest.TestCase):
                         }
                     ]
                 },
-                todo_manager=manager,
+                registry=self.make_registry(todo_manager=manager),
             )
 
         self.assertEqual(result.tool_call_id, "todo-1")
         self.assertIn("[>] Implement the feature", result.content)
         self.assertEqual(manager.revision, 1)
 
-    def test_todo_write_without_manager_becomes_tool_error(self) -> None:
+    def test_todo_write_without_manager_is_not_registered(self) -> None:
         result = self.call(
             "todo-1",
             "todo_write",
             {"todos": []},
+            registry=self.make_registry(todo_manager=None),
         )
 
         self.assertEqual(result.tool_call_id, "todo-1")
         self.assertEqual(
             result.content,
-            "Error: RuntimeError: todo_write requires a TodoManager",
+            "Error: ValueError: Unknown tool: todo_write",
         )
 
     def test_dispatches_file_tools_and_preserves_call_id(self) -> None:
@@ -373,7 +419,7 @@ class ToolRegistryTest(unittest.TestCase):
 
     def test_invalid_json_becomes_tool_result(self) -> None:
         result = dispatch(
-            self.workspace,
+            self.registry,
             ToolCall("bad-json", "read_file", "{"),
         )
 

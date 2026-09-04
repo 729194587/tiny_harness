@@ -4,12 +4,16 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tiny_harness.agent.loop import run_agent
 from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.runtime.errors import MaxTurnsExceededError
 from tiny_harness.runtime.test_runner import SubprocessTestRunner
+from tiny_harness.runtime.skills import discover_skills
+from tiny_harness.runtime.todos import TodoManager
+from tiny_harness.tools.discovery import discover_tools
 from tiny_harness.tools.registry import dispatch
 
 
@@ -128,10 +132,19 @@ class SubprocessTestRunnerTest(unittest.TestCase):
             "tiny_harness.runtime.test_runner.subprocess.run",
             side_effect=subprocess.TimeoutExpired(runner.argv, 3),
         ):
+            registry = discover_tools(
+                SimpleNamespace(
+                    workspace=self.workspace,
+                    todo_manager=TodoManager(),
+                    subagent_runner=None,
+                    skill_catalog=discover_skills(self.workspace),
+                    compaction_request=None,
+                    test_runner=runner,
+                )
+            )
             result = dispatch(
-                self.workspace,
+                registry,
                 ToolCall("tests-timeout", "run_tests", "{}"),
-                test_runner=runner,
             )
 
         self.assertIn("Error: TimeoutExpired", result.content)

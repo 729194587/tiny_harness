@@ -1,10 +1,9 @@
-"""Minimal registration and permission-aware dispatch for tools."""
+"""Tool registration, schema projection, and the shared execution pipeline."""
+
+from __future__ import annotations
 
 import copy
 import json
-from collections.abc import Callable
-from dataclasses import dataclass
-from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
@@ -15,12 +14,7 @@ from tiny_harness.runtime.events import (
     EventLogger,
     EventType,
 )
-from tiny_harness.runtime.context import CompactionRequest
-from tiny_harness.runtime.hooks import (
-    HookExecutionError,
-    ToolHookContext,
-    ToolHooks,
-)
+from tiny_harness.runtime.hooks import HookExecutionError, ToolHookContext, ToolHooks
 from tiny_harness.runtime.permissions import (
     DEFAULT_PERMISSION_POLICY,
     PermissionDecision,
@@ -30,322 +24,55 @@ from tiny_harness.runtime.permissions import (
     permission_denial_feedback,
     resolve_permission,
 )
-from tiny_harness.runtime.skills import SkillCatalog
-from tiny_harness.runtime.test_runner import TestRunner
-from tiny_harness.runtime.todos import TodoManager
-from tiny_harness.tools.filesystem import edit_file, list_files, read_file, write_file
-from tiny_harness.tools.compact import compact
-from tiny_harness.tools.shell import bash
-from tiny_harness.tools.skill import load_skill
-from tiny_harness.tools.task import SubagentRunner, task
-from tiny_harness.tools.todo import todo_write
+from tiny_harness.tools.definition import ToolDefinition
 
 
-@dataclass(frozen=True)
-class ToolRuntime:
-    """Run-scoped dependencies available to every tool adapter."""
+class ToolRegistry:
+    """Store the Tool definitions available to one agent run."""
 
-    workspace: Path
-    todo_manager: TodoManager | None
-    subagent_runner: SubagentRunner | None
-    skill_catalog: SkillCatalog | None
-    compaction_request: CompactionRequest | None
-    test_runner: TestRunner | None
+    def __init__(self) -> None:
+        self._definitions: dict[str, ToolDefinition] = {}
 
+    def register(self, definition: ToolDefinition) -> None:
+        """Register one definition, rejecting duplicate model-facing names."""
 
-ToolExecutor = Callable[
-    [ToolRuntime, ToolCall, dict[str, Any]],
-    str,
-]
-ToolAvailability = Callable[[ToolRuntime], bool]
+        if definition.name in self._definitions:
+            raise ValueError(f"Duplicate tool name: {definition.name}")
+        self._definitions[definition.name] = definition
 
+    def lookup(self, name: str) -> ToolDefinition:
+        """Return the named definition or fail with the dispatch error contract."""
 
-def _always_available(runtime: ToolRuntime) -> bool:
-    return True
+        try:
+            return self._definitions[name]
+        except KeyError:
+            raise ValueError(f"Unknown tool: {name}") from None
 
+    def list(self) -> tuple[ToolDefinition, ...]:
+        """List definitions in deterministic registration order."""
 
-@dataclass(frozen=True)
-class ToolAdapter:
-    """Schema plus one uniform runtime-aware execution adapter."""
+        return tuple(self._definitions.values())
 
-    description: str
-    parameters: dict[str, Any]
-    execute: ToolExecutor
-    available: ToolAvailability = _always_available
+    def model_schemas(self) -> list[dict[str, Any]]:
+        """Project all definitions into Chat Completions Tool format."""
 
-
-def _workspace_tool(handler: Callable[..., str]) -> ToolExecutor:
-    def execute(
-        runtime: ToolRuntime,
-        call: ToolCall,
-        arguments: dict[str, Any],
-    ) -> str:
-        return handler(runtime.workspace, **arguments)
-
-    return execute
-
-
-def _execute_todo(
-    runtime: ToolRuntime,
-    call: ToolCall,
-    arguments: dict[str, Any],
-) -> str:
-    if runtime.todo_manager is None:
-        raise RuntimeError("todo_write requires a TodoManager")
-    return todo_write(runtime.todo_manager, **arguments)
-
-
-def _execute_task(
-    runtime: ToolRuntime,
-    call: ToolCall,
-    arguments: dict[str, Any],
-) -> str:
-    if runtime.subagent_runner is None:
-        raise RuntimeError("task requires a SubagentRunner")
-    return task(runtime.subagent_runner, call.id, **arguments)
-
-
-def _execute_skill(
-    runtime: ToolRuntime,
-    call: ToolCall,
-    arguments: dict[str, Any],
-) -> str:
-    if runtime.skill_catalog is None:
-        raise RuntimeError("load_skill requires a SkillCatalog")
-    return load_skill(runtime.skill_catalog, **arguments)
-
-
-def _execute_compact(
-    runtime: ToolRuntime,
-    call: ToolCall,
-    arguments: dict[str, Any],
-) -> str:
-    if runtime.compaction_request is None:
-        raise RuntimeError("compact requires a CompactionRequest")
-    return compact(runtime.compaction_request, **arguments)
-
-
-def _execute_tests(
-    runtime: ToolRuntime,
-    call: ToolCall,
-    arguments: dict[str, Any],
-) -> str:
-    if runtime.test_runner is None:
-        raise RuntimeError("run_tests requires a configured TestRunner")
-    if arguments:
-        raise TypeError("run_tests does not accept arguments")
-    return runtime.test_runner.run(runtime.workspace)
-
-
-def _has_subagent(runtime: ToolRuntime) -> bool:
-    return runtime.subagent_runner is not None
-
-
-def _has_skill_catalog(runtime: ToolRuntime) -> bool:
-    return runtime.skill_catalog is not None
-
-
-def _has_compaction_request(runtime: ToolRuntime) -> bool:
-    return runtime.compaction_request is not None
-
-
-def _has_test_runner(runtime: ToolRuntime) -> bool:
-    return runtime.test_runner is not None
-
-
-_TOOL_REGISTRY: dict[str, ToolAdapter] = {
-    "read_file": ToolAdapter(
-        "Read a UTF-8 text file inside the workspace.",
-        {
-            "type": "object",
-            "properties": {"path": {"type": "string"}},
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-        _workspace_tool(read_file),
-    ),
-    "write_file": ToolAdapter(
-        "Write UTF-8 text to a file inside the workspace.",
-        {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "content": {"type": "string"},
-            },
-            "required": ["path", "content"],
-            "additionalProperties": False,
-        },
-        _workspace_tool(write_file),
-    ),
-    "edit_file": ToolAdapter(
-        "Replace exact text in a workspace file when it occurs exactly once.",
-        {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "old_text": {"type": "string"},
-                "new_text": {"type": "string"},
-            },
-            "required": ["path", "old_text", "new_text"],
-            "additionalProperties": False,
-        },
-        _workspace_tool(edit_file),
-    ),
-    "list_files": ToolAdapter(
-        "List the direct children of a directory inside the workspace.",
-        {
-            "type": "object",
-            "properties": {"path": {"type": "string"}},
-            "additionalProperties": False,
-        },
-        _workspace_tool(list_files),
-    ),
-    "bash": ToolAdapter(
-        "Run a shell command with the workspace as the working directory.",
-        {
-            "type": "object",
-            "properties": {"command": {"type": "string"}},
-            "required": ["command"],
-            "additionalProperties": False,
-        },
-        _workspace_tool(bash),
-    ),
-    "run_tests": ToolAdapter(
-        "Run the configured repository test suite.",
-        {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": False,
-        },
-        _execute_tests,
-        _has_test_runner,
-    ),
-    "todo_write": ToolAdapter(
-        "Create and manage a task list for the current coding run.",
-        {
-            "type": "object",
-            "properties": {
-                "todos": {
-                    "type": "array",
-                    "maxItems": 20,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "content": {"type": "string", "minLength": 1},
-                            "status": {
-                                "type": "string",
-                                "enum": [
-                                    "pending",
-                                    "in_progress",
-                                    "completed",
-                                ],
-                            },
-                        },
-                        "required": ["content", "status"],
-                        "additionalProperties": False,
-                    },
-                }
-            },
-            "required": ["todos"],
-            "additionalProperties": False,
-        },
-        _execute_todo,
-    ),
-    "task": ToolAdapter(
-        "Run a subagent with fresh context and return its final text.",
-        {
-            "type": "object",
-            "properties": {
-                "prompt": {"type": "string", "minLength": 1},
-            },
-            "required": ["prompt"],
-            "additionalProperties": False,
-        },
-        _execute_task,
-        _has_subagent,
-    ),
-    "load_skill": ToolAdapter(
-        "Load one workspace Skill by its exact catalog name.",
-        {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "minLength": 1},
-            },
-            "required": ["name"],
-            "additionalProperties": False,
-        },
-        _execute_skill,
-        _has_skill_catalog,
-    ),
-    "compact": ToolAdapter(
-        "Summarize earlier conversation after the current tool batch.",
-        {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": False,
-        },
-        _execute_compact,
-        _has_compaction_request,
-    ),
-}
-
-
-def tool_schemas(
-    *,
-    include_task: bool = True,
-    include_skill: bool = False,
-    include_compact: bool = False,
-    include_run_tests: bool = False,
-) -> list[dict[str, Any]]:
-    """Return all registered tools in Chat Completions function-tool format."""
-
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": name,
-                "description": adapter.description,
-                "parameters": adapter.parameters,
-            },
-        }
-        for name, adapter in _TOOL_REGISTRY.items()
-        if (include_task or name != "task")
-        and (include_skill or name != "load_skill")
-        and (include_compact or name != "compact")
-        and (include_run_tests or name != "run_tests")
-    ]
+        return [definition.model_schema() for definition in self._definitions.values()]
 
 
 def dispatch(
-    workspace: Path,
+    registry: ToolRegistry,
     call: ToolCall,
     *,
     permission_policy: PermissionPolicy = DEFAULT_PERMISSION_POLICY,
     permission_prompt: PermissionPrompt | None = None,
     event_logger: EventLogger = NULL_EVENT_LOGGER,
     tool_hooks: ToolHooks | None = None,
-    todo_manager: TodoManager | None = None,
-    subagent_runner: SubagentRunner | None = None,
-    skill_catalog: SkillCatalog | None = None,
-    compaction_request: CompactionRequest | None = None,
-    test_runner: TestRunner | None = None,
     permission_rejections: PermissionRejectionTracker | None = None,
 ) -> ToolResult:
-    """Authorize and execute one tool call, converting failures to text."""
+    """Authorize and execute one registered Tool, converting failures to text."""
 
-    runtime = ToolRuntime(
-        workspace=workspace,
-        todo_manager=todo_manager,
-        subagent_runner=subagent_runner,
-        skill_catalog=skill_catalog,
-        compaction_request=compaction_request,
-        test_runner=test_runner,
-    )
     try:
-        entry = _TOOL_REGISTRY.get(call.name)
-        if entry is None or not entry.available(runtime):
-            raise ValueError(f"Unknown tool: {call.name}")
-
+        definition = registry.lookup(call.name)
         arguments = json.loads(call.arguments_json)
         if not isinstance(arguments, dict):
             raise ValueError("Tool arguments must be a JSON object")
@@ -397,7 +124,8 @@ def dispatch(
             return ToolResult(
                 tool_call_id=call.id,
                 content=(
-                    "Error: Tool call blocked by PreToolUse hook: " f"{decision.reason}"
+                    "Error: Tool call blocked by PreToolUse hook: "
+                    f"{decision.reason}"
                 ),
             )
 
@@ -411,8 +139,8 @@ def dispatch(
         denial_streak = 1
         recovery_prompted = False
         if permission_rejections is not None:
-            denial_streak, recovery_prompted = (
-                permission_rejections.record_denial(call.name)
+            denial_streak, recovery_prompted = permission_rejections.record_denial(
+                call.name
             )
         event_logger.emit(
             EventType.TOOL_DENIED,
@@ -444,7 +172,7 @@ def dispatch(
         },
     )
     try:
-        content = entry.execute(runtime, call, arguments)
+        content = definition.execute(call, arguments)
         outcome = "returned"
     except EventLogError:
         raise

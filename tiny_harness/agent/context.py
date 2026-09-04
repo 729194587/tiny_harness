@@ -42,7 +42,8 @@ from tiny_harness.runtime.skills import (
 )
 from tiny_harness.runtime.test_runner import TestRunner
 from tiny_harness.runtime.todos import TodoManager
-from tiny_harness.tools.registry import tool_schemas
+from tiny_harness.tools.discovery import discover_tools
+from tiny_harness.tools.registry import ToolRegistry
 from tiny_harness.tools.task import SubagentRunner
 
 DEFAULT_SUBAGENT_MAX_TURNS = 10
@@ -57,7 +58,7 @@ class AgentRunContext:
 
     provider: ModelProvider
     workspace: Path
-    tools: list[dict[str, Any]]
+    tool_registry: ToolRegistry
     max_context_chars: int | None
     max_turns: int
     subagent_max_turns: int
@@ -81,6 +82,12 @@ class AgentRunContext:
     permission_rejections: PermissionRejectionTracker
     current_turn: int = 0
     rounds_since_todo: int = 0
+
+    @property
+    def tools(self) -> list[dict[str, Any]]:
+        """Project the run's discovered Tools for model requests."""
+
+        return self.tool_registry.model_schemas()
 
 
 def run_started_data(context: AgentRunContext) -> dict[str, Any]:
@@ -145,12 +152,6 @@ ModelCompletion = Callable[
 ]
 
 
-@dataclass(frozen=True)
-class CompactionRuntime:
-    compactor: ContextCompactor | None
-    request: CompactionRequest | None
-
-
 def _validate_run_configuration(
     *,
     max_turns: int,
@@ -191,28 +192,25 @@ def _completion_router(
     return complete_for
 
 
-def _compaction_runtime(
+def _compactor(
     workspace: Path,
     provider: ModelProvider,
     tools: list[dict[str, Any]],
     max_context_chars: int | None,
     complete_for: ModelCompletion,
     event_logger: EventLogger,
-) -> CompactionRuntime:
+) -> ContextCompactor | None:
     if max_context_chars is None:
-        return CompactionRuntime(None, None)
-    return CompactionRuntime(
-        ContextCompactor(
-            workspace,
-            provider,
-            tools,
-            max_context_chars,
-            event_logger=event_logger,
-            summary_complete=lambda messages, schemas: complete_for(
-                "summary", messages, schemas
-            ),
+        return None
+    return ContextCompactor(
+        workspace,
+        provider,
+        tools,
+        max_context_chars,
+        event_logger=event_logger,
+        summary_complete=lambda messages, schemas: complete_for(
+            "summary", messages, schemas
         ),
-        CompactionRequest(),
     )
 
 
@@ -307,13 +305,10 @@ def create_run_context(
 
     skill_catalog = discover_skills(workspace)
     memory_catalog = _memory_catalog(workspace, memory_enabled)
-    tools = tool_schemas(
-        include_task=allow_subagent,
-        include_skill=bool(skill_catalog.manifests),
-        include_compact=max_context_chars is not None,
-        include_run_tests=test_runner is not None,
-    )
     todo_manager = TodoManager()
+    compaction_request = (
+        CompactionRequest() if max_context_chars is not None else None
+    )
 
     recovery = RecoveryExecutor(recovery_policy, event_logger=event_logger)
     context: AgentRunContext
@@ -323,14 +318,6 @@ def create_run_context(
         lambda: context.current_turn,
     )
 
-    compaction = _compaction_runtime(
-        workspace,
-        provider,
-        tools,
-        max_context_chars,
-        complete_for,
-        event_logger,
-    )
     subagent = _subagent_runner(
         enabled=allow_subagent,
         provider=provider,
@@ -357,7 +344,7 @@ def create_run_context(
     context = AgentRunContext(
         provider=provider,
         workspace=workspace,
-        tools=tools,
+        tool_registry=ToolRegistry(),
         max_context_chars=max_context_chars,
         max_turns=max_turns,
         subagent_max_turns=subagent_max_turns,
@@ -381,11 +368,20 @@ def create_run_context(
             if memory_enabled
             else None
         ),
-        compactor=compaction.compactor,
-        compaction_request=compaction.request,
+        compactor=None,
+        compaction_request=compaction_request,
         subagent_runner=subagent,
         final_answer_hook=final_answer_hook,
         test_runner=test_runner,
         permission_rejections=PermissionRejectionTracker(),
+    )
+    context.tool_registry = discover_tools(context)
+    context.compactor = _compactor(
+        workspace,
+        provider,
+        context.tools,
+        max_context_chars,
+        complete_for,
+        event_logger,
     )
     return context

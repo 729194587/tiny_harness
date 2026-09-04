@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from tiny_harness.agent.context import create_run_context
 from tiny_harness.agent.loop import agent_loop as core_agent_loop
@@ -13,6 +14,9 @@ from tiny_harness.agent.loop import run_agent as agent_loop
 from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.runtime.context import ContextProtocolError
 from tiny_harness.runtime.errors import MaxTurnsExceededError
+from tiny_harness.runtime.permissions import PermissionDecision
+from tiny_harness.tools.definition import ToolDefinition
+from tiny_harness.tools.registry import ToolRegistry
 
 
 class FakeProvider:
@@ -39,6 +43,60 @@ class AgentLoopTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
+
+    def test_loop_executes_a_discovered_tool_without_knowing_its_name(self) -> None:
+        observed = []
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="phase_one_probe",
+                description="Record one probe value.",
+                parameters={
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"],
+                    "additionalProperties": False,
+                },
+                execute=lambda call, arguments: (
+                    observed.append((call.id, arguments["value"])) or "recorded"
+                ),
+            )
+        )
+        provider = FakeProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("probe-1", "phase_one_probe", '{"value":"ok"}')],
+                    "tool_calls",
+                ),
+                ModelResponse("finished", None, [], "stop"),
+            ]
+        )
+
+        class AllowPolicy:
+            def decide(self, tool_name, arguments):
+                del tool_name, arguments
+                return PermissionDecision.ALLOW
+
+        with patch(
+            "tiny_harness.agent.context.discover_tools",
+            return_value=registry,
+        ):
+            answer = agent_loop(
+                provider,
+                self.workspace,
+                [{"role": "user", "content": "run probe"}],
+                permission_policy=AllowPolicy(),
+                allow_subagent=False,
+            )
+
+        self.assertEqual(answer, "finished")
+        self.assertEqual(observed, [("probe-1", "ok")])
+        self.assertEqual(
+            [tool["function"]["name"] for tool in provider.calls[0]["tools"]],
+            ["phase_one_probe"],
+        )
 
     def test_three_argument_core_loop_runs_with_prebuilt_context(self) -> None:
         provider = FakeProvider(
@@ -256,8 +314,8 @@ class AgentLoopTest(unittest.TestCase):
                 "edit_file",
                 "list_files",
                 "bash",
-                "todo_write",
                 "task",
+                "todo_write",
             ],
         )
 
