@@ -29,5 +29,7 @@ dist/
 .vscode/
 .DS_Store
 Thumbs.db
-.tinyharness/
+.tinyharness/*
+!.tinyharness/skills/
+!.tinyharness/skills/**
 evals/results/

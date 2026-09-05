@@ -75,6 +75,7 @@ class ToolRegistryTest(unittest.TestCase):
                 "edit_file",
                 "list_files",
                 "bash",
+                "load_skill",
                 "task",
                 "todo_write",
             ],
@@ -107,7 +108,9 @@ class ToolRegistryTest(unittest.TestCase):
         ]
         self.assertIn("compact", compact_names)
 
-        manifest = self.workspace / "skills" / "review" / "SKILL.md"
+        manifest = (
+            self.workspace / ".tinyharness" / "skills" / "review" / "SKILL.md"
+        )
         manifest.parent.mkdir(parents=True)
         manifest.write_text(
             "---\nname: review\ndescription: Review code\n---\n\nBODY",
@@ -173,7 +176,9 @@ class ToolRegistryTest(unittest.TestCase):
         self.assertEqual(runner.workspaces, [self.workspace])
 
     def test_dispatches_load_skill_only_with_injected_catalog(self) -> None:
-        manifest = self.workspace / "skills" / "review" / "SKILL.md"
+        manifest = (
+            self.workspace / ".tinyharness" / "skills" / "review" / "SKILL.md"
+        )
         manifest.parent.mkdir(parents=True)
         manifest.write_text(
             "---\nname: review\ndescription: Review code\n---\n\nBODY",
@@ -191,6 +196,9 @@ class ToolRegistryTest(unittest.TestCase):
             "skill-2",
             "load_skill",
             {"name": "review"},
+            registry=self.make_registry(
+                skill_catalog=discover_skills(self.workspace, sources=())
+            ),
         )
 
         self.assertIn("BEGIN UNTRUSTED SKILL CONTENT", result.content)

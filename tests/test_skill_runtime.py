@@ -8,6 +8,7 @@ from tiny_harness.agent.loop import run_agent
 from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.runtime.hooks import ToolHooks
 from tiny_harness.runtime.permissions import PermissionDecision
+from tiny_harness.runtime.skills import discover_skills
 
 
 class FakeProvider:
@@ -62,7 +63,7 @@ class SkillRuntimeTest(unittest.TestCase):
         description: str = "Review code carefully",
         body: str = "PRIVATE_SKILL_BODY_SENTINEL",
     ) -> Path:
-        path = self.workspace / "skills" / name / "SKILL.md"
+        path = self.workspace / ".tinyharness" / "skills" / name / "SKILL.md"
         path.parent.mkdir(parents=True)
         path.write_text(
             "---\n"
@@ -126,7 +127,8 @@ class SkillRuntimeTest(unittest.TestCase):
         self.assertEqual(len(catalog_messages), 1)
         self.assertEqual(catalog_messages[0]["role"], "system")
         self.assertIn("Review code carefully", catalog_messages[0]["content"])
-        self.assertIn("untrusted workspace metadata", catalog_messages[0]["content"])
+        self.assertIn("untrusted Skill metadata", catalog_messages[0]["content"])
+        self.assertNotIn("Workspace Skills", catalog_messages[0]["content"])
         self.assertNotIn(
             "PRIVATE_SKILL_BODY_SENTINEL",
             json.dumps(first_request, ensure_ascii=False),
@@ -161,7 +163,12 @@ class SkillRuntimeTest(unittest.TestCase):
         provider = FakeProvider([ModelResponse("done", None, [], "stop")])
         messages = [{"role": "user", "content": "task"}]
 
-        run_agent(provider, self.workspace, messages)
+        run_agent(
+            provider,
+            self.workspace,
+            messages,
+            skill_catalog=discover_skills(self.workspace, sources=()),
+        )
 
         request = provider.calls[0]
         self.assertNotIn("load_skill", self.tool_names(request))
@@ -171,6 +178,19 @@ class SkillRuntimeTest(unittest.TestCase):
                 for message in request["messages"]
             )
         )
+
+    def test_load_skill_tool_description_is_source_neutral(self) -> None:
+        provider = FakeProvider([ModelResponse("done", None, [], "stop")])
+
+        run_agent(provider, self.workspace, [{"role": "user", "content": "task"}])
+
+        schema = next(
+            tool["function"]
+            for tool in provider.calls[0]["tools"]
+            if tool["function"]["name"] == "load_skill"
+        )
+        self.assertIn("available Skill", schema["description"])
+        self.assertNotIn("workspace Skill", schema["description"])
 
     def test_permission_denial_prevents_skill_body_loading(self) -> None:
         self.write_skill()

@@ -157,12 +157,17 @@ class SubagentTest(unittest.TestCase):
         self.assertEqual(answer, "parent final")
         self.assertEqual(len(provider.calls), 3)
         child_request = provider.calls[1]
+        child_messages = [
+            message
+            for message in child_request["messages"]
+            if message.get("name") != "tinyharness_skill_catalog"
+        ]
         self.assertEqual(
-            [message["role"] for message in child_request["messages"]],
+            [message["role"] for message in child_messages],
             ["system", "user"],
         )
         self.assertEqual(
-            child_request["messages"][1],
+            child_messages[1],
             {"role": "user", "content": "DELEGATED_PROMPT"},
         )
         child_json = json.dumps(child_request["messages"])
@@ -221,7 +226,9 @@ class SubagentTest(unittest.TestCase):
         )
 
     def test_child_discovers_and_loads_workspace_skill_in_isolated_history(self) -> None:
-        skill_path = self.workspace / "skills" / "review" / "SKILL.md"
+        skill_path = (
+            self.workspace / ".tinyharness" / "skills" / "review" / "SKILL.md"
+        )
         skill_path.parent.mkdir(parents=True)
         skill_path.write_text(
             "---\n"

@@ -8,6 +8,7 @@ from tiny_harness.agent.subagent import SubagentExecutor
 from tiny_harness.runtime.events import EventType
 from tiny_harness.runtime.permissions import DEFAULT_PERMISSION_POLICY
 from tiny_harness.runtime.recovery import RecoveryPolicy
+from tiny_harness.runtime.skills import discover_skills
 
 
 class FakeTestRunner:
@@ -52,6 +53,7 @@ class SubagentExecutorTest(unittest.TestCase):
 
         provider = FakeProvider()
         test_runner = FakeTestRunner()
+        skill_catalog = discover_skills(workspace, sources=())
         executor = SubagentExecutor(
             run_agent,
             provider,
@@ -64,6 +66,7 @@ class SubagentExecutorTest(unittest.TestCase):
             tool_hooks=None,
             recovery_policy=RecoveryPolicy(max_retries=0),
             test_runner=test_runner,
+            skill_catalog=skill_catalog,
         )
 
         with contextlib.redirect_stdout(io.StringIO()):
@@ -82,6 +85,7 @@ class SubagentExecutorTest(unittest.TestCase):
         )
         self.assertFalse(calls[0]["options"]["allow_subagent"])
         self.assertIs(calls[0]["options"]["test_runner"], test_runner)
+        self.assertIs(calls[0]["options"]["skill_catalog"], skill_catalog)
         self.assertEqual(
             logger.events[0]["data"],
             {

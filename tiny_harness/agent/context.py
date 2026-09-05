@@ -226,6 +226,7 @@ def _subagent_runner(
     max_context_chars: int | None,
     tool_hooks: ToolHooks | None,
     recovery_policy: RecoveryPolicy,
+    skill_catalog: SkillCatalog,
     memory_enabled: bool,
     test_runner: TestRunner | None,
 ) -> SubagentRunner | None:
@@ -247,6 +248,7 @@ def _subagent_runner(
         max_context_chars=max_context_chars,
         tool_hooks=tool_hooks,
         recovery_policy=recovery_policy,
+        skill_catalog=skill_catalog,
         memory_enabled=memory_enabled,
         test_runner=test_runner,
     )
@@ -292,6 +294,7 @@ def create_run_context(
     allow_subagent: bool = True,
     recovery_policy: RecoveryPolicy = RecoveryPolicy(),
     test_runner: TestRunner | None = None,
+    skill_catalog: SkillCatalog | None = None,
     memory_enabled: bool = False,
     memory_extraction_enabled: bool = True,
 ) -> AgentRunContext:
@@ -303,7 +306,14 @@ def create_run_context(
         subagent_max_turns=subagent_max_turns,
     )
 
-    skill_catalog = discover_skills(workspace)
+    if (
+        skill_catalog is not None
+        and skill_catalog.workspace != workspace.resolve()
+    ):
+        raise ValueError("Skill catalog workspace does not match run workspace")
+    active_skill_catalog = (
+        discover_skills(workspace) if skill_catalog is None else skill_catalog
+    )
     memory_catalog = _memory_catalog(workspace, memory_enabled)
     todo_manager = TodoManager()
     compaction_request = (
@@ -329,6 +339,7 @@ def create_run_context(
         max_context_chars=max_context_chars,
         tool_hooks=tool_hooks,
         recovery_policy=recovery_policy,
+        skill_catalog=active_skill_catalog,
         memory_enabled=memory_enabled,
         test_runner=test_runner,
     )
@@ -356,7 +367,7 @@ def create_run_context(
         event_logger=event_logger,
         recovery_executor=recovery,
         todo_manager=todo_manager,
-        skill_catalog=skill_catalog,
+        skill_catalog=active_skill_catalog,
         memory_enabled=memory_enabled,
         memory_catalog=memory_catalog,
         memory_selection_complete=(

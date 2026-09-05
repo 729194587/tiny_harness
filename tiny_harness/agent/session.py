@@ -14,6 +14,7 @@ from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger
 from tiny_harness.runtime.permissions import PermissionPrompt
 from tiny_harness.runtime.recovery import RecoveryPolicy
+from tiny_harness.runtime.skills import discover_skills
 
 
 RUN_SCOPED_MARKERS = frozenset(
@@ -49,6 +50,7 @@ class AgentSession:
     ) -> None:
         self.provider = provider
         self.workspace = workspace.resolve()
+        self.skill_catalog = discover_skills(self.workspace)
         self.system_message: dict[str, Any] = {
             "role": "system",
             "content": system_prompt,
@@ -80,6 +82,7 @@ class AgentSession:
             max_context_chars=self.max_context_chars,
             subagent_max_turns=self.subagent_max_turns,
             recovery_policy=self.recovery_policy,
+            skill_catalog=self.skill_catalog,
             memory_enabled=self.memory_enabled,
         )
         answer = agent_loop(self.messages, context, task)

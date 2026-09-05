@@ -15,6 +15,7 @@ from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.runtime.context import ContextProtocolError
 from tiny_harness.runtime.errors import MaxTurnsExceededError
 from tiny_harness.runtime.permissions import PermissionDecision
+from tiny_harness.runtime.skills import discover_skills
 from tiny_harness.tools.definition import ToolDefinition
 from tiny_harness.tools.registry import ToolRegistry
 
@@ -107,6 +108,7 @@ class AgentLoopTest(unittest.TestCase):
             provider,
             self.workspace,
             allow_subagent=False,
+            skill_catalog=discover_skills(self.workspace, sources=()),
         )
 
         answer = core_agent_loop(messages, context, "task")
@@ -124,6 +126,7 @@ class AgentLoopTest(unittest.TestCase):
             self.workspace,
             max_context_chars=100_000,
             allow_subagent=False,
+            skill_catalog=discover_skills(self.workspace, sources=()),
         )
 
         with self.assertRaises(ContextProtocolError):
@@ -131,6 +134,21 @@ class AgentLoopTest(unittest.TestCase):
 
         self.assertEqual(provider.calls, [])
         self.assertEqual(messages, [{"role": "user", "content": "actual task"}])
+
+    def test_rejects_skill_catalog_from_a_different_workspace(self) -> None:
+        other_workspace = self.workspace / "other"
+        other_workspace.mkdir()
+        catalog = discover_skills(other_workspace, sources=())
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Skill catalog workspace does not match run workspace",
+        ):
+            create_run_context(
+                FakeProvider([]),
+                self.workspace,
+                skill_catalog=catalog,
+            )
 
     def test_returns_final_text_and_appends_assistant_message(self) -> None:
         provider = FakeProvider(
@@ -314,6 +332,7 @@ class AgentLoopTest(unittest.TestCase):
                 "edit_file",
                 "list_files",
                 "bash",
+                "load_skill",
                 "task",
                 "todo_write",
             ],
@@ -606,7 +625,13 @@ class AgentLoopTest(unittest.TestCase):
                     RuntimeError,
                     f"Model response is not executable: {finish_reason}",
                 ):
-                    agent_loop(provider, self.workspace, messages, max_turns=1)
+                    agent_loop(
+                        provider,
+                        self.workspace,
+                        messages,
+                        max_turns=1,
+                        skill_catalog=discover_skills(self.workspace, sources=()),
+                    )
 
                 self.assertEqual(messages, [{"role": "user", "content": "task"}])
                 self.assertFalse((self.workspace / path).exists())
@@ -638,6 +663,7 @@ class AgentLoopTest(unittest.TestCase):
                         FakeProvider([response]),
                         self.workspace,
                         messages,
+                        skill_catalog=discover_skills(self.workspace, sources=()),
                     )
                 self.assertEqual(messages, [{"role": "user", "content": "task"}])
                 self.assertFalse((self.workspace / "bad.txt").exists())

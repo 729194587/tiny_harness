@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tiny_harness.agent.messages import ModelResponse, ToolCall
+from tiny_harness.agent.messages import ModelResponse
 from tiny_harness.agent.session import AgentSession
 
 
@@ -58,7 +58,11 @@ class AgentSessionTest(unittest.TestCase):
         self.assertEqual(session.submit("FIRST_TASK"), "FIRST_ANSWER")
         self.assertEqual(session.submit("SECOND_TASK"), "SECOND_ANSWER")
 
-        second_request = provider.calls[1]["messages"]
+        second_request = [
+            message
+            for message in provider.calls[1]["messages"]
+            if message.get("name") != "tinyharness_skill_catalog"
+        ]
         self.assertEqual(
             [(item["role"], item.get("content")) for item in second_request],
             [
@@ -70,64 +74,50 @@ class AgentSessionTest(unittest.TestCase):
         )
         self.assertEqual(session.messages[-1]["content"], "SECOND_ANSWER")
 
-    def test_each_submit_refreshes_the_workspace_skill_catalog(self) -> None:
+    def test_session_freezes_skill_catalog_and_next_session_refreshes_it(self) -> None:
         provider = FakeProvider(
             [
                 ModelResponse("FIRST_ANSWER", None, [], "stop"),
-                ModelResponse(
-                    None,
-                    None,
-                    [
-                        ToolCall(
-                            "skill-1",
-                            "load_skill",
-                            '{"name":"review"}',
-                        )
-                    ],
-                    "tool_calls",
-                ),
                 ModelResponse("SECOND_ANSWER", None, [], "stop"),
             ]
         )
         session = AgentSession(provider, self.workspace, "system")
 
-        self.assertEqual(session.submit("first"), "FIRST_ANSWER")
-        skill_path = self.workspace / "skills" / "review" / "SKILL.md"
+        skill_path = (
+            self.workspace / ".tinyharness" / "skills" / "debug" / "SKILL.md"
+        )
         skill_path.parent.mkdir(parents=True)
         skill_path.write_text(
             "---\n"
-            "name: review\n"
-            "description: Review the current change\n"
+            "name: debug\n"
+            "description: Debug the current change\n"
             "---\n\n"
-            "SESSION_REFRESH_SKILL_BODY\n",
+            "SESSION_SNAPSHOT_SKILL_BODY\n",
             encoding="utf-8",
         )
 
+        self.assertEqual(session.submit("first"), "FIRST_ANSWER")
         self.assertEqual(session.submit("second"), "SECOND_ANSWER")
 
-        first_request = provider.calls[0]
-        self.assertNotIn(
-            "load_skill",
-            [tool["function"]["name"] for tool in first_request["tools"]],
-        )
-        second_request = provider.calls[1]
-        self.assertIn(
-            "load_skill",
-            [tool["function"]["name"] for tool in second_request["tools"]],
-        )
-        catalog = next(
+        for request in provider.calls:
+            catalog = next(
+                message
+                for message in request["messages"]
+                if message.get("name") == "tinyharness_skill_catalog"
+            )
+            self.assertNotIn("Debug the current change", catalog["content"])
+            self.assertNotIn("SESSION_SNAPSHOT_SKILL_BODY", catalog["content"])
+
+        next_provider = FakeProvider([ModelResponse("THIRD_ANSWER", None, [], "stop")])
+        next_session = AgentSession(next_provider, self.workspace, "system")
+        self.assertEqual(next_session.submit("third"), "THIRD_ANSWER")
+        next_catalog = next(
             message
-            for message in second_request["messages"]
+            for message in next_provider.calls[0]["messages"]
             if message.get("name") == "tinyharness_skill_catalog"
         )
-        self.assertIn("Review the current change", catalog["content"])
-        self.assertNotIn("SESSION_REFRESH_SKILL_BODY", catalog["content"])
-        loaded_result = next(
-            message
-            for message in provider.calls[2]["messages"]
-            if message.get("tool_call_id") == "skill-1"
-        )
-        self.assertIn("SESSION_REFRESH_SKILL_BODY", loaded_result["content"])
+        self.assertIn("Debug the current change", next_catalog["content"])
+        self.assertNotIn("SESSION_SNAPSHOT_SKILL_BODY", next_catalog["content"])
         self.assertFalse(
             any(
                 message.get("name") == "tinyharness_skill_catalog"

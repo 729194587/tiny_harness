@@ -26,6 +26,7 @@ from tiny_harness.runtime.context import (
 )
 from tiny_harness.runtime.hooks import HookBlock, ToolHooks
 from tiny_harness.runtime.recovery import RecoveryPolicy
+from tiny_harness.runtime.skills import discover_skills
 
 
 TOOLS = [
@@ -692,6 +693,7 @@ class ContextAgentLoopTest(unittest.TestCase):
                 messages,
                 max_turns=1,
                 max_context_chars=6_000,
+                skill_catalog=discover_skills(self.workspace, sources=()),
             )
 
         self.assertEqual(messages, original)

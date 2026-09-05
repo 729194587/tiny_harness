@@ -8,6 +8,7 @@ from tiny_harness.runtime.events import EventLogger, ScopedEventLogger
 from tiny_harness.runtime.hooks import ToolHooks
 from tiny_harness.runtime.permissions import PermissionPolicy, PermissionPrompt
 from tiny_harness.runtime.recovery import RecoveryPolicy
+from tiny_harness.runtime.skills import SkillCatalog
 from tiny_harness.runtime.test_runner import TestRunner
 
 AgentEntrypoint = Callable[..., str]
@@ -29,6 +30,7 @@ class SubagentExecutor:
         max_context_chars: int | None,
         tool_hooks: ToolHooks | None,
         recovery_policy: RecoveryPolicy,
+        skill_catalog: SkillCatalog,
         test_runner: TestRunner | None = None,
         memory_enabled: bool = False,
     ) -> None:
@@ -42,6 +44,7 @@ class SubagentExecutor:
         self.max_context_chars = max_context_chars
         self.tool_hooks = tool_hooks
         self.recovery_policy = recovery_policy
+        self.skill_catalog = skill_catalog
         self.test_runner = test_runner
         self.memory_enabled = memory_enabled
 
@@ -79,6 +82,7 @@ class SubagentExecutor:
                 subagent_max_turns=self.max_turns,
                 allow_subagent=False,
                 recovery_policy=self.recovery_policy,
+                skill_catalog=self.skill_catalog,
                 test_runner=self.test_runner,
                 memory_enabled=self.memory_enabled,
                 memory_extraction_enabled=False,
