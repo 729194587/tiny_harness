@@ -6,26 +6,30 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tiny_harness.agent.messages import ModelResponse
-from tiny_harness.runtime.memory import (
+from tiny_harness.memory.consolidation import (
+    snapshot_memories_for_consolidation,
+    stage_consolidated_memories,
+)
+from tiny_harness.memory.lifecycle import (
+    commit_consolidated_memories,
+    consolidate_memories_if_needed,
+    format_memory_catalog,
+    keyword_memory_selection,
+    parse_consolidated_memories,
+    parse_extracted_memories,
+    parse_memory_selection,
+    select_relevant_memories,
+    upsert_memory_markers,
+)
+from tiny_harness.memory.store import (
     MEMORY_CATALOG_MARKER,
     RELEVANT_MEMORY_MARKER,
     MemoryCandidate,
     MemoryConsolidationError,
     MemoryExtractionError,
-    commit_consolidated_memories,
-    consolidate_memories_if_needed,
     discover_memories,
-    format_memory_catalog,
-    keyword_memory_selection,
     list_memories,
     load_relevant_memories,
-    parse_extracted_memories,
-    parse_consolidated_memories,
-    parse_memory_selection,
-    select_relevant_memories,
-    snapshot_memories_for_consolidation,
-    stage_consolidated_memories,
-    upsert_memory_markers,
     write_memories,
 )
 
@@ -541,7 +545,7 @@ class MemoryTest(unittest.TestCase):
             self.workspace,
             [MemoryCandidate("replacement", "project", "Replacement", "NEW")],
         )
-        from tiny_harness.runtime import memory as memory_module
+        from tiny_harness.memory import lifecycle as memory_module
 
         real_rebuild = memory_module.rebuild_memory_index
         calls = 0

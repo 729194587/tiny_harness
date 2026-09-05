@@ -5,21 +5,22 @@ The two public flows stay visible here:
     discover -> select -> load -> inject
     extract -> write -> consolidate
 
-Document storage lives in memory_store; transactional replacement lives in
-memory_consolidation.
+Document storage lives in store; transactional replacement lives in
+consolidation.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from tiny_harness.agent.messages import ModelResponse
 from tiny_harness.runtime.events import EventLogError, EventLogger, EventType
 from tiny_harness.runtime.hooks import FinalAnswerHook, FinalAnswerHookContext
-from tiny_harness.runtime.memory_consolidation import (
+from tiny_harness.memory.consolidation import (
     ConsolidationMemory,
     MemoryConsolidationCommit,
     MemoryConsolidationResult,
@@ -30,7 +31,7 @@ from tiny_harness.runtime.memory_consolidation import (
     snapshot_memories_for_consolidation,
     stage_consolidated_memories,
 )
-from tiny_harness.runtime.memory_store import (
+from tiny_harness.memory.store import (
     CONSOLIDATION_STAGING_PREFIX,
     CONSOLIDATE_THRESHOLD,
     MAX_CATALOG_CHARS,
@@ -81,6 +82,105 @@ MemoryComplete = Callable[
     [list[dict[str, Any]], list[dict[str, Any]]],
     ModelResponse,
 ]
+MemoryCompletionRouter = Callable[
+    [str, list[dict[str, Any]], list[dict[str, Any]]],
+    ModelResponse,
+]
+
+
+@dataclass(frozen=True)
+class MemoryRuntime:
+    """Narrow run-scoped facade consumed by Agent composition."""
+
+    enabled: bool
+    _catalog: MemoryCatalog
+    _complete_for: MemoryCompletionRouter
+    _event_logger: EventLogger
+    _max_context_chars: int | None
+    final_answer_hook: FinalAnswerHook | None
+
+    def run_metadata(self) -> dict[str, Any]:
+        """Return event-safe Memory state without implementation details."""
+
+        if not self.enabled:
+            return {}
+        return {
+            "memory_enabled": True,
+            "memories_available": len(self._catalog.manifests),
+            "memory_discovery_issues": len(self._catalog.issues),
+        }
+
+    def initialize(
+        self,
+        messages: list[dict[str, Any]],
+        active_request: str,
+    ) -> None:
+        """Prepare run-scoped Memory markers before the first model call."""
+
+        if self.enabled:
+            prepare_memory_context(
+                messages,
+                self._catalog,
+                active_request,
+                lambda request_messages, tools: self._complete_for(
+                    "memory_selection",
+                    request_messages,
+                    tools,
+                ),
+                self._event_logger,
+                max_context_chars=self._max_context_chars,
+            )
+            return
+        upsert_memory_markers(
+            messages,
+            self._catalog,
+            LoadedMemories("", (), ()),
+        )
+
+
+def create_memory_runtime(
+    workspace: Path,
+    *,
+    enabled: bool,
+    extraction_enabled: bool,
+    complete_for: MemoryCompletionRouter,
+    event_logger: EventLogger,
+    max_context_chars: int | None = None,
+) -> MemoryRuntime:
+    """Compose one complete Memory lifecycle behind its Agent-facing facade."""
+
+    catalog = (
+        discover_memories(workspace)
+        if enabled
+        else empty_memory_catalog(workspace)
+    )
+    final_answer_hook = (
+        create_memory_final_answer_hook(
+            catalog,
+            lambda messages, tools: complete_for(
+                "memory_extraction",
+                messages,
+                tools,
+            ),
+            lambda messages, tools: complete_for(
+                "memory_consolidation",
+                messages,
+                tools,
+            ),
+            event_logger,
+            max_context_chars=max_context_chars,
+        )
+        if enabled and extraction_enabled
+        else None
+    )
+    return MemoryRuntime(
+        enabled=enabled,
+        _catalog=catalog,
+        _complete_for=complete_for,
+        _event_logger=event_logger,
+        _max_context_chars=max_context_chars,
+        final_answer_hook=final_answer_hook,
+    )
 
 
 # Public orchestration -------------------------------------------------------
@@ -700,7 +800,7 @@ def parse_consolidated_memories(
     return tuple(candidates)
 
 
-# Compatibility entry points keep the original memory module API stable.
+# Lifecycle adapters bind transactions to the subsystem's index rebuild.
 
 
 def rollback_consolidation(

@@ -1,4 +1,4 @@
-"""Workspace-local storage and document format for Minimal Memory."""
+"""Workspace-local storage and document format for the Memory subsystem."""
 
 from __future__ import annotations
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from tiny_harness.agent.loop import run_agent
 from tiny_harness.agent.messages import ModelResponse
 from tiny_harness.agent.session import AgentSession
+from tiny_harness.memory import MemoryRuntime, create_memory_runtime
 
 
 class FakeProvider:
@@ -67,6 +68,31 @@ class MemoryRuntimeTest(unittest.TestCase):
             encoding="utf-8",
         )
         return path
+
+    def test_public_runtime_facade_preserves_disabled_behavior(self) -> None:
+        def complete_for(purpose, messages, tools):
+            del purpose, messages, tools
+            raise AssertionError("disabled Memory must not call the model")
+
+        runtime = create_memory_runtime(
+            self.workspace,
+            enabled=False,
+            extraction_enabled=True,
+            complete_for=complete_for,
+            event_logger=RecordingEventLogger(),
+        )
+        messages = [
+            {"role": "system", "name": "tinyharness_memory_catalog", "content": "old"},
+            {"role": "user", "name": "tinyharness_relevant_memory", "content": "old"},
+            {"role": "user", "content": "task"},
+        ]
+
+        runtime.initialize(messages, "task")
+
+        self.assertIsInstance(runtime, MemoryRuntime)
+        self.assertEqual(messages, [{"role": "user", "content": "task"}])
+        self.assertEqual(runtime.run_metadata(), {})
+        self.assertIsNone(runtime.final_answer_hook)
 
     def test_side_query_loads_body_before_main_and_extracts_after_stop(self) -> None:
         self.write_memory()

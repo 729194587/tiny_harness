@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from tiny_harness.runtime.memory_store import (
+from tiny_harness.memory.store import (
     MEMORY_ARCHIVE_DIRECTORY,
     MEMORY_DIRECTORY,
     CONSOLIDATION_STAGING_PREFIX,
