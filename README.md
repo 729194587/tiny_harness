@@ -1,169 +1,84 @@
 # TinyHarness
 
-TinyHarness 是一个轻量、可读的 Coding Agent Harness Runtime。它不是完整的 Agent application，也不试图重新实现聊天产品；它关注的是模型产生的工具调用轨迹：哪些动作可以执行、失败后如何恢复、验证如何受控，以及长任务中的 Context 如何保持可用。
-
-核心循环仍然很小：
+TinyHarness 是一个轻量、可读的 Coding Agent Harness Runtime。它围绕一个很小的 Agent Loop 组织模型调用、工具执行和最终回答，同时为权限、Hooks、事件、恢复、上下文、Skills、Memory、Subagent 与 Todo 提供明确边界。
 
 ```text
-LLM
- ↓
-Tool Calls
- ↓
-response / tool validation
- ↓
-Pre Tool Hooks → Permission
- ↓
-Tool execution
- ↓
-Post Tool Hooks
- ↓
-Tool Results ───────────────┐
- ↓                         │
-LLM ←──────────────────────┘
- ↓
-Final Answer
+LLM response
+  ├─ tool calls → validate batch → execute tools → append results → next turn
+  └─ final text → final-answer hooks → return
 ```
 
-Harness 的价值不在让循环本身变复杂，而是在循环周围建立明确的控制边界。模型提出一个动作，不意味着 Runtime 必须执行它。
+模型响应在写入 canonical history 前完成协议校验。同一响应中的 Tool Calls 作为完整 batch 顺序执行；暂时性 Provider 错误可在同一 logical turn 内重试；达到 turn 上限但没有自然结束时会明确失败。
 
-## 核心设计
+## Tools
 
-### 1. 执行与权限控制
-
-模型响应会先经过协议校验，包括 Tool Call、参数形状和 Finish Reason；非法响应不会被提交到会话历史，也不会触发工具副作用。同一响应中的 Tool Calls 作为完整 batch 顺序执行，结果全部写回后才进入下一轮。
-
-工具执行边界由三部分组成：
-
-| 控制点 | 作用 |
-|---|---|
-| Permission | 每个 Tool Call 得到 `ALLOW`、`DENY` 或 `ASK` 决策 |
-| Pre/Post Tool Hooks | 执行前阻断或执行后观察，不绕过 Permission |
-| Workspace Boundary | 文件工具拒绝 workspace 逃逸；进程以 workspace 为 cwd 并继续受 Permission 约束 |
-
-DENY 不只是一个布尔结果。Runtime 会把可执行的反馈作为普通 Tool Result 返回模型；连续出现同类权限拒绝时，还会要求模型停止重复尝试并重新规划。
-
-### 2. 恢复与验证
-
-TinyHarness 区分 Logical Turn 与 Physical Model Attempt。一次逻辑请求遇到暂时性 Provider 故障时，可以在不消耗新 Agent turn 的前提下重试；重试有固定上限，并支持指数退避、jitter 和受上限约束的 `Retry-After`。致命错误直接失败；如果模型持续返回工具调用而没有自然结束，Runtime 抛出 `MaxTurnsExceededError`。
-
-验证使用可选的无参数 `run_tests()` capability：
+每个 Tool module 通过 `build_tools(context)` 返回零个或多个 `ToolDefinition`。一个 definition 同时拥有 model-facing 元数据与可执行 handler：
 
 ```text
-run_tests()
-  → configured fixed argv
-  → shell=False
-  → workspace cwd
-  → bounded timeout
-  → PYTHONDONTWRITEBYTECODE=1
+name + description + parameters + execute
 ```
 
-它来自一次具体的 Pilot 教训：只允许很窄的 Bash 命令会形成 verification loop；放宽 Bash 后，模型又可能自行拼装 verify script 或创建临时测试文件。将项目测试抽成 `run_tests()` 后，验证动作既可用又有明确边界。
-
-`run_tests` 不是 completion detector。PASS 或 FAIL 都只是普通 Tool Result；模型仍需在下一轮自行决定继续工作还是返回 Final Answer。
-
-### 3. Context 控制
-
-Context 缩减不能破坏 Tool Call / Tool Result 的协议完整性。TinyHarness 因而把 Context 处理放在明确的 batch 边界上：
-
-- 通过 character budget 控制发送给模型的消息与 tool schemas；
-- 将大型 Tool Result 落盘，只在消息中保留有界 preview；
-- 按完整历史块执行 trimming 和 compaction，不拆散 tool batch；
-- 必要时请求 LLM summary，同时保留当前任务、运行状态和最新执行证据；
-- Provider 返回 context-length 错误时，可压缩一次并重试同一 Logical Turn；
-- 压缩流程未完整成功时，不提交半完成的 canonical history。
-
-## 可选扩展
-
-这些能力复用同一套 Runtime 边界，但不改变主循环的自然结束语义。
-
-| 能力 | 作用 |
-|---|---|
-| Subagent | 使用独立 messages 执行子任务，共享 workspace，并继承 Permission、Hooks、Recovery、Context 与 `run_tests`；禁止嵌套 Subagent |
-| Skills | 启动时只发现并注入有界 metadata，需要时再通过工具加载正文 |
-| Memory | 从 workspace 持久记忆中按需选择；在 root Final Answer 路径提取新记忆，并在达到阈值时 consolidation |
-| Todo | 保存 run-scoped 任务状态，并在多轮未更新时给出协议安全的 reminder |
-
-## Reliability Eval：为什么重做评测
-
-Reliability Eval 不只看最后的 workspace 是否正确，还检查 Agent 是怎样到达终点的。当前 Pilot 冻结了 6 个小型 Coding tasks；每个任务都有 visible tests、Agent workspace 外的 hidden grader、终局快照评分和 post-run final workspace grade。
-
-下面的数字只描述这些冻结任务及当时的配置，不代表通用 Coding Agent 成功率。
-
-| 阶段 | Verification 设计 | Bash DENY | 正确 workspace 但未结束 | 结果 |
-| --- | --- | ---: | ---: | --- |
-| v1 | 精确 Bash 命令 | 95 | 3 | 暴露 verification loop |
-| v2 | 有限语义解析的 unittest 权限 + Recovery | 48 | 1 | 问题明显缓解 |
-| v3 | `run_tests()` | 31 | 0 | 24 / 24 Verified |
-| 当前 `main` | `run_tests()`，无 Goal Gate | 16（12 runs） | 0 | 12 / 12 Verified |
-
-### 第一轮：最终代码正确，不等于轨迹可靠
-
-第一轮共观察到 95 次 Bash Permission DENY。3 个 run 以 explicit failure 结束，但它们停止后的 workspace hidden grader 全部 PASS。
-
-Trajectory audit 显示了共同模式：
+Run 初始化时，`tiny_harness.tools.discovery` 按模块名扫描 `tiny_harness/tools/`，调用存在的 `build_tools(context)`，并把实际可用的 definitions 注册到 `ToolRegistry`。Factory 可依据当前 runtime capability 返回空集合，例如没有 Subagent runner 时不注册 `task`，没有 Skill catalog 内容时不注册 `load_skill`。
 
 ```text
-代码已经完成
- → Agent 继续验证
- → Bash DENY
- → 更换命令或编写 verify script
- → 再次 DENY
- → 没有返回 Final Answer
- → max_turns
+Tool module
+  → build_tools(run context)
+  → discovery
+  → ToolRegistry.register
+  → ToolDefinition.model_schema()
+  → model API tools=[...]
 ```
 
-这说明一部分 failure-to-stop 是 Harness 自己的 Permission / Recovery protocol 制造的，而不是代码任务没有完成。
-
-### 第二轮：修复 Permission / Recovery protocol
-
-随后加入有限语义解析的 unittest 权限、可执行的 DENY 反馈、连续拒绝后的重新规划提示，并明确 `MaxTurnsExceededError` 的终止语义。
+`ToolRegistry` 负责注册、重复名称校验、查找、列举和 schema 投影，不保存 built-in Tool 的第二份描述或 schema。执行仍经过统一管线：
 
 ```text
-Bash DENY                         95 → 48
-workspace 已正确但未自然结束       3 → 1
+tool call
+  → registry lookup / argument decoding
+  → pre hooks
+  → permission
+  → started event
+  → ToolDefinition.execute
+  → finished event
+  → post hooks
+  → tool result
 ```
 
-轨迹仍暴露出两个问题：测试成功后模型可能继续验证；通用 Bash 也允许模型创建 `test_edge_tmp.py`、sanity script 等额外验证副作用。
+这只是 TinyHarness 内置 Tool 的目录式扩展 seam，不是通用 Plugin Framework，也不支持 entry points 或 hot reload。新增普通 Tool 通常只需在 `tiny_harness/tools/` 增加一个包含 `build_tools(context)` 的模块；如果默认权限属于新的安全策略，还应显式更新 permission policy。
 
-### 第三轮：将验证收敛为受控能力
+## Skills
 
-把项目测试从通用 Bash 中抽成 `run_tests()` 后，24 个 run 的结果为：
+TinyHarness 从三个固定 root 发现 Skills：
 
-| 指标 | 结果 |
-|---|---:|
-| Verified | 24 / 24 |
-| Premature terminal completion | 0 |
-| Explicit failure | 0 |
-| Final hidden PASS | 24 / 24 |
-| `run_tests` calls | 25 |
+```text
+tiny_harness/skills/                  # bundled
+~/.tinyharness/skills/                # user
+<workspace>/.tinyharness/skills/      # workspace
+```
 
-其中 23 个 run 只调用了一次 `run_tests`；另一个 run 调用了两次，但两次之间确实发生了代码修改。轨迹中没有再发现 verification loop 或临时验证文件。
+每个 Skill 使用 `<name>/SKILL.md`，文件以 YAML frontmatter 提供 `name` 和 `description`。`AgentSession` 创建时生成不可变 catalog snapshot；模型起初只收到有界 metadata，需要时通过 `load_skill` 加载完整正文。正文始终作为不可信指导数据，不能覆盖 system/user 指令、Permission、Hooks 或 workspace boundary。Session 期间文件发生变化时，需要新建 Session 才会重新发现。
 
-### 当前公开版确认
+## Memory
 
-移除当前 Pilot 中未观察到有效干预的 Goal Gate 后，当前 `main` 使用普通 Agent Loop 又做了 12-run 确认实验：
+Memory 是 opt-in 子系统，源码位于 `tiny_harness/memory/`，运行数据位于：
 
-| 指标 | 结果 |
-|---|---:|
-| Verified | 12 / 12 |
-| Premature terminal completion | 0 |
-| Explicit failure | 0 |
-| `MaxTurnsExceededError` | 0 |
-| Final hidden PASS | 12 / 12 |
-| `run_tests` calls | 12 |
+```text
+<workspace>/.tinyharness/memory/
+```
 
-当前公开 Eval 因此只保留一个普通 `harness` profile。Runner 仍记录 Permission DENY、Tool sequence、turn 数、`run_tests` 调用和 final workspace grade，便于继续审计轨迹。
+CLI 使用 `--memory` 启用。Run 开始时，Memory 会发现 catalog、为当前请求选择相关条目、按需加载并以 run-scoped markers 注入上下文。Root agent 产生 final answer 时，final-answer hook 会提取新的 durable memory、写入存储，并在达到阈值时可选地执行 consolidation。提取与 consolidation 失败不会阻止返回已经生成的最终回答。
 
-## 设计结论
+Memory 用于跨 Session 的稳定偏好、反馈、项目事实和参考信息；它不替代当前计划、Todo、执行状态或会话历史。
 
-1. **Harness 的控制机制本身也可能制造失败。** Permission 太严格时，Agent 可能完成代码却无法自然收敛。
-2. **更复杂的完成控制器不一定是第一答案。** 对“workspace 已正确但 Agent 停不下来”，这轮实验最终通过改善验证动作空间解决。
-3. **Verification 更适合作为受控能力。** `run_tests()` 比让 Agent 在通用 Bash 中临时设计验证流程更清楚，也更容易审计。
-4. **评测必须包含轨迹。** 最终成功率之外，还需要观察 Permission DENY、MaxTurns、临时文件、工具顺序和最终 hidden workspace grade。
+## 运行时边界
+
+- **Context**：按完整消息块裁剪或压缩，不拆散 Tool Call/Result batch；大型 Tool Result 可落盘并保留有界 preview。
+- **Recovery**：暂时性模型错误按策略重试，fatal error 与 max-turn exhaustion 保持明确语义。
+- **Permission**：每次 Tool Call 得到 `ALLOW`、`DENY` 或 `ASK`；重复拒绝会向模型返回可执行的恢复提示。
+- **Hooks 与 Events**：Pre/Post Tool Hooks 和生命周期事件位于统一执行边界，Tool handler 不重复实现横切逻辑。
+- **Subagent**：使用独立 messages、共享 workspace，并继承 Permission、Hooks、Recovery、Context、Skills、Memory 与测试 capability；不允许嵌套 Subagent。
+- **Todo**：维护 run-scoped 任务状态，并在长时间未更新时插入协议安全的 reminder。
 
 ## Quick Start
-
-### 安装
 
 TinyHarness 要求 Python 3.10+：
 
@@ -171,17 +86,15 @@ TinyHarness 要求 Python 3.10+：
 python -m pip install -e .
 ```
 
-### 配置 Provider
-
-CLI 使用兼容 Chat Completions 的 Provider。API key 必填；model 和 base URL 可选，默认值来自源码配置。
+CLI 使用兼容 Chat Completions 的 Provider。API key 必填，model 和 base URL 可选：
 
 ```powershell
 $env:TINYHARNESS_API_KEY = "..."
-$env:TINYHARNESS_MODEL = "deepseek-v4-flash"       # 可选
-$env:TINYHARNESS_BASE_URL = "https://api.deepseek.com"  # 可选
+$env:TINYHARNESS_MODEL = "deepseek-v4-flash"
+$env:TINYHARNESS_BASE_URL = "https://api.deepseek.com"
 ```
 
-### 运行任务
+运行单次任务：
 
 ```powershell
 python -m tiny_harness "修复测试并说明结果" --workspace .
@@ -193,36 +106,38 @@ python -m tiny_harness "修复测试并说明结果" --workspace .
 python -m tiny_harness --workspace .
 ```
 
-常用控制项包括 `--max-turns`、`--max-model-retries`、`--max-context-chars`、`--no-context-compaction`、`--subagent-max-turns`、`--event-log` 和 `--memory`。
+当前 CLI 控制项包括：
 
-### 运行 Reliability Pilot
-
-Pilot 会调用配置的真实 Provider：
-
-```powershell
-python -m evals.pilot run `
-  --repetitions 2 `
-  --results-dir evals/results/pilot
-```
-
-离线 deterministic recovery 与 safety checks 不调用真实 API：
-
-```powershell
-python -m evals.run --suite offline --results-dir evals/results/offline
-```
-
-Eval 产物与指标定义见 [`evals/README.md`](evals/README.md)。
+- `--workspace`
+- `--max-turns`
+- `--max-model-retries`
+- `--max-context-chars`
+- `--no-context-compaction`
+- `--subagent-max-turns`
+- `--event-log`
+- `--memory`
 
 ## 项目结构
 
 ```text
 tiny_harness/
-  agent/       # Agent Loop、run context、session、subagent orchestration
+  agent/       # Agent Loop、Session、run composition、tool batch、Subagent
+  memory/      # Memory discovery/store、lifecycle、consolidation
   models/      # Provider contract 与 Chat Completions adapter
-  runtime/     # Permission、Recovery、Context、Hooks、Skills、Memory、events
-  tools/       # filesystem、shell、run_tests、task、todo、compact 等工具
-evals/         # Pilot cases、hidden grading、runner 与 metrics
-tests/         # scripted providers 和 deterministic regression tests
+  runtime/     # Context、events、Hooks、Permission、Recovery、Skills、Todo、tests
+  skills/      # bundled Skills
+  tools/       # ToolDefinition、discovery、registry 与 built-in Tool modules
+examples/
+  hooks_demo.py
+tests/         # scripted providers 与 deterministic regression tests
+```
+
+## Hooks 示例
+
+`examples/hooks_demo.py` 展示一个阻止 `write_file` 的 Pre hook 和一个观察结果的 Post hook：
+
+```powershell
+python examples/hooks_demo.py "检查项目并给出建议" --workspace .
 ```
 
 ## 测试
@@ -233,5 +148,3 @@ python -m unittest discover -s tests -v
 ```
 
 测试使用 scripted provider 或本地 fixture，不需要真实 API。
-
-早期 Goal Gate / Stop Proposal 实验版本保存在 `reliability-eval-v3-goal-gate` tag。
