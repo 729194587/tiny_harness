@@ -192,6 +192,8 @@ class ToolDiscoveryTest(unittest.TestCase):
                 "write_file",
                 "edit_file",
                 "list_files",
+                "glob",
+                "grep",
                 "bash",
                 "todo_write",
             ],

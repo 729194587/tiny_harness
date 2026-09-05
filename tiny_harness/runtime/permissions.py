@@ -257,6 +257,8 @@ class DefaultPermissionPolicy:
             "load_skill",
             "compact",
             "run_tests",
+            "glob",
+            "grep",
         }
     )
 

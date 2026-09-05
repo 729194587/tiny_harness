@@ -74,6 +74,8 @@ class ToolRegistryTest(unittest.TestCase):
                 "write_file",
                 "edit_file",
                 "list_files",
+                "glob",
+                "grep",
                 "bash",
                 "load_skill",
                 "task",
