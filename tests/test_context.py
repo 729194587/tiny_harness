@@ -57,6 +57,27 @@ def tool_block(call_id: str, result: str = "result", assistant_text=None):
     ]
 
 
+def multi_tool_block(items: list[tuple[str, str]]):
+    return [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": "example", "arguments": "{}"},
+                }
+                for call_id, _ in items
+            ],
+        },
+        *[
+            {"role": "tool", "tool_call_id": call_id, "content": result}
+            for call_id, result in items
+        ],
+    ]
+
+
 class FakeProvider:
     def __init__(self, responses=()) -> None:
         self.responses = list(responses)
@@ -193,127 +214,250 @@ class ContextCompactorTest(unittest.TestCase):
         self.assertFalse(prepared.changed)
         self.assertFalse((self.workspace / ".tinyharness").exists())
 
-    def test_normal_pipeline_exposes_the_four_layers_in_order(self):
-        provider = FakeProvider(
-            [ModelResponse("FACTUAL_SUMMARY", None, [], "stop")]
-        )
-        compactor = self.compactor(provider, max_chars=1_500)
-        messages = (
-            self.prefix
-            + tool_block("old", "old", assistant_text="X" * 3_000)
-            + tool_block("latest", "LATEST_EVIDENCE")
-        )
-        original = copy.deepcopy(messages)
-        order = []
+    def test_under_budget_does_not_shorten_tool_results(self):
+        results = [f"RESULT_{index}_" + (str(index) * 500) for index in range(6)]
+        messages = self.prefix + [
+            message
+            for index, result in enumerate(results)
+            for message in tool_block(str(index), result)
+        ]
+        provider = FakeProvider()
 
-        def record(name, function):
-            def wrapped(*args, **kwargs):
-                order.append(name)
-                return function(*args, **kwargs)
-
-            return wrapped
-
-        with patch.object(
-            compactor,
-            "tool_result_budget",
-            side_effect=record("budget", compactor.tool_result_budget),
-        ), patch.object(
-            compactor,
-            "snip_compact",
-            side_effect=record("snip", compactor.snip_compact),
-        ), patch.object(
-            compactor,
-            "micro_compact",
-            side_effect=record("micro", compactor.micro_compact),
-        ), patch.object(
-            compactor,
-            "compact_history",
-            side_effect=record("summary", compactor.compact_history),
-        ):
-            prepared = self.prepare(compactor, messages)
-
-        self.assertEqual(order, ["budget", "snip", "micro", "summary"])
-        self.assertTrue(prepared.summarized)
-        self.assertEqual(messages, original)
-
-    def test_tool_result_budget_persists_large_latest_result_with_preview(self):
-        full_output = "A" * 2_000
-        messages = self.prefix + tool_block("unsafe/id", full_output)
-        compactor = self.compactor(
-            max_chars=5_000,
-            tool_result_batch_chars=1_000,
-            large_result_chars=100,
-            result_preview_chars=20,
+        prepared = self.prepare(
+            self.compactor(
+                provider,
+                max_chars=10_000,
+                micro_result_chars=120,
+            ),
+            messages,
         )
 
-        prepared = self.prepare(compactor, messages)
+        visible_results = [
+            message["content"]
+            for message in prepared.messages
+            if message.get("role") == "tool"
+        ]
+        self.assertEqual(visible_results, results)
+        self.assertEqual(prepared.shortened_results, 0)
+        self.assertEqual(prepared.archived_messages, 0)
+        self.assertEqual(provider.calls, [])
 
-        self.assertEqual(prepared.persisted_results, 1)
-        result = prepared.messages[-1]["content"]
-        self.assertIn("Full output: .tinyharness/context/tool-results/", result)
-        self.assertIn("Preview:\n" + "A" * 20, result)
+    def test_new_tool_batch_does_not_evict_previous_batch_under_budget(self):
+        reads = [(f"read-{index}", f"READ_{index}_" + "R" * 400) for index in range(3)]
+        greps = [(f"grep-{index}", f"GREP_{index}_" + "G" * 400) for index in range(3)]
+        messages = self.prefix + multi_tool_block(reads) + multi_tool_block(greps)
+
+        prepared = self.prepare(
+            self.compactor(max_chars=10_000, micro_result_chars=120),
+            messages,
+        )
+
+        visible = json.dumps(prepared.messages, ensure_ascii=False)
+        for _, evidence in reads + greps:
+            self.assertIn(evidence, visible)
+        self.assertEqual(prepared.shortened_results, 0)
+        self.assertEqual(prepared.archived_messages, 0)
+        self.assertFalse(prepared.summarized)
+
+    def test_compaction_starts_only_under_pressure(self):
+        full_output = "PRESSURE_EVIDENCE_" + "A" * 2_000
+        messages = self.prefix + tool_block("large", full_output)
+        measured = context_char_count(messages, TOOLS)
+        under_max = (measured * 5 + 3) // 4 + 10
+        over_max = (measured * 5) // 4 - 10
+
+        under = self.prepare(
+            self.compactor(
+                max_chars=under_max,
+                large_result_chars=100,
+                result_preview_chars=40,
+            ),
+            messages,
+        )
+        over = self.prepare(
+            self.compactor(
+                max_chars=over_max,
+                large_result_chars=100,
+                result_preview_chars=40,
+            ),
+            messages,
+        )
+
+        self.assertEqual(under.messages[-1]["content"], full_output)
+        self.assertEqual(under.persisted_results, 0)
+        self.assertEqual(over.persisted_results, 1)
+        replacement = over.messages[-1]["content"]
+        self.assertIn("Head:\nPRESSURE_EVIDENCE_", replacement)
+        self.assertIn("middle omitted; full output persisted", replacement)
+        self.assertIn("Tail:\n" + "A" * 20, replacement)
         relative = next(
             line.removeprefix("Full output: ")
-            for line in result.splitlines()
+            for line in replacement.splitlines()
             if line.startswith("Full output: ")
         )
         self.assertEqual(
             (self.workspace / relative).read_text(encoding="utf-8"),
             full_output,
         )
-        self.assertEqual(messages[-1]["content"], full_output)
+        self.assertLessEqual(over.after_chars, int(over_max * 0.8))
 
-    def test_snip_archives_exact_history_and_keeps_complete_latest_block(self):
-        messages = (
-            self.prefix
-            + tool_block("one")
-            + tool_block("two")
-            + tool_block("three")
+    def test_compaction_event_identifies_persisted_tool_results(self):
+        logger = RecordingEventLogger()
+        full_output = "AUDITABLE_RESULT_" + "A" * 2_000
+        messages = self.prefix + tool_block("read-a", full_output)
+        measured = context_char_count(messages, TOOLS)
+        compactor = ContextCompactor(
+            self.workspace,
+            FakeProvider(),
+            TOOLS,
+            (measured * 5) // 4 - 10,
+            config=CompactionConfig(
+                large_result_chars=100,
+                result_preview_chars=40,
+            ),
+            event_logger=logger,
         )
+
+        prepared = self.prepare(compactor, messages)
+
+        self.assertEqual(prepared.persisted_tool_call_ids, ("read-a",))
+        compacted = next(
+            event["data"]
+            for event in logger.events
+            if event["event_type"] == "context_compacted"
+        )
+        self.assertEqual(compacted["persisted_tool_call_ids"], ["read-a"])
+
+    def test_message_count_alone_does_not_trigger_compaction(self):
+        messages = self.prefix + [
+            {"role": "assistant", "content": f"short-{index}"}
+            for index in range(60)
+        ]
+        provider = FakeProvider()
+
         prepared = self.prepare(
-            self.compactor(max_messages=6),
+            self.compactor(provider, max_chars=100_000, max_messages=50),
             messages,
         )
 
-        self.assertEqual(prepared.archived_messages, 4)
-        self.assertEqual(prepared.messages[-2:], tool_block("three"))
-        archive_markers = [
-            message
-            for message in prepared.messages
-            if message.get("name") == "tinyharness_context_archive"
-        ]
-        self.assertEqual(len(archive_markers), 1)
-        transcripts = list(
-            (self.workspace / ".tinyharness/context/transcripts").glob("*.jsonl")
-        )
-        self.assertEqual(len(transcripts), 1)
-        archived = [
-            json.loads(line)
-            for line in transcripts[0].read_text(encoding="utf-8").splitlines()
-        ]
-        self.assertEqual(archived, messages)
+        self.assertEqual(prepared.messages, messages)
+        self.assertEqual(prepared.archived_messages, 0)
+        self.assertEqual(prepared.shortened_results, 0)
+        self.assertFalse(prepared.summarized)
+        self.assertEqual(provider.calls, [])
 
-    def test_micro_compact_keeps_latest_three_tool_results(self):
-        long_results = [tool_block(str(index), str(index) * 200) for index in range(5)]
-        messages = self.prefix + [item for block in long_results for item in block]
+    def test_recent_execution_units_are_preserved(self):
+        old = tool_block("old", "OLD_" + "X" * 4_000)
+        recent_a = multi_tool_block(
+            [("recent-a1", "RECENT_A1"), ("recent-a2", "RECENT_A2")]
+        )
+        recent_b = multi_tool_block(
+            [("recent-b1", "RECENT_B1"), ("recent-b2", "RECENT_B2")]
+        )
+        messages = self.prefix + old + recent_a + recent_b
+
         prepared = self.prepare(
             self.compactor(
-                max_chars=20_000,
-                keep_recent_results=3,
-                micro_result_chars=120,
+                max_chars=5_000,
+                large_result_chars=500,
+                result_preview_chars=40,
             ),
             messages,
         )
 
-        results = [
-            message["content"]
-            for message in prepared.messages
-            if message["role"] == "tool"
-        ]
-        self.assertEqual(prepared.shortened_results, 2)
-        self.assertTrue(results[0].startswith("[Earlier tool result omitted"))
-        self.assertTrue(results[1].startswith("[Earlier tool result omitted"))
-        self.assertEqual(results[-3:], ["2" * 200, "3" * 200, "4" * 200])
+        self.assertEqual(prepared.messages[-6:], recent_a + recent_b)
+        self.assertEqual(prepared.persisted_results, 1)
+        self.assertLessEqual(prepared.after_chars, 4_000)
+
+    def test_progressive_compression_summarizes_only_when_pruning_is_insufficient(self):
+        prune_provider = FakeProvider()
+        prune_messages = (
+            self.prefix
+            + tool_block("old-large", "OLD_TOOL_" + "X" * 4_000)
+            + tool_block("latest", "LATEST")
+        )
+        pruned = self.prepare(
+            self.compactor(
+                prune_provider,
+                max_chars=5_000,
+                large_result_chars=500,
+                result_preview_chars=40,
+            ),
+            prune_messages,
+        )
+
+        summary_provider = FakeProvider(
+            [ModelResponse("OLDER_HISTORY_SUMMARY", None, [], "stop")]
+        )
+        summary_messages = (
+            self.prefix
+            + [{"role": "assistant", "content": "OLD_ASSISTANT_" + "Y" * 3_000}]
+            + tool_block("latest", "LATEST")
+        )
+        summarized = self.prepare(
+            self.compactor(summary_provider, max_chars=3_500),
+            summary_messages,
+        )
+
+        self.assertEqual(pruned.persisted_results, 1)
+        self.assertFalse(pruned.summarized)
+        self.assertEqual(prune_provider.calls, [])
+        self.assertTrue(summarized.summarized)
+        self.assertEqual(len(summary_provider.calls), 1)
+        self.assertLessEqual(summarized.after_chars, 2_800)
+
+    def test_tool_batch_is_atomic_during_compaction(self):
+        latest_batch = multi_tool_block(
+            [
+                ("a", "A_RESULT"),
+                ("b", "B_RESULT"),
+                ("c", "C_RESULT"),
+            ]
+        )
+        messages = (
+            self.prefix
+            + tool_block("old", "OLD_" + "X" * 4_000)
+            + latest_batch
+        )
+
+        prepared = self.prepare(
+            self.compactor(
+                max_chars=5_000,
+                large_result_chars=500,
+                result_preview_chars=40,
+            ),
+            messages,
+        )
+
+        self.assertEqual(prepared.messages[-4:], latest_batch)
+        assistant = prepared.messages[-4]
+        results = prepared.messages[-3:]
+        self.assertEqual(
+            [call["id"] for call in assistant["tool_calls"]],
+            [result["tool_call_id"] for result in results],
+        )
+
+    def test_summary_uses_original_selected_history(self):
+        sentinel = "UNIQUE_ORIGINAL_SELECTED_SENTINEL"
+        provider = FakeProvider(
+            [ModelResponse("FACTUAL_SUMMARY", None, [], "stop")]
+        )
+        messages = (
+            self.prefix
+            + [{"role": "assistant", "content": sentinel + "X" * 3_000}]
+            + tool_block("latest", "LATEST_EVIDENCE")
+        )
+
+        prepared = self.prepare(
+            self.compactor(provider, max_chars=2_000, max_messages=3),
+            messages,
+        )
+
+        self.assertTrue(prepared.summarized)
+        self.assertIn(
+            sentinel,
+            json.dumps(provider.calls[0]["messages"], ensure_ascii=False),
+        )
 
     def test_multi_turn_history_is_protocol_safe_and_unchanged_under_budget(self):
         messages = (
@@ -363,7 +507,7 @@ class ContextCompactorTest(unittest.TestCase):
         self.assertIn("LATEST_EVIDENCE", compacted)
         self.assertNotIn("OLD_RESULT", compacted)
 
-    def test_new_turn_keeps_latest_evidence_from_previous_turn(self):
+    def test_new_turn_preserves_budgeted_recent_execution_tail(self):
         provider = FakeProvider([ModelResponse("PRIOR_SUMMARY", None, [], "stop")])
         messages = (
             self.prefix
@@ -386,8 +530,8 @@ class ContextCompactorTest(unittest.TestCase):
         self.assertTrue(prepared.summarized)
         self.assertIn("PRIOR_SUMMARY", compacted)
         self.assertIn("RECENT_EVIDENCE", compacted)
+        self.assertIn("prior answer", compacted)
         self.assertIn("FOLLOW_UP_TASK", compacted)
-        self.assertNotIn("prior answer", compacted)
 
     def test_multi_turn_trim_drops_old_turn_without_splitting_latest_batch(self):
         latest_batch = [
@@ -657,16 +801,22 @@ class ContextAgentLoopTest(unittest.TestCase):
             self.workspace,
             messages,
             max_turns=1,
-            max_context_chars=6_000,
+            max_context_chars=7_000,
             event_logger=logger,
         )
 
         self.assertEqual(answer, "done")
         self.assertEqual(len(provider.calls), 2)
         self.assertEqual(provider.calls[0]["tools"], [])
-        self.assertIn("compact", [
-            schema["function"]["name"] for schema in provider.calls[1]["tools"]
-        ])
+        self.assertEqual(provider.calls[1]["tools"], [])
+        self.assertTrue(
+            any(
+                message.get("role") == "system"
+                and "execution turn budget is exhausted"
+                in message.get("content", "")
+                for message in provider.calls[1]["messages"]
+            )
+        )
         event_names = [event["event_type"] for event in logger.events]
         self.assertLess(
             event_names.index("context_summary_requested"),
@@ -719,7 +869,7 @@ class ContextAgentLoopTest(unittest.TestCase):
             self.workspace,
             messages,
             max_turns=1,
-            max_context_chars=6_000,
+            max_context_chars=7_000,
             event_logger=logger,
             recovery_policy=RecoveryPolicy(
                 max_retries=1,
@@ -760,7 +910,12 @@ class ContextAgentLoopTest(unittest.TestCase):
                 ModelResponse("finished", None, [], "stop"),
             ]
         )
-        messages = [{"role": "user", "content": "write then compact"}]
+        messages = (
+            [{"role": "user", "content": "earlier task"}]
+            + tool_block("previous", "PREVIOUS_EVIDENCE")
+            + [{"role": "assistant", "content": "earlier answer"}]
+            + [{"role": "user", "content": "write then compact"}]
+        )
 
         answer = agent_loop(
             provider,
@@ -775,8 +930,9 @@ class ContextAgentLoopTest(unittest.TestCase):
             "DONE",
         )
         summary_input = json.dumps(provider.calls[1]["messages"])
-        self.assertIn("write-1", summary_input)
-        self.assertIn("compact-1", summary_input)
+        self.assertIn("PREVIOUS_EVIDENCE", summary_input)
+        self.assertNotIn("write-1", summary_input)
+        self.assertNotIn("compact-1", summary_input)
         next_request = provider.calls[2]["messages"]
         self.assertEqual(
             [message["tool_call_id"] for message in next_request[-2:]],

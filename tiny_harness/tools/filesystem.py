@@ -88,12 +88,18 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
         description: str,
         parameters: dict[str, Any],
         handler: Callable[..., str],
+        trace_fields: tuple[str, ...],
     ) -> ToolDefinition:
         return ToolDefinition(
             name=name,
             description=description,
             parameters=parameters,
             execute=lambda call, arguments: handler(workspace, **arguments),
+            trace_metadata=lambda arguments: {
+                field: arguments.get(field, ".")
+                for field in trace_fields
+                if field in arguments or (name == "list_files" and field == "path")
+            },
         )
 
     return (
@@ -107,6 +113,7 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             read_file,
+            ("path", "offset", "limit"),
         ),
         definition(
             "write_file",
@@ -121,6 +128,7 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             write_file,
+            ("path",),
         ),
         definition(
             "edit_file",
@@ -136,6 +144,7 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             edit_file,
+            ("path",),
         ),
         definition(
             "list_files",
@@ -146,5 +155,6 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             list_files,
+            ("path",),
         ),
     )

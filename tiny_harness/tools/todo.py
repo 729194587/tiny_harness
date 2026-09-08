@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING
 
+from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger, EventType
 from tiny_harness.runtime.todos import TodoManager
 from tiny_harness.tools.definition import ToolDefinition
 
@@ -12,20 +12,18 @@ if TYPE_CHECKING:
     from tiny_harness.agent.context import AgentRunContext
 
 
-def todo_write(manager: TodoManager, todos: list[object] | str) -> str:
-    """Replace and display the current run's todo list."""
+def todo_write(
+    manager: TodoManager, todos: list[object] | str,
+    *, event_logger: EventLogger = NULL_EVENT_LOGGER,
+) -> str:
+    """Replace todos and report counts without exposing task contents."""
 
     output = manager.update(todos)
-    display = (
-        "暂无任务。"
-        if output == "No todos."
-        else re.sub(
-            r"\((\d+)/(\d+) completed\)$",
-            r"（已完成 \1/\2）",
-            output,
-        )
-    )
-    print(f"\n## 当前任务\n{display}")
+    event_logger.emit(EventType.TODO_UPDATED, {
+        "total": len(manager.items),
+        "completed": sum(item.status == "completed" for item in manager.items),
+        "in_progress": sum(item.status == "in_progress" for item in manager.items),
+    })
     return output
 
 
@@ -66,6 +64,6 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
                 "required": ["todos"],
                 "additionalProperties": False,
             },
-            execute=lambda call, arguments: todo_write(manager, **arguments),
+            execute=lambda call, arguments: todo_write(manager, event_logger=context.event_logger, **arguments),
         ),
     )

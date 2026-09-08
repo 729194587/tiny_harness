@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from tiny_harness.models.base import ModelProvider
-from tiny_harness.runtime.events import EventLogger, ScopedEventLogger
+from tiny_harness.runtime.events import EventLogger, ScopedEventLogger, EventType, EventLogError
 from tiny_harness.runtime.hooks import ToolHooks
 from tiny_harness.runtime.permissions import PermissionPolicy, PermissionPrompt
 from tiny_harness.runtime.recovery import RecoveryPolicy
@@ -49,7 +49,6 @@ class SubagentExecutor:
         self.memory_enabled = memory_enabled
 
     def __call__(self, prompt: str, parent_tool_call_id: str) -> str:
-        print("\n[子 Agent 已启动]")
         child_messages = [
             {
                 "role": "system",
@@ -68,6 +67,7 @@ class SubagentExecutor:
                 "parent_tool_call_id": parent_tool_call_id,
             },
         )
+        child_logger.emit(EventType.SUBAGENT_STARTED)
         try:
             answer = self.run_agent(
                 self.provider,
@@ -87,8 +87,10 @@ class SubagentExecutor:
                 memory_enabled=self.memory_enabled,
                 memory_extraction_enabled=False,
             )
-        except Exception:
-            print("[子 Agent 执行失败]")
+        except EventLogError:
             raise
-        print("[子 Agent 已完成]")
+        except Exception as error:
+            child_logger.emit(EventType.SUBAGENT_FAILED, {"error_type": type(error).__name__})
+            raise
+        child_logger.emit(EventType.SUBAGENT_FINISHED)
         return answer or "(no summary)"

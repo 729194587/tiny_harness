@@ -14,7 +14,8 @@ from tiny_harness.__main__ import (
     main,
 )
 from tiny_harness.agent.context import DEFAULT_SUBAGENT_MAX_TURNS
-from tiny_harness.runtime.events import NULL_EVENT_LOGGER, JsonlEventLogger
+from tiny_harness.runtime.events import CompositeEventLogger, JsonlEventLogger
+from tiny_harness.runtime.console import ConsoleEventLogger
 from tiny_harness.runtime.recovery import RecoveryPolicy
 
 
@@ -122,8 +123,11 @@ class CliTest(unittest.TestCase):
                 )
 
         factory = session_class.call_args.kwargs["event_logger_factory"]
-        first = factory()
-        second = factory()
+        composite = factory()
+        self.assertIsInstance(composite, CompositeEventLogger)
+        self.assertIsInstance(composite.loggers[0], ConsoleEventLogger)
+        first = composite.loggers[1]
+        second = factory().loggers[1]
         self.assertIsInstance(first, JsonlEventLogger)
         self.assertIsInstance(second, JsonlEventLogger)
         self.assertEqual(first.path, log_path.resolve())
@@ -131,14 +135,14 @@ class CliTest(unittest.TestCase):
 
     @patch("tiny_harness.__main__.AgentSession")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")
-    def test_no_event_log_factory_returns_null_logger(self, _, session_class) -> None:
+    def test_no_event_log_factory_returns_console_logger(self, _, session_class) -> None:
         session_class.return_value.submit.return_value = "done"
         with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
             with contextlib.redirect_stdout(io.StringIO()):
                 main(["task", "--workspace", str(self.workspace)])
 
         factory = session_class.call_args.kwargs["event_logger_factory"]
-        self.assertIs(factory(), NULL_EVENT_LOGGER)
+        self.assertIsInstance(factory(), ConsoleEventLogger)
 
     @patch("tiny_harness.__main__.AgentSession")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")

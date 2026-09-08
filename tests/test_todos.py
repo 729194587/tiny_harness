@@ -104,7 +104,7 @@ class TodoManagerTest(unittest.TestCase):
         self.assertEqual(manager.items, [TodoItem("Keep me", "pending")])
         self.assertEqual(manager.revision, 1)
 
-    def test_tool_prints_and_returns_current_tasks(self) -> None:
+    def test_tool_returns_current_tasks_without_printing(self) -> None:
         manager = TodoManager()
         stdout = io.StringIO()
 
@@ -115,9 +115,7 @@ class TodoManagerTest(unittest.TestCase):
             )
 
         self.assertEqual(output, "[>] Visible task\n\n(0/1 completed)")
-        self.assertIn("## 当前任务", stdout.getvalue())
-        self.assertIn("（已完成 0/1）", stdout.getvalue())
-        self.assertIn("[>] Visible task", stdout.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
 
 
 if __name__ == "__main__":

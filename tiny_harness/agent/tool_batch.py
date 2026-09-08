@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from tiny_harness.agent.messages import ToolCall
+from tiny_harness.agent.messages import ToolCall, validate_tool_call_batch
 from tiny_harness.runtime.events import EventType
-from tiny_harness.tools.registry import dispatch
+from tiny_harness.tools.registry import dispatch, emit_tool_called
 
 if TYPE_CHECKING:
     from tiny_harness.agent.context import AgentRunContext
@@ -77,16 +77,25 @@ def execute_tool_batch(
 ) -> None:
     """顺序执行全部工具调用，追加结果后再进行批次边界维护。
 
-    批次完整性只保证 assistant/tool 协议闭合，不回滚已经发生的文件或
-    进程副作用。
+    正常返回时保证 assistant/tool 协议闭合。致命异常保留已有历史和副作用，
+    不补造结果或重放调用；AgentSession 会禁止继续提交，直到显式 clear。
     """
 
+    validate_tool_call_batch(calls)
     todo_revision = context.todo_manager.revision
     compact_revision = (
         context.compaction_request.revision
         if context.compaction_request is not None
         else 0
     )
+
+    for call in calls:
+        emit_tool_called(
+            context.tool_registry,
+            call,
+            context.event_logger,
+            turn=context.current_turn,
+        )
 
     for call in calls:
         result = dispatch(
@@ -97,6 +106,8 @@ def execute_tool_batch(
             event_logger=context.event_logger,
             tool_hooks=context.tool_hooks,
             permission_rejections=context.permission_rejections,
+            turn=context.current_turn,
+            tool_called_logged=True,
         )
         messages.append(
             {

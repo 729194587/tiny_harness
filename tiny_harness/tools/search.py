@@ -211,6 +211,11 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             execute=lambda call, arguments: glob_files(workspace, **arguments),
+            trace_metadata=lambda arguments: {
+                key: arguments.get(key, ".")
+                for key in ("pattern", "path")
+                if key in arguments or key == "path"
+            },
         ),
         ToolDefinition(
             name="grep",
@@ -235,5 +240,10 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             execute=lambda call, arguments: grep_text(workspace, **arguments),
+            trace_metadata=lambda arguments: {
+                key: arguments.get(key, ".")
+                for key in ("query", "path")
+                if key in arguments or key == "path"
+            },
         ),
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from tiny_harness.runtime.events import hash_text
 from tiny_harness.tools.definition import ToolDefinition
 
 if TYPE_CHECKING:
@@ -44,5 +45,9 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             execute=lambda call, arguments: task(runner, call.id, **arguments),
+            trace_metadata=lambda arguments: {
+                "prompt_hash": hash_text(str(arguments.get("prompt", ""))),
+                "prompt_length": len(str(arguments.get("prompt", ""))),
+            },
         ),
     )

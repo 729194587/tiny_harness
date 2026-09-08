@@ -13,7 +13,6 @@ from tiny_harness.memory import MemoryRuntime, create_memory_runtime
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.context import CompactionRequest, ContextCompactor
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger
-from tiny_harness.runtime.errors import MaxTurnsExceededError
 from tiny_harness.runtime.hooks import FinalAnswerHook, ToolHooks
 from tiny_harness.runtime.permissions import (
     DEFAULT_PERMISSION_POLICY,
@@ -71,6 +70,7 @@ class AgentRunContext:
     permission_rejections: PermissionRejectionTracker
     current_turn: int = 0
     rounds_since_todo: int = 0
+    last_finish_reason: str | None = None
 
     @property
     def tools(self) -> list[dict[str, Any]]:
@@ -106,14 +106,6 @@ def initialize_run_state(
 
     upsert_skill_catalog_marker(messages, context.skill_catalog)
     context.memory.initialize(messages, active_request)
-
-
-def turn_limit_error(context: AgentRunContext) -> Exception:
-    """Return the dedicated error for a run that never ends naturally."""
-
-    return MaxTurnsExceededError(
-        f"Maximum model turns reached: {context.max_turns}"
-    )
 
 
 ModelCompletion = Callable[

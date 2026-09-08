@@ -15,6 +15,9 @@ from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger, EventType
 
 
+SOFT_LIMIT_RATIO = 0.8
+
+
 class ContextError(RuntimeError):
     """准备模型上下文时抛出的基础异常。"""
 
@@ -37,7 +40,7 @@ class ContextSummaryError(ContextError):
 
 @dataclass(frozen=True)
 class CompactionConfig:
-    """四层压缩流程使用的一组精简确定性阈值。"""
+    """Pressure-driven compaction thresholds and compatibility fields."""
 
     tool_result_batch_chars: int = 200_000
     large_result_chars: int = 30_000
@@ -64,6 +67,8 @@ class PreparedContext:
     todo_state_updated: bool = False
     dropped_blocks: int = 0
     dropped_messages: int = 0
+    persisted_tool_call_ids: tuple[str, ...] = ()
+    summarized_tool_call_ids: tuple[str, ...] = ()
 
     @property
     def changed(self) -> bool:
@@ -76,6 +81,19 @@ class PreparedContext:
                 self.shortened_results,
                 self.summarized,
                 self.todo_state_updated,
+            )
+        )
+
+    @property
+    def lossy_changed(self) -> bool:
+        """Return whether model-visible history was actually reduced."""
+
+        return any(
+            (
+                self.persisted_results,
+                self.archived_messages,
+                self.shortened_results,
+                self.summarized,
             )
         )
 
@@ -127,6 +145,16 @@ def _tool_call_ids(message: dict[str, Any]) -> list[str]:
     if len(call_ids) != len(set(call_ids)):
         raise ContextProtocolError("Assistant tool call IDs must be unique")
     return call_ids
+
+
+def _tool_result_ids(messages: list[dict[str, Any]]) -> tuple[str, ...]:
+    """Return ToolResult IDs in message order without retaining result payloads."""
+
+    return tuple(
+        str(message["tool_call_id"])
+        for message in messages
+        if message.get("role") == "tool" and message.get("tool_call_id")
+    )
 
 
 def _split_context(
@@ -241,6 +269,35 @@ def _required_latest_blocks(
     return [blocks[index] for index in sorted(required_indices)]
 
 
+def _protected_recent_indices(
+    blocks: list[list[dict[str, Any]]],
+    budget_chars: int,
+) -> set[int]:
+    """Protect required state plus a contiguous, budget-sized execution tail."""
+
+    if not blocks:
+        return set()
+    required_ids = {id(block) for block in _required_latest_blocks(blocks)}
+    protected = {
+        index for index, block in enumerate(blocks) if id(block) in required_ids
+    }
+    used = sum(
+        len(json.dumps(blocks[index], ensure_ascii=False, separators=(",", ":")))
+        for index in protected
+    )
+    for index in range(len(blocks) - 1, -1, -1):
+        if index in protected:
+            continue
+        block_chars = len(
+            json.dumps(blocks[index], ensure_ascii=False, separators=(",", ":"))
+        )
+        if used + block_chars > budget_chars:
+            break
+        protected.add(index)
+        used += block_chars
+    return protected
+
+
 def _is_generated_marker(message: dict[str, Any]) -> bool:
     return message.get("name") in {
         "tinyharness_context_archive",
@@ -257,7 +314,7 @@ def _flatten(
 
 
 class ContextCompactor:
-    """在有界模型请求前执行 s08 风格的分层压缩。"""
+    """Prepare bounded model requests with pressure-driven compaction."""
 
     SUMMARY_SYSTEM = (
         "Summarize the supplied coding-agent history as factual state. "
@@ -290,6 +347,18 @@ class ContextCompactor:
         self.event_logger = event_logger
         self.config = config
         self._summary_complete = summary_complete or provider.complete
+
+    @property
+    def soft_limit(self) -> int:
+        """Return the normal compaction target below the hard request limit."""
+
+        return max(1, int(self.max_chars * SOFT_LIMIT_RATIO))
+
+    @property
+    def recent_tail_budget(self) -> int:
+        """Derive recent execution protection from hard/soft headroom."""
+
+        return max(1, self.max_chars - self.soft_limit)
 
     def _artifact_directory(self, leaf: str) -> Path:
         candidate = self.workspace / ".tinyharness" / "context" / leaf
@@ -364,14 +433,80 @@ class ContextCompactor:
                 "Cannot allocate a unique tool-result artifact path"
             ) from collision
         relative = self._relative_artifact_path(path)
-        preview = content[: self.config.result_preview_chars]
+        preview_chars = max(1, self.config.result_preview_chars)
+        head_chars = (preview_chars + 1) // 2
+        tail_chars = preview_chars // 2
+        head = content[:head_chars]
+        tail = content[-tail_chars:] if tail_chars else ""
         return (
             "<persisted-tool-result>\n"
             f"Full output: {relative}\n"
             f"Original characters: {len(content)}\n"
-            f"Preview:\n{preview}\n"
+            f"Head:\n{head}\n"
+            "...[middle omitted; full output persisted]...\n"
+            f"Tail:\n{tail}\n"
             "</persisted-tool-result>"
         )
+
+    def pressure_compact_tool_results(
+        self,
+        messages: list[dict[str, Any]],
+        target_chars: int,
+        persisted_tool_call_ids: list[str] | None = None,
+    ) -> int:
+        """Persist old/large ToolResults until the pressure target is met."""
+
+        if target_chars < 1:
+            raise ValueError("target_chars must be at least 1")
+        _, blocks = _split_context(messages)
+        protected = _protected_recent_indices(blocks, self.recent_tail_budget)
+        candidates: list[tuple[int, int, int, dict[str, Any], str]] = []
+        for block_index, block in enumerate(blocks):
+            for result_index, message in enumerate(block):
+                if message.get("role") != "tool":
+                    continue
+                content = str(message.get("content", ""))
+                if "<persisted-tool-result>" in content:
+                    continue
+                oversized = len(content) > self.config.large_result_chars
+                compactable = len(content) > self.config.micro_result_chars
+                if not compactable:
+                    continue
+                if oversized and block_index not in protected:
+                    tier = 0
+                elif oversized:
+                    tier = 1
+                elif block_index not in protected:
+                    tier = 2
+                else:
+                    tier = 3
+                candidates.append(
+                    (tier, block_index, result_index, message, content)
+                )
+
+        candidates.sort(
+            key=lambda item: (
+                item[0],
+                -len(item[4]) if item[0] < 2 else item[1],
+                item[1],
+                item[2],
+            )
+        )
+        persisted = 0
+        for _, _, _, message, content in candidates:
+            if context_char_count(messages, self.tools) <= target_chars:
+                break
+            replacement = self._persist_tool_result(
+                str(message["tool_call_id"]),
+                content,
+            )
+            if len(replacement) >= len(content):
+                continue
+            message["content"] = replacement
+            persisted += 1
+            if persisted_tool_call_ids is not None:
+                persisted_tool_call_ids.append(str(message["tool_call_id"]))
+        return persisted
 
     def tool_result_budget(self, messages: list[dict[str, Any]]) -> int:
         """将最新完整工具批次中最大的结果持久化到磁盘。"""
@@ -656,20 +791,64 @@ class ContextCompactor:
         todo_state: str,
         *,
         reason: str,
+        max_chars: int | None = None,
+        summary_source_messages: list[dict[str, Any]] | None = None,
         before_chars: int | None = None,
         persisted_results: int = 0,
+        persisted_tool_call_ids: tuple[str, ...] = (),
         archived_messages: int = 0,
         shortened_results: int = 0,
         transcript_written: bool = False,
     ) -> PreparedContext:
-        """归档并总结历史，同时保留当前用户轮次。"""
+        """Summarize the oldest eligible balanced history into one marker."""
 
-        _split_context(messages)
-        transcript = self._write_transcript(messages)
+        target_chars = self.max_chars if max_chars is None else max_chars
+        source_messages = (
+            messages
+            if summary_source_messages is None
+            else summary_source_messages
+        )
+        source_prefix, source_blocks = _split_context(source_messages)
+        transcript = self._write_transcript(source_messages)
         transcript_written = True
         prefix, blocks = _split_context(messages)
+        if len(source_blocks) != len(blocks):
+            raise ContextProtocolError(
+                "Summary source must match the compacted history block structure"
+            )
         base_prefix = [message for message in prefix if not _is_generated_marker(message)]
-        latest_context = _flatten([], _required_latest_blocks(blocks))
+        if reason == "manual":
+            required_ids = {
+                id(block) for block in _required_latest_blocks(blocks)
+            }
+            protected = {
+                index
+                for index, block in enumerate(blocks)
+                if id(block) in required_ids
+            }
+        else:
+            protected = _protected_recent_indices(
+                blocks,
+                self.recent_tail_budget,
+            )
+        latest_context = _flatten(
+            [],
+            [blocks[index] for index in sorted(protected)],
+        )
+        selected_history = [
+            message for message in source_prefix if _is_generated_marker(message)
+        ] + _flatten(
+            [],
+            [
+                source_blocks[index]
+                for index in range(len(source_blocks))
+                if index not in protected
+            ],
+        )
+        if not selected_history:
+            raise ContextLimitError(
+                "Context compaction has no older history that can be summarized"
+            )
         # 在消耗摘要 API 调用前，先证明必须保留的上下文能够放入预算。
         self._fit_summary_marker(
             base_prefix,
@@ -677,8 +856,13 @@ class ContextCompactor:
             "",
             todo_state,
             transcript,
+            max_chars=target_chars,
         )
-        summary_request = self._summary_request(messages, transcript)
+        summary_request = self._summary_request(
+            selected_history,
+            transcript,
+            max_chars=target_chars,
+        )
         self.event_logger.emit(
             EventType.CONTEXT_SUMMARY_REQUESTED,
             {"reason": reason, "input_chars": context_char_count(summary_request, [])},
@@ -703,13 +887,20 @@ class ContextCompactor:
             response.content,
             todo_state,
             transcript,
+            max_chars=target_chars,
+        )
+        remaining_result_ids = set(_tool_result_ids(compacted))
+        summarized_tool_call_ids = tuple(
+            call_id
+            for call_id in _tool_result_ids(selected_history)
+            if call_id not in remaining_result_ids
         )
         prepared = PreparedContext(
             messages=copy.deepcopy(compacted),
             before_chars=(
                 before_chars
                 if before_chars is not None
-                else context_char_count(messages, self.tools)
+                else context_char_count(source_messages, self.tools)
             ),
             after_chars=context_char_count(compacted, self.tools),
             persisted_results=persisted_results,
@@ -717,6 +908,8 @@ class ContextCompactor:
             shortened_results=shortened_results,
             summarized=True,
             transcript_written=transcript_written,
+            persisted_tool_call_ids=persisted_tool_call_ids,
+            summarized_tool_call_ids=summarized_tool_call_ids,
         )
         self.emit_compacted(prepared, reason)
         return prepared
@@ -817,6 +1010,11 @@ class ContextCompactor:
             after_chars=after_chars,
             summarized=True,
             transcript_written=True,
+            summarized_tool_call_ids=tuple(
+                call_id
+                for call_id in _tool_result_ids(messages)
+                if call_id not in set(_tool_result_ids(compacted))
+            ),
         )
         self.emit_compacted(prepared, "reactive")
         return prepared
@@ -834,6 +1032,12 @@ class ContextCompactor:
                 "summarized": prepared.summarized,
                 "transcript_written": prepared.transcript_written,
                 "todo_state_updated": prepared.todo_state_updated,
+                "persisted_tool_call_ids": list(
+                    prepared.persisted_tool_call_ids
+                ),
+                "summarized_tool_call_ids": list(
+                    prepared.summarized_tool_call_ids
+                ),
             },
         )
 
@@ -868,7 +1072,7 @@ def prepare_context(
     todo_state: str,
     active_request: str,
 ) -> PreparedContext | None:
-    """事务式执行正常四层压缩，但不提交 canonical messages。"""
+    """Prepare one request, compacting only after the soft limit is crossed."""
 
     validate_active_request(messages, active_request)
     if compactor is None:
@@ -876,48 +1080,59 @@ def prepare_context(
 
     working = copy.deepcopy(messages)
     before_chars = context_char_count(working, compactor.tools)
-
-    # 正常路径固定按信息损失与调用成本从低到高执行。
-    persisted = compactor.tool_result_budget(working)
-    working, archived, transcript_written = compactor.snip_compact(working)
-    shortened = compactor.micro_compact(working)
     before_todo_messages = copy.deepcopy(working)
     working = compactor.upsert_todo_marker(working, todo_state)
     todo_state_updated = working != before_todo_messages
-    after_chars = context_char_count(working, compactor.tools)
+    measured_chars = context_char_count(working, compactor.tools)
+    soft_limit = compactor.soft_limit
 
-    if after_chars > compactor.max_chars:
-        prepared = compactor.compact_history(
-            working,
-            todo_state,
-            reason="automatic",
-            before_chars=before_chars,
-            persisted_results=persisted,
-            archived_messages=archived,
-            shortened_results=shortened,
-            transcript_written=transcript_written,
-        )
-    else:
+    if measured_chars <= soft_limit:
         prepared = PreparedContext(
             messages=copy.deepcopy(working),
             before_chars=before_chars,
-            after_chars=after_chars,
-            persisted_results=persisted,
-            archived_messages=archived,
-            shortened_results=shortened,
-            transcript_written=transcript_written,
+            after_chars=measured_chars,
             todo_state_updated=todo_state_updated,
         )
-        if prepared.changed:
+        if prepared.lossy_changed:
             compactor.emit_compacted(prepared, "automatic")
+    else:
+        summary_source = copy.deepcopy(working)
+        persisted_tool_call_ids: list[str] = []
+        persisted = compactor.pressure_compact_tool_results(
+            working,
+            soft_limit,
+            persisted_tool_call_ids,
+        )
+        after_chars = context_char_count(working, compactor.tools)
+        if after_chars <= soft_limit:
+            prepared = PreparedContext(
+                messages=copy.deepcopy(working),
+                before_chars=before_chars,
+                after_chars=after_chars,
+                persisted_results=persisted,
+                todo_state_updated=todo_state_updated,
+                persisted_tool_call_ids=tuple(persisted_tool_call_ids),
+            )
+            compactor.emit_compacted(prepared, "automatic")
+        else:
+            prepared = compactor.compact_history(
+                working,
+                todo_state,
+                reason="automatic",
+                max_chars=soft_limit,
+                summary_source_messages=summary_source,
+                before_chars=before_chars,
+                persisted_results=persisted,
+                persisted_tool_call_ids=tuple(persisted_tool_call_ids),
+            )
 
-    # 所有层成功后再次验证；调用方随后只需执行一次 messages[:] 提交。
+    # All stages are transactional; callers commit prepared.messages once.
     validate_active_request(prepared.messages, active_request)
     final_chars = context_char_count(prepared.messages, compactor.tools)
-    if final_chars > compactor.max_chars:
+    if final_chars > soft_limit:
         raise ContextLimitError(
-            "Prepared context exceeds configured character budget: "
-            f"{final_chars} > {compactor.max_chars}"
+            "Prepared context exceeds the automatic soft limit: "
+            f"{final_chars} > {soft_limit}"
         )
     return prepared
 

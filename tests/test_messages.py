@@ -1,6 +1,7 @@
 import unittest
 
 from tiny_harness.agent.messages import (
+    ModelProtocolError,
     ModelResponse,
     ToolCall,
     assistant_message_from_response,
@@ -9,6 +10,13 @@ from tiny_harness.agent.messages import (
 
 
 class ModelResponseProtocolTest(unittest.TestCase):
+    def test_rejects_malformed_tool_call_envelopes(self) -> None:
+        for calls in (None, (), [None], [ToolCall("id", "", "{}")],
+                      [ToolCall("id", "read_file", {})]):
+            with self.subTest(calls=calls):
+                with self.assertRaises(ModelProtocolError):
+                    validate_model_response(ModelResponse(None, None, calls, "tool_calls"))
+
     def test_accepts_consistent_stop_and_tool_call_responses(self) -> None:
         validate_model_response(ModelResponse("done", None, [], "stop"))
         validate_model_response(

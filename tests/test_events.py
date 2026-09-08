@@ -11,7 +11,10 @@ from tiny_harness.runtime.events import (
     EventLogError,
     EventType,
     JsonlEventLogger,
+    hash_json,
+    hash_text,
 )
+from tiny_harness.runtime.hooks import HookBlock, HookExecutionError, ToolHooks
 
 
 FIXED_TIME = datetime(2026, 8, 17, 12, 30, tzinfo=timezone.utc)
@@ -142,18 +145,19 @@ class EventLifecycleTest(unittest.TestCase):
             [event["event_type"] for event in logger.events],
             [
                 "run_started",
+                "context_prepared",
                 "model_requested",
                 "model_responded",
                 "run_finished",
             ],
         )
-        self.assertEqual(logger.events[2]["data"]["tool_call_count"], 0)
+        self.assertEqual(logger.events[3]["data"]["tool_call_count"], 0)
         self.assertEqual(
-            logger.events[3]["data"],
+            logger.events[4]["data"],
             {"turns": 1, "answer_length": 4},
         )
 
-    def test_allowed_tool_records_started_then_finished(self) -> None:
+    def test_allowed_tool_records_called_started_then_result_with_identity(self) -> None:
         logger = RecordingEventLogger()
         provider = FakeProvider(
             [
@@ -174,10 +178,21 @@ class EventLifecycleTest(unittest.TestCase):
         ]
         self.assertEqual(
             [event["event_type"] for event in tool_events],
-            ["tool_started", "tool_finished"],
+            ["tool_called", "tool_started", "tool_result"],
         )
-        self.assertEqual(tool_events[0]["data"]["tool_call_id"], "write-1")
-        self.assertEqual(tool_events[1]["data"]["outcome"], "returned")
+        self.assertTrue(all(event["data"]["turn"] == 1 for event in tool_events))
+        self.assertTrue(all(event["data"]["tool_call_id"] == "write-1" for event in tool_events))
+        self.assertTrue(all(event["data"]["tool_name"] == "write_file" for event in tool_events))
+        self.assertEqual(tool_events[0]["data"]["path"], "a.txt")
+        self.assertEqual(
+            tool_events[0]["data"]["arguments_hash"],
+            hash_json({"path": "a.txt", "content": "A"}),
+        )
+        self.assertEqual(tool_events[2]["data"]["outcome"], "returned")
+        self.assertEqual(
+            tool_events[2]["data"]["content_hash"],
+            hash_text("Wrote 1 bytes to a.txt"),
+        )
 
     def test_multiple_tool_calls_record_events_in_execution_order(self) -> None:
         logger = RecordingEventLogger()
@@ -215,14 +230,16 @@ class EventLifecycleTest(unittest.TestCase):
                 for event in tool_events
             ],
             [
+                ("tool_called", "write-1"),
+                ("tool_called", "write-2"),
                 ("tool_started", "write-1"),
-                ("tool_finished", "write-1"),
+                ("tool_result", "write-1"),
                 ("tool_started", "write-2"),
-                ("tool_finished", "write-2"),
+                ("tool_result", "write-2"),
             ],
         )
 
-    def test_denied_tool_records_only_tool_denied(self) -> None:
+    def test_denied_tool_records_called_and_result_without_started(self) -> None:
         logger = RecordingEventLogger()
         provider = FakeProvider(
             [
@@ -255,9 +272,84 @@ class EventLifecycleTest(unittest.TestCase):
         ]
         self.assertEqual(
             [event["event_type"] for event in tool_events],
-            ["tool_denied"],
+            ["tool_called", "tool_denied", "tool_result"],
         )
         self.assertEqual(tool_events[0]["data"]["tool_call_id"], "bash-1")
+        self.assertEqual(tool_events[-1]["data"]["outcome"], "permission_denied")
+
+    def test_hook_block_records_result_without_started(self) -> None:
+        logger = RecordingEventLogger()
+        hooks = ToolHooks()
+        hooks.register_pre(lambda _context: HookBlock("PRIVATE_BLOCK_REASON"))
+        provider = FakeProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("write-1", "write_file", '{"path":"blocked.txt","content":"bad"}')],
+                    "tool_calls",
+                ),
+                ModelResponse("handled", None, [], "stop"),
+            ]
+        )
+
+        agent_loop(
+            provider,
+            self.workspace,
+            [],
+            event_logger=logger,
+            tool_hooks=hooks,
+        )
+
+        tool_events = [
+            event for event in logger.events if event["event_type"].startswith("tool_")
+        ]
+        self.assertEqual(
+            [event["event_type"] for event in tool_events],
+            ["tool_called", "tool_hook_blocked", "tool_result"],
+        )
+        self.assertEqual(tool_events[-1]["data"]["outcome"], "hook_blocked")
+        self.assertNotIn("PRIVATE_BLOCK_REASON", json.dumps(tool_events))
+
+    def test_all_model_tool_calls_are_logged_before_a_fatal_hook_failure(self) -> None:
+        logger = RecordingEventLogger()
+        hooks = ToolHooks()
+
+        def fail_first(context):
+            if context.tool_call_id == "write-1":
+                raise RuntimeError("fatal hook")
+
+        hooks.register_pre(fail_first)
+        provider = FakeProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [
+                        ToolCall("write-1", "write_file", '{"path":"a.txt","content":"A"}'),
+                        ToolCall("write-2", "write_file", '{"path":"b.txt","content":"B"}'),
+                    ],
+                    "tool_calls",
+                )
+            ]
+        )
+
+        with self.assertRaises(HookExecutionError):
+            agent_loop(
+                provider,
+                self.workspace,
+                [],
+                event_logger=logger,
+                tool_hooks=hooks,
+            )
+
+        called_ids = [
+            event["data"]["tool_call_id"]
+            for event in logger.events
+            if event["event_type"] == "tool_called"
+        ]
+        self.assertEqual(called_ids, ["write-1", "write-2"])
+        self.assertFalse((self.workspace / "b.txt").exists())
 
     def test_tool_exception_records_error_outcome(self) -> None:
         logger = RecordingEventLogger()
@@ -276,10 +368,38 @@ class EventLifecycleTest(unittest.TestCase):
         agent_loop(provider, self.workspace, [], event_logger=logger)
 
         finished = [
-            event for event in logger.events if event["event_type"] == "tool_finished"
+            event for event in logger.events if event["event_type"] == "tool_result"
         ]
         self.assertEqual(len(finished), 1)
         self.assertEqual(finished[0]["data"]["outcome"], "error")
+
+    def test_read_file_called_event_records_path_without_content(self) -> None:
+        (self.workspace / "source.txt").write_text(
+            "PRIVATE_SOURCE_BODY",
+            encoding="utf-8",
+        )
+        logger = RecordingEventLogger()
+        provider = FakeProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("read-1", "read_file", '{"path":"source.txt"}')],
+                    "tool_calls",
+                ),
+                ModelResponse("done", None, [], "stop"),
+            ]
+        )
+
+        agent_loop(provider, self.workspace, [], event_logger=logger)
+
+        called = next(
+            event["data"]
+            for event in logger.events
+            if event["event_type"] == "tool_called"
+        )
+        self.assertEqual(called["path"], "source.txt")
+        self.assertNotIn("PRIVATE_SOURCE_BODY", json.dumps(logger.events))
 
     def test_todo_reminder_is_recorded_without_todo_content(self) -> None:
         logger = RecordingEventLogger()
@@ -300,8 +420,8 @@ class EventLifecycleTest(unittest.TestCase):
 
         event_names = [event["event_type"] for event in logger.events]
         reminder_index = event_names.index("todo_reminder")
-        self.assertEqual(event_names[reminder_index - 1], "tool_finished")
-        self.assertEqual(event_names[reminder_index + 1], "model_requested")
+        self.assertEqual(event_names[reminder_index - 1], "tool_result")
+        self.assertEqual(event_names[reminder_index + 1], "context_prepared")
         self.assertEqual(
             logger.events[reminder_index]["data"],
             {"turn": 3, "rounds_since_todo": 3, "todo_count": 0},
@@ -321,32 +441,147 @@ class EventLifecycleTest(unittest.TestCase):
         self.assertEqual(logger.events[-1]["event_type"], "run_failed")
         self.assertEqual(
             logger.events[-1]["data"],
-            {"turn": 1, "error_type": "RuntimeError"},
+            {"turn": 1, "error_type": "RuntimeError", "last_finish_reason": None},
         )
 
-    def test_max_turns_records_run_failed(self) -> None:
+    def test_finalization_at_max_turns_records_run_finished(self) -> None:
+        logger = RecordingEventLogger()
+        provider = FakeProvider(
+            [
+                ModelResponse("best available answer", None, [], "stop")
+            ]
+        )
+
+        answer = agent_loop(
+            provider,
+            self.workspace,
+            [],
+            max_turns=1,
+            event_logger=logger,
+        )
+
+        self.assertEqual(answer, "best available answer")
+        self.assertEqual(logger.events[-1]["event_type"], "run_finished")
+        self.assertNotIn(
+            "run_failed", [event["event_type"] for event in logger.events]
+        )
+
+    def test_context_and_turn_budget_are_recorded_for_each_main_request(self) -> None:
         logger = RecordingEventLogger()
         provider = FakeProvider(
             [
                 ModelResponse(
                     None,
                     None,
-                    [ToolCall("write-1", "write_file", '{"path":"a.txt","content":"A"}')],
+                    [ToolCall("list-1", "list_files", "{}")],
                     "tool_calls",
-                )
+                ),
+                ModelResponse("done", None, [], "stop"),
             ]
         )
 
-        with self.assertRaisesRegex(RuntimeError, "Maximum model turns reached"):
-            agent_loop(
-                provider,
-                self.workspace,
-                [],
-                max_turns=1,
-                event_logger=logger,
-            )
+        agent_loop(
+            provider,
+            self.workspace,
+            [{"role": "user", "content": "inspect"}],
+            max_turns=2,
+            max_context_chars=100_000,
+            event_logger=logger,
+        )
 
-        self.assertEqual(logger.events[-1]["event_type"], "run_failed")
+        prepared = [
+            event["data"]
+            for event in logger.events
+            if event["event_type"] == "context_prepared"
+        ]
+        self.assertEqual([item["turn"] for item in prepared], [1, 2])
+        self.assertEqual(
+            [item.get("finalization", False) for item in prepared],
+            [False, True],
+        )
+        self.assertTrue(all(item["hard_limit"] == 100_000 for item in prepared))
+        self.assertTrue(all(item["soft_limit"] == 80_000 for item in prepared))
+        self.assertTrue(all(item["pressure"] < 1 for item in prepared))
+        self.assertFalse(
+            any(event["event_type"] == "context_compacted" for event in logger.events)
+        )
+        requested = [
+            event["data"]
+            for event in logger.events
+            if event["event_type"] == "model_requested"
+            and event["data"]["purpose"] == "main"
+        ]
+        self.assertEqual([item["remaining_turns"] for item in requested], [1, 0])
+        self.assertEqual([item["max_turns"] for item in requested], [2, 2])
+        self.assertEqual(
+            [item.get("finalization", False) for item in requested],
+            [False, True],
+        )
+        self.assertEqual(
+            [item["context_chars"] for item in requested],
+            [item["context_chars"] for item in prepared],
+        )
+        responded = [
+            event["data"]
+            for event in logger.events
+            if event["event_type"] == "model_responded"
+            and event["data"]["purpose"] == "main"
+        ]
+        self.assertEqual(
+            [item.get("finalization", False) for item in responded],
+            [False, True],
+        )
+
+    def test_equivalent_arguments_and_results_have_stable_hashes(self) -> None:
+        logger = RecordingEventLogger()
+        provider = FakeProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [
+                        ToolCall("list-1", "list_files", '{"path":".","unexpected":1}'),
+                        ToolCall("list-2", "list_files", '{"unexpected":1,"path":"."}'),
+                    ],
+                    "tool_calls",
+                ),
+                ModelResponse("done", None, [], "stop"),
+            ]
+        )
+
+        agent_loop(provider, self.workspace, [], event_logger=logger)
+
+        called = [e["data"] for e in logger.events if e["event_type"] == "tool_called"]
+        results = [e["data"] for e in logger.events if e["event_type"] == "tool_result"]
+        self.assertEqual(called[0]["arguments_hash"], called[1]["arguments_hash"])
+        self.assertEqual(results[0]["content_hash"], results[1]["content_hash"])
+
+    def test_task_metadata_does_not_expose_prompt(self) -> None:
+        logger = RecordingEventLogger()
+        provider = FakeProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("task-1", "task", '{"prompt":"PRIVATE_TASK_PROMPT"}')],
+                    "tool_calls",
+                ),
+                ModelResponse("child done", None, [], "stop"),
+                ModelResponse("parent done", None, [], "stop"),
+            ]
+        )
+
+        agent_loop(provider, self.workspace, [], event_logger=logger)
+
+        task_called = next(
+            event["data"]
+            for event in logger.events
+            if event["event_type"] == "tool_called"
+            and event["data"]["tool_name"] == "task"
+        )
+        self.assertEqual(task_called["prompt_length"], len("PRIVATE_TASK_PROMPT"))
+        self.assertEqual(task_called["prompt_hash"], hash_text("PRIVATE_TASK_PROMPT"))
+        self.assertNotIn("PRIVATE_TASK_PROMPT", json.dumps(logger.events))
 
     def test_event_log_failure_stops_before_model_call(self) -> None:
         provider = FakeProvider([ModelResponse("done", None, [], "stop")])
@@ -373,7 +608,13 @@ class EventLifecycleTest(unittest.TestCase):
                             "write-1",
                             "write_file",
                             '{"path":"secret.txt","content":"TOP_SECRET"}',
-                        )
+                        ),
+                        ToolCall(
+                            "edit-1",
+                            "edit_file",
+                            '{"path":"secret.txt","old_text":"TOP_SECRET",'
+                            '"new_text":"REPLACED_SECRET"}',
+                        ),
                     ],
                     "tool_calls",
                 ),
@@ -393,6 +634,7 @@ class EventLifecycleTest(unittest.TestCase):
             "PRIVATE_PROMPT",
             "PRIVATE_REASONING",
             "TOP_SECRET",
+            "REPLACED_SECRET",
             "PRIVATE_FINAL_ANSWER",
         ):
             self.assertNotIn(secret, log_text)

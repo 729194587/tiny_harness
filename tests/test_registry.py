@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from tiny_harness.agent.messages import ToolCall
+from tiny_harness.runtime.events import NULL_EVENT_LOGGER
 from tiny_harness.runtime.permissions import PermissionDecision
 from tiny_harness.runtime.context import CompactionRequest
 from tiny_harness.runtime.skills import discover_skills
@@ -40,6 +41,7 @@ class ToolRegistryTest(unittest.TestCase):
     def make_registry(self, **overrides):
         capabilities = {
             "workspace": self.workspace,
+            "event_logger": NULL_EVENT_LOGGER,
             "todo_manager": self.todo_manager,
             "subagent_runner": lambda prompt, call_id: "child summary",
             "skill_catalog": discover_skills(self.workspace),

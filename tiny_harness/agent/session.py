@@ -31,6 +31,10 @@ def _null_event_logger() -> EventLogger:
     return NULL_EVENT_LOGGER
 
 
+class SessionFailedError(RuntimeError):
+    """The previous submission did not finish; explicit clear is required."""
+
+
 class AgentSession:
     """Keep canonical messages across successful in-process submissions."""
 
@@ -65,12 +69,29 @@ class AgentSession:
         self.recovery_policy = recovery_policy
         self.memory_enabled = memory_enabled
         self.event_logger_factory = event_logger_factory
+        self._failed = False
+
+    @property
+    def failed(self) -> bool:
+        """Whether a submission did not finish and clear() is required."""
+
+        return self._failed
 
     def submit(self, task: str) -> str:
         """Append one user turn and run the agent against shared history."""
 
+        if self._failed:
+            raise SessionFailedError(
+                "Session is failed after an interrupted submission. Tool side "
+                "effects may remain and history may be incomplete. Inspect the "
+                "workspace and call clear() before submitting again; clear() "
+                "does not undo tool side effects."
+            )
         if not task.strip():
             raise ValueError("task cannot be empty")
+        # Pessimistic until success: exceptions and interrupts propagate unchanged,
+        # retaining history without replaying or pretending to undo side effects.
+        self._failed = True
         self._remove_run_scoped_markers()
         self.messages.append({"role": "user", "content": task})
         context = create_run_context(
@@ -87,12 +108,14 @@ class AgentSession:
         )
         answer = agent_loop(self.messages, context, task)
         self._remove_run_scoped_markers()
+        self._failed = False
         return answer
 
     def clear(self) -> None:
         """Forget conversation messages without deleting workspace artifacts."""
 
         self.messages[:] = [copy.deepcopy(self.system_message)]
+        self._failed = False
 
     def _remove_run_scoped_markers(self) -> None:
         self.messages[:] = [

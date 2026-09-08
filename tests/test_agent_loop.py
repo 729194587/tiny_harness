@@ -12,9 +12,10 @@ from tiny_harness.agent.context import create_run_context
 from tiny_harness.agent.loop import agent_loop as core_agent_loop
 from tiny_harness.agent.loop import run_agent as agent_loop
 from tiny_harness.agent.messages import ModelResponse, ToolCall
+from tiny_harness.models.base import ModelErrorKind, ModelProviderError
 from tiny_harness.runtime.context import ContextProtocolError
-from tiny_harness.runtime.errors import MaxTurnsExceededError
 from tiny_harness.runtime.permissions import PermissionDecision
+from tiny_harness.runtime.recovery import RecoveryPolicy
 from tiny_harness.runtime.skills import discover_skills
 from tiny_harness.tools.definition import ToolDefinition
 from tiny_harness.tools.registry import ToolRegistry
@@ -34,7 +35,10 @@ class FakeProvider:
         )
         if not self.responses:
             raise AssertionError("FakeProvider has no response left")
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 class AgentLoopTest(unittest.TestCase):
@@ -567,26 +571,93 @@ class AgentLoopTest(unittest.TestCase):
 
         self.assertEqual(provider.calls, [])
 
-    def test_raises_after_maximum_model_turns(self) -> None:
+    def test_last_turn_finalizes_without_tools_and_sees_prior_tool_results(self) -> None:
         provider = FakeProvider(
             [
                 ModelResponse(
                     None,
                     None,
-                    [ToolCall("call-1", "write_file", '{"path":"a.txt","content":"A"}')],
+                    [ToolCall("call-1", "list_files", "{}")],
                     "tool_calls",
-                )
+                ),
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("call-2", "list_files", "{}")],
+                    "tool_calls",
+                ),
+                ModelResponse("best available answer", None, [], "stop"),
             ]
         )
 
-        with self.assertRaisesRegex(
-            MaxTurnsExceededError,
-            "Maximum model turns reached: 1",
-        ):
-            agent_loop(provider, self.workspace, [], max_turns=1)
+        answer = agent_loop(provider, self.workspace, [], max_turns=3)
 
-        self.assertEqual(len(provider.calls), 1)
-        self.assertEqual((self.workspace / "a.txt").read_text(encoding="utf-8"), "A")
+        self.assertEqual(answer, "best available answer")
+        self.assertEqual(len(provider.calls), 3)
+        self.assertTrue(provider.calls[0]["tools"])
+        self.assertTrue(provider.calls[1]["tools"])
+        self.assertEqual(provider.calls[2]["tools"], [])
+        final_messages = provider.calls[2]["messages"]
+        self.assertEqual(
+            [
+                message["tool_call_id"]
+                for message in final_messages
+                if message.get("role") == "tool"
+            ],
+            ["call-1", "call-2"],
+        )
+        self.assertTrue(
+            any(
+                message.get("role") == "system"
+                and "execution turn budget is exhausted"
+                in message.get("content", "")
+                for message in final_messages
+            )
+        )
+
+    def test_early_final_answer_skips_finalization_turn(self) -> None:
+        provider = FakeProvider(
+            [
+                ModelResponse(
+                    None,
+                    None,
+                    [ToolCall("call-1", "list_files", "{}")],
+                    "tool_calls",
+                ),
+                ModelResponse("done early", None, [], "stop"),
+            ]
+        )
+
+        answer = agent_loop(provider, self.workspace, [], max_turns=3)
+
+        self.assertEqual(answer, "done early")
+        self.assertEqual(len(provider.calls), 2)
+        self.assertTrue(provider.calls[1]["tools"])
+
+    def test_provider_retry_stays_within_one_logical_turn(self) -> None:
+        provider = FakeProvider(
+            [
+                ModelProviderError(ModelErrorKind.SERVER_UNAVAILABLE),
+                ModelResponse("done", None, [], "stop"),
+            ]
+        )
+
+        answer = agent_loop(
+            provider,
+            self.workspace,
+            [],
+            max_turns=2,
+            recovery_policy=RecoveryPolicy(
+                max_retries=1,
+                base_delay_seconds=0,
+                max_delay_seconds=0,
+                jitter_ratio=0,
+            ),
+        )
+
+        self.assertEqual(answer, "done")
+        self.assertEqual(len(provider.calls), 2)
+        self.assertTrue(all(call["tools"] for call in provider.calls))
 
     def test_does_not_treat_length_stop_as_final_answer(self) -> None:
         provider = FakeProvider(

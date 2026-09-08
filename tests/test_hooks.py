@@ -146,7 +146,7 @@ class ToolHooksTest(unittest.TestCase):
         self.assertIn("PRIVATE_BLOCK_REASON", result.content)
         self.assertEqual(
             [event["event_type"] for event in logger.events],
-            ["tool_hook_blocked"],
+            ["tool_called", "tool_hook_blocked", "tool_result"],
         )
         self.assertNotIn("PRIVATE_BLOCK_REASON", json.dumps(logger.events))
 
@@ -264,7 +264,7 @@ class ToolHooksTest(unittest.TestCase):
         self.assertEqual(raised.exception.error_type, "TypeError")
         self.assertFalse((self.workspace / "a.txt").exists())
 
-    def test_post_hook_exception_happens_after_tool_finished(self) -> None:
+    def test_post_hook_exception_does_not_claim_a_model_visible_result(self) -> None:
         logger = RecordingEventLogger()
         hooks = ToolHooks()
 
@@ -290,7 +290,7 @@ class ToolHooksTest(unittest.TestCase):
         self.assertEqual((self.workspace / "a.txt").read_text(encoding="utf-8"), "A")
         self.assertEqual(
             [event["event_type"] for event in logger.events],
-            ["tool_started", "tool_finished", "tool_hook_failed"],
+            ["tool_called", "tool_started", "tool_hook_failed"],
         )
 
     def test_invalid_hook_return_is_an_execution_error(self) -> None:

@@ -2,7 +2,7 @@
 
 import random
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -116,6 +116,8 @@ class RecoveryExecutor:
         turn: int,
         state: RecoveryState,
         context_recovery_available: bool = False,
+        request_metadata: Mapping[str, Any] | None = None,
+        finalization: bool = False,
     ) -> ModelResponse:
         """Return a response or raise after bounded transient retries."""
 
@@ -127,6 +129,8 @@ class RecoveryExecutor:
                     "purpose": purpose,
                     "turn": turn,
                     "attempt": state.attempt,
+                    **({"finalization": True} if finalization else {}),
+                    **dict(request_metadata or {}),
                 },
             )
             try:
@@ -196,6 +200,7 @@ class RecoveryExecutor:
                     "finish_reason": response.finish_reason,
                     "tool_call_count": len(response.tool_calls),
                     "content_length": len(response.content or ""),
+                    **({"finalization": True} if finalization else {}),
                 },
             )
             return response

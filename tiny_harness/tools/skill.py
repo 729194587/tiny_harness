@@ -47,5 +47,8 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
                 "additionalProperties": False,
             },
             execute=lambda call, arguments: load_skill(catalog, **arguments),
+            trace_metadata=lambda arguments: {
+                "name": arguments["name"]
+            } if "name" in arguments else {},
         ),
     )

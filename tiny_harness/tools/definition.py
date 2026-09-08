@@ -11,6 +11,7 @@ from tiny_harness.agent.messages import ToolCall
 
 
 ToolExecutor = Callable[[ToolCall, dict[str, Any]], str]
+TraceMetadata = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 @dataclass(frozen=True, init=False)
@@ -21,6 +22,7 @@ class ToolDefinition:
     description: str
     _parameters_json: str = field(repr=False)
     execute: ToolExecutor
+    trace_metadata: TraceMetadata = field(compare=False, repr=False)
 
     def __init__(
         self,
@@ -28,6 +30,7 @@ class ToolDefinition:
         description: str,
         parameters: dict[str, Any],
         execute: ToolExecutor,
+        trace_metadata: TraceMetadata | None = None,
     ) -> None:
         encoded_parameters = json.dumps(
             parameters,
@@ -41,6 +44,7 @@ class ToolDefinition:
         object.__setattr__(self, "description", description)
         object.__setattr__(self, "_parameters_json", encoded_parameters)
         object.__setattr__(self, "execute", execute)
+        object.__setattr__(self, "trace_metadata", trace_metadata or (lambda arguments: {}))
 
     @property
     def parameters(self) -> dict[str, Any]:

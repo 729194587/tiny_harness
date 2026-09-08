@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 from tiny_harness.agent.loop import run_agent
 from tiny_harness.agent.messages import ModelResponse, ToolCall
-from tiny_harness.runtime.errors import MaxTurnsExceededError
 from tiny_harness.runtime.test_runner import SubprocessTestRunner
 from tiny_harness.runtime.skills import discover_skills
 from tiny_harness.runtime.todos import TodoManager
@@ -200,22 +199,23 @@ class RunTestsRuntimeSemanticsTest(unittest.TestCase):
                     None,
                     [ToolCall("tests-1", "run_tests", "{}")],
                     "tool_calls",
-                )
+                ),
+                ModelResponse("tests passed", None, [], "stop"),
             ]
         )
 
-        with self.assertRaises(MaxTurnsExceededError):
-            run_agent(
-                provider,
-                self.workspace,
-                [{"role": "user", "content": "task"}],
-                max_turns=1,
-                test_runner=runner,
-                event_logger=logger,
-            )
+        answer = run_agent(
+            provider,
+            self.workspace,
+            [{"role": "user", "content": "task"}],
+            max_turns=2,
+            test_runner=runner,
+            event_logger=logger,
+        )
 
         event_names = [event["event_type"] for event in logger.events]
-        self.assertNotIn("run_finished", event_names)
+        self.assertEqual(answer, "tests passed")
+        self.assertIn("run_finished", event_names)
         self.assertEqual(runner.workspaces, [self.workspace])
 
 

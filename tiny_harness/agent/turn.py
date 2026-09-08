@@ -15,9 +15,43 @@ if TYPE_CHECKING:
     from tiny_harness.agent.context import AgentRunContext
 
 
+FINALIZATION_INSTRUCTION = (
+    "The execution turn budget is exhausted.\n"
+    "No further tool use is available.\n"
+    "Using the evidence already gathered, provide the best possible final answer "
+    "to the user's request now.\n"
+    "Briefly state any important limitation if the investigation is incomplete."
+)
+
+
+def model_request_inputs(
+    messages: list[dict[str, Any]],
+    context: AgentRunContext,
+    *,
+    finalization: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build one request without committing runtime-only instructions to history."""
+
+    request_messages = copy.deepcopy(messages)
+    if finalization:
+        insert_at = 0
+        while (
+            insert_at < len(request_messages)
+            and request_messages[insert_at].get("role") == "system"
+        ):
+            insert_at += 1
+        request_messages.insert(
+            insert_at,
+            {"role": "system", "content": FINALIZATION_INSTRUCTION},
+        )
+    return request_messages, ([] if finalization else context.tools)
+
+
 def call_model(
     messages: list[dict[str, Any]],
     context: AgentRunContext,
+    *,
+    finalization: bool = False,
 ) -> ModelResponse:
     """准备上下文、执行有界恢复并返回协议合法的模型响应。
 
@@ -25,7 +59,11 @@ def call_model(
     才能提交 assistant message 或执行工具。
     """
 
-    request_messages = copy.deepcopy(messages)
+    request_messages, request_tools = model_request_inputs(
+        messages,
+        context,
+        finalization=finalization,
+    )
 
     recovery_state = RecoveryState()
     while True:
@@ -33,7 +71,7 @@ def call_model(
             response = context.recovery_executor.complete(
                 context.provider,
                 request_messages,
-                context.tools,
+                request_tools,
                 purpose="main",
                 turn=context.current_turn,
                 state=recovery_state,
@@ -41,6 +79,15 @@ def call_model(
                     context.compactor is not None
                     and not recovery_state.reactive_compact_used
                 ),
+                request_metadata={
+                    "max_turns": context.max_turns,
+                    "remaining_turns": context.max_turns - context.current_turn,
+                    "context_chars": context_char_count(
+                        request_messages,
+                        request_tools,
+                    ),
+                },
+                finalization=finalization,
             )
             break
         except ModelProviderError as error:
@@ -56,7 +103,7 @@ def call_model(
             recovery_state.reactive_compact_used = True
             failed_request_chars = context_char_count(
                 request_messages,
-                context.tools,
+                request_tools,
             )
             prepared = context.compactor.reactive_compact(
                 messages,
@@ -64,7 +111,11 @@ def call_model(
                 failed_request_chars=failed_request_chars,
             )
             messages[:] = prepared.messages
-            request_messages = copy.deepcopy(messages)
+            request_messages, request_tools = model_request_inputs(
+                messages,
+                context,
+                finalization=finalization,
+            )
             context.event_logger.emit(
                 EventType.MODEL_RETRY_SCHEDULED,
                 {
@@ -77,5 +128,6 @@ def call_model(
                 },
             )
 
+    context.last_finish_reason = response.finish_reason
     validate_model_response(response)
     return response

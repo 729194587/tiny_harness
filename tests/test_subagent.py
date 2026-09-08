@@ -184,8 +184,7 @@ class SubagentTest(unittest.TestCase):
             "You are a coding subagent",
             json.dumps(parent_second_request),
         )
-        self.assertIn("[子 Agent 已启动]", stdout.getvalue())
-        self.assertIn("[子 Agent 已完成]", stdout.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
 
     def test_child_inherits_and_can_call_run_tests_capability(self) -> None:
         runner = RecordingTestRunner()
@@ -385,6 +384,12 @@ class SubagentTest(unittest.TestCase):
                 ModelResponse(
                     None,
                     None,
+                    [ToolCall("child-list", "list_files", '{"path":"."}')],
+                    "tool_calls",
+                ),
+                ModelResponse(
+                    None,
+                    None,
                     [ToolCall("child-compact", "compact", "{}")],
                     "tool_calls",
                 ),
@@ -408,7 +413,7 @@ class SubagentTest(unittest.TestCase):
         child_tool_names = tool_names(provider.calls[1])
         self.assertIn("compact", child_tool_names)
         self.assertNotIn("task", child_tool_names)
-        self.assertEqual(provider.calls[2]["tools"], [])
+        self.assertEqual(provider.calls[3]["tools"], [])
         summary_events = [
             event
             for event in logger.events
@@ -589,7 +594,7 @@ class SubagentTest(unittest.TestCase):
         parent_result = provider.calls[1]["messages"][-1]["content"]
         self.assertIn("delegation disabled", parent_result)
 
-    def test_child_max_turn_failure_becomes_parent_tool_result(self) -> None:
+    def test_child_turn_budget_is_independent_and_finalizes(self) -> None:
         provider = ScriptedProvider(
             [
                 ModelResponse(
@@ -598,13 +603,8 @@ class SubagentTest(unittest.TestCase):
                     [ToolCall("task-1", "task", '{"prompt":"keep working"}')],
                     "tool_calls",
                 ),
-                ModelResponse(
-                    None,
-                    None,
-                    [ToolCall("child-list", "list_files", "{}")],
-                    "tool_calls",
-                ),
-                ModelResponse("parent handled child failure", None, [], "stop"),
+                ModelResponse("child finalized", None, [], "stop"),
+                ModelResponse("parent completed normally", None, [], "stop"),
             ]
         )
         logger = RecordingEventLogger()
@@ -615,32 +615,25 @@ class SubagentTest(unittest.TestCase):
                 provider,
                 self.workspace,
                 [],
+                max_turns=3,
                 subagent_max_turns=1,
                 event_logger=logger,
             )
 
-        self.assertEqual(answer, "parent handled child failure")
-        self.assertIn("[子 Agent 执行失败]", stdout.getvalue())
+        self.assertEqual(answer, "parent completed normally")
+        self.assertEqual(stdout.getvalue(), "")
         parent_result = provider.calls[2]["messages"][-1]["content"]
-        self.assertIn("Maximum model turns reached: 1", parent_result)
+        self.assertEqual(parent_result, "child finalized")
+        self.assertEqual(provider.calls[1]["tools"], [])
+        self.assertTrue(provider.calls[2]["tools"])
 
-        child_failed_index = next(
-            index
-            for index, event in enumerate(logger.events)
-            if event["event_type"] == "run_failed"
+        child_finished = next(
+            event
+            for event in logger.events
+            if event["event_type"] == "run_finished"
             and event["data"].get("agent_scope") == "subagent"
         )
-        task_finished_index = next(
-            index
-            for index, event in enumerate(logger.events)
-            if event["event_type"] == "tool_finished"
-            and event["data"].get("tool_name") == "task"
-        )
-        self.assertLess(child_failed_index, task_finished_index)
-        self.assertEqual(
-            logger.events[task_finished_index]["data"]["outcome"],
-            "error",
-        )
+        self.assertEqual(child_finished["data"]["turns"], 1)
 
     def test_child_events_are_correlated_with_parent_task_call(self) -> None:
         (self.workspace / "source.txt").write_text("evidence", encoding="utf-8")
@@ -700,7 +693,7 @@ class SubagentTest(unittest.TestCase):
         task_finished = next(
             index
             for index, event in enumerate(logger.events)
-            if event["event_type"] == "tool_finished"
+            if event["event_type"] == "tool_result"
             and event["data"].get("tool_name") == "task"
         )
         self.assertLess(task_started, child_started)

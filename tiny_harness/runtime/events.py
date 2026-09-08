@@ -1,5 +1,6 @@
 """Minimal synchronous event logging for TinyHarness runs."""
 
+import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
@@ -14,6 +15,7 @@ class EventType(str, Enum):
     """Lifecycle events recorded by the harness."""
 
     RUN_STARTED = "run_started"
+    CONTEXT_PREPARED = "context_prepared"
     CONTEXT_TRIMMED = "context_trimmed"
     CONTEXT_COMPACTED = "context_compacted"
     CONTEXT_SUMMARY_REQUESTED = "context_summary_requested"
@@ -33,9 +35,14 @@ class EventType(str, Enum):
     MEMORY_CONSOLIDATION_FAILED = "memory_consolidation_failed"
     TOOL_HOOK_BLOCKED = "tool_hook_blocked"
     TOOL_HOOK_FAILED = "tool_hook_failed"
+    TOOL_CALLED = "tool_called"
     TOOL_STARTED = "tool_started"
     TOOL_DENIED = "tool_denied"
-    TOOL_FINISHED = "tool_finished"
+    TOOL_RESULT = "tool_result"
+    TODO_UPDATED = "todo_updated"
+    SUBAGENT_STARTED = "subagent_started"
+    SUBAGENT_FINISHED = "subagent_finished"
+    SUBAGENT_FAILED = "subagent_failed"
     TODO_REMINDER = "todo_reminder"
     RUN_FINISHED = "run_finished"
     RUN_FAILED = "run_failed"
@@ -54,6 +61,24 @@ class Event:
 
 class EventLogError(RuntimeError):
     """Raised when an enabled event log cannot be written."""
+
+
+def hash_text(value: str) -> str:
+    """Return a deterministic SHA-256 identity without retaining text."""
+
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def hash_json(value: Any) -> str:
+    """Canonicalize a JSON value before returning its SHA-256 identity."""
+
+    canonical = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hash_text(canonical)
 
 
 class EventLogger(Protocol):
@@ -144,3 +169,14 @@ class JsonlEventLogger:
                 event_file.flush()
         except (OSError, TypeError, ValueError) as error:
             raise EventLogError(f"Failed to write event log: {self.path}") from error
+
+
+class CompositeEventLogger:
+    """Fan out synchronously; sink failures retain the EventLogError contract."""
+
+    def __init__(self, *loggers: EventLogger) -> None:
+        self.loggers = loggers
+
+    def emit(self, event_type: EventType, data: Mapping[str, Any] | None = None) -> None:
+        for logger in self.loggers:
+            logger.emit(event_type, dict(data or {}))

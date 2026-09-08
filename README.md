@@ -10,6 +10,14 @@ LLM response
 
 模型响应在写入 canonical history 前完成协议校验。同一响应中的 Tool Calls 作为完整 batch 顺序执行；暂时性 Provider 错误可在同一 logical turn 内重试；达到 turn 上限但没有自然结束时会明确失败。
 
+### Tool Batch 生命周期
+
+整个 Tool Call batch 在提交 assistant message 和执行任何工具前验证：调用 ID 必须是非空字符串且在 batch 内唯一，调用名称与 arguments 的传输类型必须合法，`finish_reason` 必须与调用列表一致。非法 batch 抛出 `ModelProtocolError`，不会执行其中任何 handler。arguments 字符串的 JSON 解码或工具参数错误仍作为普通 Tool Result 返回。
+
+`AgentSession` 采用保守的失败契约：一次非空提交开始后，只有正常返回才保持可用；任何异常或中断均原样传播，并使 `session.failed` 为 `True`。已有 assistant/tool 历史保留，但 fatal Hook 或事件输出异常可能使 batch 未闭合；缺失结果不表示工具未执行。Runtime 不补造结果、不重放调用，也不回滚文件或进程副作用。后续 `submit()` 在改动历史或调用模型之前抛出 `SessionFailedError`，要求检查 workspace 后调用 `clear()`。
+
+`clear()` 显式丢弃会话历史并解除 failed 状态，不撤销工具副作用；空任务的输入校验失败不会使 Session 进入 failed 状态。直接使用 `run_agent()` / `agent_loop()` 的调用方应在异常后自行丢弃运行或重建会话，不能把可能未闭合的 messages 直接用于下一次运行。
+
 ## Tools
 
 每个 Tool module 通过 `build_tools(context)` 返回零个或多个 `ToolDefinition`。一个 definition 同时拥有 model-facing 元数据与可执行 handler：

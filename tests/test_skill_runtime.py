@@ -93,6 +93,7 @@ class SkillRuntimeTest(unittest.TestCase):
             ]
         )
         logger = RecordingEventLogger()
+        expected_skill_count = len(discover_skills(self.workspace).manifests)
         observed = []
         hooks = ToolHooks()
         hooks.register_pre(
@@ -152,8 +153,11 @@ class SkillRuntimeTest(unittest.TestCase):
         )
         event_types = [event["event_type"] for event in logger.events]
         self.assertIn("tool_started", event_types)
-        self.assertIn("tool_finished", event_types)
-        self.assertEqual(logger.events[0]["data"]["skills_available"], 1)
+        self.assertIn("tool_result", event_types)
+        self.assertEqual(
+            logger.events[0]["data"]["skills_available"],
+            expected_skill_count,
+        )
         self.assertNotIn(
             "PRIVATE_SKILL_BODY_SENTINEL",
             json.dumps(logger.events, ensure_ascii=False),

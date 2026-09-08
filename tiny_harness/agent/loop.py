@@ -9,13 +9,12 @@ from tiny_harness.agent.context import (
     create_run_context,
     initialize_run_state,
     run_started_data,
-    turn_limit_error,
 )
 from tiny_harness.agent.messages import assistant_message_from_response
 from tiny_harness.agent.tool_batch import execute_tool_batch
-from tiny_harness.agent.turn import call_model
+from tiny_harness.agent.turn import call_model, model_request_inputs
 from tiny_harness.models.base import ModelProvider
-from tiny_harness.runtime.context import prepare_context
+from tiny_harness.runtime.context import context_char_count, prepare_context
 from tiny_harness.runtime.events import (
     NULL_EVENT_LOGGER,
     EventLogError,
@@ -49,6 +48,7 @@ def agent_loop(
     try:
         for turn in range(1, context.max_turns + 1):
             context.current_turn = turn
+            finalization = turn == context.max_turns
             prepared = prepare_context(
                 messages,
                 context.compactor,
@@ -59,8 +59,37 @@ def agent_loop(
                 # 只有四层处理和最终验证全部成功后，才提交canonical history。
                 messages[:] = prepared.messages
 
-            response = call_model(messages, context)
+            request_messages, request_tools = model_request_inputs(
+                messages,
+                context,
+                finalization=finalization,
+            )
+            context_chars = context_char_count(request_messages, request_tools)
+            hard_limit = context.max_context_chars
+            soft_limit = context.compactor.soft_limit if context.compactor else None
+            context.event_logger.emit(
+                EventType.CONTEXT_PREPARED,
+                {
+                    "turn": turn,
+                    "context_chars": context_chars,
+                    "soft_limit": soft_limit,
+                    "hard_limit": hard_limit,
+                    **({"finalization": True} if finalization else {}),
+                    "pressure": (
+                        context_chars / hard_limit if hard_limit is not None else None
+                    ),
+                },
+            )
+
+            response = call_model(
+                messages,
+                context,
+                finalization=finalization,
+            )
             assistant_message = assistant_message_from_response(response)
+
+            if finalization and response.tool_calls:
+                raise RuntimeError("Finalization turn cannot request tools")
 
             if not response.tool_calls:
                 answer = response.content or ""
@@ -89,7 +118,7 @@ def agent_loop(
                 context,
             )
 
-        raise turn_limit_error(context)
+        raise RuntimeError("Agent loop ended without a final answer")
     except EventLogError:
         # Event Logger 自身失败时直接上抛，避免再次记录同一个故障。
         raise
@@ -99,6 +128,7 @@ def agent_loop(
             {
                 "turn": context.current_turn,
                 "error_type": type(error).__name__,
+                "last_finish_reason": context.last_finish_reason,
             },
         )
         raise
