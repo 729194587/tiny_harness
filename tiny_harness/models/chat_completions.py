@@ -8,8 +8,9 @@ from openai import OpenAI
 from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.models.base import (
     ModelErrorKind,
-    ModelProvider,
     ModelProviderError,
+    ToolChoice,
+    ToolChoiceModelProvider,
 )
 
 _CONTEXT_ERROR_MARKERS = (
@@ -89,8 +90,10 @@ def _normalize_error(error: Exception) -> ModelProviderError:
     )
 
 
-class ChatCompletionsProvider(ModelProvider):
+class ChatCompletionsProvider(ToolChoiceModelProvider):
     """Normalize a Chat Completions response for the agent loop."""
+
+    supports_tool_choice = True
 
     def __init__(
         self,
@@ -111,6 +114,8 @@ class ChatCompletionsProvider(ModelProvider):
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
         """Request one completion and return the fields used by the loop."""
 
@@ -118,8 +123,10 @@ class ChatCompletionsProvider(ModelProvider):
             "model": self.model,
             "messages": messages,
         }
-        if tools:
+        if tools or tool_choice == "none":
             request["tools"] = tools
+        if tool_choice is not None:
+            request["tool_choice"] = tool_choice
         try:
             response = self._client.chat.completions.create(**request)
         except Exception as error:

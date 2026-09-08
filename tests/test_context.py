@@ -19,7 +19,7 @@ from tiny_harness.runtime.context import (
     ContextLimitError,
     ContextProtocolError,
     ContextSummaryError,
-    context_char_count,
+    context_token_count,
     prepare_context,
     trim_context_blocks,
     validate_active_request,
@@ -106,7 +106,7 @@ class RecordingEventLogger:
 
 
 class ContextPrimitiveTest(unittest.TestCase):
-    def test_character_count_includes_messages_and_tool_schemas(self) -> None:
+    def test_token_estimate_includes_messages_and_tool_schemas(self) -> None:
         messages = [{"role": "user", "content": "你好"}]
         expected = len(
             json.dumps(
@@ -115,13 +115,37 @@ class ContextPrimitiveTest(unittest.TestCase):
                 separators=(",", ":"),
             )
         )
-        self.assertEqual(context_char_count(messages, TOOLS), expected)
+        self.assertEqual(context_token_count(messages, TOOLS), (expected + 3) // 4)
+
+    def test_context_sizing_uses_injected_token_meter(self) -> None:
+        class RecordingMeter:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def estimate(self, messages, tools) -> int:
+                self.calls.append((messages, tools))
+                return 10
+
+        meter = RecordingMeter()
+        compactor = ContextCompactor(
+            Path.cwd(), FakeProvider(), TOOLS, 100, token_meter=meter
+        )
+
+        prepared = prepare_context(
+            [{"role": "user", "content": "task"}],
+            compactor,
+            "No todos.",
+            "task",
+        )
+
+        self.assertEqual(prepared.after_tokens, 10)
+        self.assertGreaterEqual(len(meter.calls), 2)
 
     def test_compatibility_helper_drops_complete_old_blocks(self) -> None:
         prefix = [{"role": "user", "content": "task"}]
         old = tool_block("old")
         latest = tool_block("latest")
-        budget = context_char_count(prefix + latest, TOOLS)
+        budget = context_token_count(prefix + latest, TOOLS)
 
         prepared = trim_context_blocks(prefix + old + latest, TOOLS, budget)
 
@@ -144,9 +168,9 @@ class ContextPrimitiveTest(unittest.TestCase):
             {"role": "tool", "tool_call_id": "a", "content": "a"},
         ]
         with self.assertRaises(ContextProtocolError):
-            trim_context_blocks(orphan, TOOLS, 10_000)
+            trim_context_blocks(orphan, TOOLS, 2_500)
         with self.assertRaises(ContextProtocolError):
-            trim_context_blocks(reordered, TOOLS, 10_000)
+            trim_context_blocks(reordered, TOOLS, 2_500)
 
     def test_active_request_must_match_latest_real_user_message(self) -> None:
         messages = [
@@ -178,12 +202,12 @@ class ContextCompactorTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def compactor(self, provider=None, *, max_chars=10_000, **config):
+    def compactor(self, provider=None, *, max_tokens=2_500, **config):
         return ContextCompactor(
             self.workspace,
             provider or FakeProvider(),
             TOOLS,
-            max_chars,
+            max_tokens,
             config=CompactionConfig(**config),
         )
 
@@ -226,7 +250,7 @@ class ContextCompactorTest(unittest.TestCase):
         prepared = self.prepare(
             self.compactor(
                 provider,
-                max_chars=10_000,
+                max_tokens=2_500,
                 micro_result_chars=120,
             ),
             messages,
@@ -248,7 +272,7 @@ class ContextCompactorTest(unittest.TestCase):
         messages = self.prefix + multi_tool_block(reads) + multi_tool_block(greps)
 
         prepared = self.prepare(
-            self.compactor(max_chars=10_000, micro_result_chars=120),
+            self.compactor(max_tokens=2_500, micro_result_chars=120),
             messages,
         )
 
@@ -262,13 +286,13 @@ class ContextCompactorTest(unittest.TestCase):
     def test_compaction_starts_only_under_pressure(self):
         full_output = "PRESSURE_EVIDENCE_" + "A" * 2_000
         messages = self.prefix + tool_block("large", full_output)
-        measured = context_char_count(messages, TOOLS)
+        measured = context_token_count(messages, TOOLS)
         under_max = (measured * 5 + 3) // 4 + 10
         over_max = (measured * 5) // 4 - 10
 
         under = self.prepare(
             self.compactor(
-                max_chars=under_max,
+                max_tokens=under_max,
                 large_result_chars=100,
                 result_preview_chars=40,
             ),
@@ -276,7 +300,7 @@ class ContextCompactorTest(unittest.TestCase):
         )
         over = self.prepare(
             self.compactor(
-                max_chars=over_max,
+                max_tokens=over_max,
                 large_result_chars=100,
                 result_preview_chars=40,
             ),
@@ -299,13 +323,13 @@ class ContextCompactorTest(unittest.TestCase):
             (self.workspace / relative).read_text(encoding="utf-8"),
             full_output,
         )
-        self.assertLessEqual(over.after_chars, int(over_max * 0.8))
+        self.assertLessEqual(over.after_tokens, int(over_max * 0.8))
 
     def test_compaction_event_identifies_persisted_tool_results(self):
         logger = RecordingEventLogger()
         full_output = "AUDITABLE_RESULT_" + "A" * 2_000
         messages = self.prefix + tool_block("read-a", full_output)
-        measured = context_char_count(messages, TOOLS)
+        measured = context_token_count(messages, TOOLS)
         compactor = ContextCompactor(
             self.workspace,
             FakeProvider(),
@@ -328,6 +352,65 @@ class ContextCompactorTest(unittest.TestCase):
         )
         self.assertEqual(compacted["persisted_tool_call_ids"], ["read-a"])
 
+    def test_trigger_at_eighty_percent_compacts_old_results_to_fifty_five_percent(self):
+        provider = FakeProvider()
+        old_a = tool_block("old-a", "A" * 2_600)
+        old_b = tool_block("old-b", "B" * 2_600)
+        old_c = tool_block("old-c", "C" * 2_600)
+        recent = tool_block("recent", "RECENT_" + "R" * 800)
+        messages = self.prefix + old_a + old_b + old_c + recent
+        compactor = self.compactor(
+            provider,
+            max_tokens=2_500,
+            result_preview_chars=40,
+        )
+
+        prepared = self.prepare(compactor, messages)
+
+        self.assertGreater(context_token_count(messages, TOOLS), compactor.soft_limit)
+        self.assertLessEqual(prepared.after_tokens, compactor.target_limit)
+        self.assertEqual(prepared.persisted_tool_call_ids, ("old-a", "old-b"))
+        self.assertEqual(prepared.messages[-2:], recent)
+        self.assertFalse(prepared.summarized)
+        self.assertEqual(provider.calls, [])
+
+    def test_persisted_result_keeps_bounded_evidence_stub_and_full_artifact(self):
+        full_output = "IDENTIFYING_HEAD_" + "X" * 5_000 + "_IDENTIFYING_TAIL"
+        messages = self.prefix + tool_block("read-source", full_output)
+        messages[-2]["tool_calls"][0]["function"] = {
+            "name": "read_file",
+            "arguments": json.dumps(
+                {"path": "src/important.py", "extra": "Y" * 1_000}
+            ),
+        }
+        compactor = self.compactor(
+            max_tokens=1_250,
+            result_preview_chars=80,
+        )
+
+        prepared = self.prepare(compactor, messages)
+
+        stub = prepared.messages[-1]["content"]
+        self.assertIn("Tool: read_file", stub)
+        self.assertIn('Arguments: {"path": "src/important.py"', stub)
+        self.assertIn("...[arguments truncated]", stub)
+        self.assertIn(
+            "Content SHA-256: " + hashlib.sha256(full_output.encode()).hexdigest(),
+            stub,
+        )
+        self.assertIn("IDENTIFYING_HEAD_", stub)
+        self.assertIn("IDENTIFYING_TAIL", stub)
+        self.assertNotIn("X" * 1_000, stub)
+        relative = next(
+            line.removeprefix("Full output: ")
+            for line in stub.splitlines()
+            if line.startswith("Full output: ")
+        )
+        self.assertEqual(
+            (self.workspace / relative).read_text(encoding="utf-8"),
+            full_output,
+        )
+
     def test_message_count_alone_does_not_trigger_compaction(self):
         messages = self.prefix + [
             {"role": "assistant", "content": f"short-{index}"}
@@ -336,7 +419,7 @@ class ContextCompactorTest(unittest.TestCase):
         provider = FakeProvider()
 
         prepared = self.prepare(
-            self.compactor(provider, max_chars=100_000, max_messages=50),
+            self.compactor(provider, max_tokens=25_000, max_messages=50),
             messages,
         )
 
@@ -358,7 +441,7 @@ class ContextCompactorTest(unittest.TestCase):
 
         prepared = self.prepare(
             self.compactor(
-                max_chars=5_000,
+                max_tokens=1_250,
                 large_result_chars=500,
                 result_preview_chars=40,
             ),
@@ -367,7 +450,7 @@ class ContextCompactorTest(unittest.TestCase):
 
         self.assertEqual(prepared.messages[-6:], recent_a + recent_b)
         self.assertEqual(prepared.persisted_results, 1)
-        self.assertLessEqual(prepared.after_chars, 4_000)
+        self.assertLessEqual(prepared.after_tokens, 1_000)
 
     def test_progressive_compression_summarizes_only_when_pruning_is_insufficient(self):
         prune_provider = FakeProvider()
@@ -379,7 +462,7 @@ class ContextCompactorTest(unittest.TestCase):
         pruned = self.prepare(
             self.compactor(
                 prune_provider,
-                max_chars=5_000,
+                max_tokens=1_250,
                 large_result_chars=500,
                 result_preview_chars=40,
             ),
@@ -395,7 +478,7 @@ class ContextCompactorTest(unittest.TestCase):
             + tool_block("latest", "LATEST")
         )
         summarized = self.prepare(
-            self.compactor(summary_provider, max_chars=3_500),
+            self.compactor(summary_provider, max_tokens=875),
             summary_messages,
         )
 
@@ -404,7 +487,7 @@ class ContextCompactorTest(unittest.TestCase):
         self.assertEqual(prune_provider.calls, [])
         self.assertTrue(summarized.summarized)
         self.assertEqual(len(summary_provider.calls), 1)
-        self.assertLessEqual(summarized.after_chars, 2_800)
+        self.assertLessEqual(summarized.after_tokens, 700)
 
     def test_tool_batch_is_atomic_during_compaction(self):
         latest_batch = multi_tool_block(
@@ -422,7 +505,7 @@ class ContextCompactorTest(unittest.TestCase):
 
         prepared = self.prepare(
             self.compactor(
-                max_chars=5_000,
+                max_tokens=1_250,
                 large_result_chars=500,
                 result_preview_chars=40,
             ),
@@ -449,7 +532,7 @@ class ContextCompactorTest(unittest.TestCase):
         )
 
         prepared = self.prepare(
-            self.compactor(provider, max_chars=2_000, max_messages=3),
+            self.compactor(provider, max_tokens=500, max_messages=3),
             messages,
         )
 
@@ -470,7 +553,7 @@ class ContextCompactorTest(unittest.TestCase):
         )
 
         prepared = self.prepare(
-            self.compactor(max_chars=100_000),
+            self.compactor(max_tokens=25_000),
             messages,
         )
 
@@ -493,7 +576,7 @@ class ContextCompactorTest(unittest.TestCase):
             self.workspace,
             provider,
             TOOLS,
-            1_800,
+            450,
             config=CompactionConfig(max_messages=50),
         )
 
@@ -520,7 +603,7 @@ class ContextCompactorTest(unittest.TestCase):
             self.workspace,
             provider,
             TOOLS,
-            1_800,
+            450,
             config=CompactionConfig(max_messages=50),
         )
 
@@ -554,7 +637,7 @@ class ContextCompactorTest(unittest.TestCase):
             + latest_batch
         )
 
-        prepared = trim_context_blocks(messages, TOOLS, 1_000)
+        prepared = trim_context_blocks(messages, TOOLS, 250)
 
         self.assertIn({"role": "user", "content": "CURRENT_TASK"}, prepared.messages)
         self.assertEqual(prepared.messages[-3:], latest_batch)
@@ -589,19 +672,19 @@ class ContextCompactorTest(unittest.TestCase):
             self.workspace,
             provider,
             TOOLS,
-            1_500,
+            375,
             config=CompactionConfig(max_messages=50),
         )
 
         prepared = self.prepare(compactor, messages, "[>] CURRENT_TODO")
 
         self.assertTrue(prepared.summarized)
-        self.assertLessEqual(prepared.after_chars, 1_500)
+        self.assertLessEqual(prepared.after_tokens, 375)
         self.assertEqual(len(provider.calls), 1)
         self.assertEqual(provider.calls[0]["tools"], [])
         self.assertLessEqual(
-            context_char_count(provider.calls[0]["messages"], []),
-            1_500,
+            context_token_count(provider.calls[0]["messages"], []),
+            375,
         )
         compacted_json = json.dumps(prepared.messages, ensure_ascii=False)
         self.assertIn("ORIGINAL_TASK", compacted_json)
@@ -622,7 +705,7 @@ class ContextCompactorTest(unittest.TestCase):
             self.workspace,
             provider,
             TOOLS,
-            1_500,
+            375,
         )
         original = copy.deepcopy(messages)
 
@@ -645,7 +728,7 @@ class ContextCompactorTest(unittest.TestCase):
             self.workspace,
             provider,
             TOOLS,
-            300,
+            75,
         )
 
         with self.assertRaises(ContextLimitError):
@@ -659,22 +742,22 @@ class ContextCompactorTest(unittest.TestCase):
             + tool_block("old", "old", assistant_text="X" * 10_000)
             + tool_block("latest", "LATEST_EVIDENCE")
         )
-        failed_chars = context_char_count(messages, TOOLS)
+        failed_tokens = context_token_count(messages, TOOLS)
 
         prepared = self.compactor(
             provider,
-            max_chars=100_000,
+            max_tokens=25_000,
             reactive_target_ratio=0.75,
         ).reactive_compact(
             messages,
             "[>] CURRENT_TODO",
-            failed_request_chars=failed_chars,
+            failed_request_tokens=failed_tokens,
         )
 
-        self.assertLessEqual(prepared.after_chars, int(failed_chars * 0.75))
+        self.assertLessEqual(prepared.after_tokens, int(failed_tokens * 0.75))
         self.assertLessEqual(
-            context_char_count(provider.calls[0]["messages"], []),
-            int(failed_chars * 0.75),
+            context_token_count(provider.calls[0]["messages"], []),
+            int(failed_tokens * 0.75),
         )
         compacted = json.dumps(prepared.messages, ensure_ascii=False)
         self.assertIn("ORIGINAL_TASK", compacted)
@@ -691,7 +774,7 @@ class ContextCompactorTest(unittest.TestCase):
             self.compactor(provider).reactive_compact(
                 messages,
                 "No todos.",
-                failed_request_chars=context_char_count(messages, TOOLS),
+                failed_request_tokens=context_token_count(messages, TOOLS),
             )
 
         self.assertEqual(provider.calls, [])
@@ -708,7 +791,7 @@ class ContextCompactorTest(unittest.TestCase):
             with self.assertRaises(ContextArtifactError):
                 self.prepare(
                     self.compactor(
-                        max_chars=5_000,
+                        max_tokens=1_250,
                         tool_result_batch_chars=1_000,
                         large_result_chars=100,
                     ),
@@ -776,7 +859,7 @@ class ContextAgentLoopTest(unittest.TestCase):
             provider,
             self.workspace,
             [{"role": "user", "content": "task"}],
-            max_context_chars=100_000,
+            max_context_tokens=25_000,
         )
 
         names = [schema["function"]["name"] for schema in provider.calls[0]["tools"]]
@@ -801,7 +884,7 @@ class ContextAgentLoopTest(unittest.TestCase):
             self.workspace,
             messages,
             max_turns=1,
-            max_context_chars=7_000,
+            max_context_tokens=1_750,
             event_logger=logger,
         )
 
@@ -842,7 +925,7 @@ class ContextAgentLoopTest(unittest.TestCase):
                 self.workspace,
                 messages,
                 max_turns=1,
-                max_context_chars=6_000,
+                max_context_tokens=1_500,
                 skill_catalog=discover_skills(self.workspace, sources=()),
             )
 
@@ -869,7 +952,7 @@ class ContextAgentLoopTest(unittest.TestCase):
             self.workspace,
             messages,
             max_turns=1,
-            max_context_chars=7_000,
+            max_context_tokens=1_750,
             event_logger=logger,
             recovery_policy=RecoveryPolicy(
                 max_retries=1,
@@ -921,7 +1004,7 @@ class ContextAgentLoopTest(unittest.TestCase):
             provider,
             self.workspace,
             messages,
-            max_context_chars=100_000,
+            max_context_tokens=25_000,
         )
 
         self.assertEqual(answer, "finished")
@@ -965,7 +1048,7 @@ class ContextAgentLoopTest(unittest.TestCase):
                 provider,
                 self.workspace,
                 [{"role": "user", "content": "task"}],
-                max_context_chars=100_000,
+                max_context_tokens=25_000,
                 tool_hooks=hooks,
             )
 
@@ -1000,7 +1083,7 @@ class ContextAgentLoopTest(unittest.TestCase):
             self.workspace,
             messages,
             max_turns=1,
-            max_context_chars=100_000,
+            max_context_tokens=25_000,
             event_logger=logger,
             recovery_policy=RecoveryPolicy(
                 max_retries=0,
@@ -1023,8 +1106,8 @@ class ContextAgentLoopTest(unittest.TestCase):
             and event["data"]["reason"] == "reactive"
         )
         self.assertLessEqual(
-            compacted["after_chars"],
-            int(compacted["before_chars"] * 0.75),
+            compacted["after_tokens"],
+            int(compacted["before_tokens"] * 0.75),
         )
         requested = [
             event["data"]
@@ -1057,7 +1140,7 @@ class ContextAgentLoopTest(unittest.TestCase):
                 self.workspace,
                 messages,
                 max_turns=1,
-                max_context_chars=100_000,
+                max_context_tokens=25_000,
                 event_logger=logger,
                 recovery_policy=RecoveryPolicy(max_retries=0),
             )
@@ -1093,7 +1176,7 @@ class ContextAgentLoopTest(unittest.TestCase):
             self.workspace,
             messages,
             max_turns=1,
-            max_context_chars=100_000,
+            max_context_tokens=25_000,
             event_logger=logger,
             recovery_policy=RecoveryPolicy(
                 max_retries=2,

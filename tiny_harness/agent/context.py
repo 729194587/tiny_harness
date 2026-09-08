@@ -9,6 +9,7 @@ from typing import Any
 
 from tiny_harness.agent.messages import ModelResponse
 from tiny_harness.agent.subagent import SubagentExecutor
+from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter
 from tiny_harness.memory import MemoryRuntime, create_memory_runtime
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.context import CompactionRequest, ContextCompactor
@@ -49,7 +50,8 @@ class AgentRunContext:
     provider: ModelProvider
     workspace: Path
     tool_registry: ToolRegistry
-    max_context_chars: int | None
+    max_context_tokens: int | None
+    token_meter: TokenMeter
     max_turns: int
     subagent_max_turns: int
     allow_subagent: bool
@@ -68,6 +70,7 @@ class AgentRunContext:
     final_answer_hook: FinalAnswerHook | None
     test_runner: TestRunner | None
     permission_rejections: PermissionRejectionTracker
+    is_main_agent: bool = True
     current_turn: int = 0
     rounds_since_todo: int = 0
     last_finish_reason: str | None = None
@@ -88,8 +91,8 @@ def run_started_data(context: AgentRunContext) -> dict[str, Any]:
     }
     if context.allow_subagent:
         data["subagent_max_turns"] = context.subagent_max_turns
-    if context.max_context_chars is not None:
-        data["max_context_chars"] = context.max_context_chars
+    if context.max_context_tokens is not None:
+        data["max_context_tokens"] = context.max_context_tokens
     if context.skill_catalog.manifests or context.skill_catalog.issues:
         data["skills_available"] = len(context.skill_catalog.manifests)
         data["skill_discovery_issues"] = len(context.skill_catalog.issues)
@@ -117,13 +120,13 @@ ModelCompletion = Callable[
 def _validate_run_configuration(
     *,
     max_turns: int,
-    max_context_chars: int | None,
+    max_context_tokens: int | None,
     subagent_max_turns: int,
 ) -> None:
     if max_turns < 1:
         raise ValueError("max_turns must be at least 1")
-    if max_context_chars is not None and max_context_chars < 1:
-        raise ValueError("max_context_chars must be at least 1")
+    if max_context_tokens is not None and max_context_tokens < 1:
+        raise ValueError("max_context_tokens must be at least 1")
     if subagent_max_turns < 1:
         raise ValueError("subagent_max_turns must be at least 1")
 
@@ -154,17 +157,19 @@ def _compactor(
     workspace: Path,
     provider: ModelProvider,
     tools: list[dict[str, Any]],
-    max_context_chars: int | None,
+    max_context_tokens: int | None,
+    token_meter: TokenMeter,
     complete_for: ModelCompletion,
     event_logger: EventLogger,
 ) -> ContextCompactor | None:
-    if max_context_chars is None:
+    if max_context_tokens is None:
         return None
     return ContextCompactor(
         workspace,
         provider,
         tools,
-        max_context_chars,
+        max_context_tokens,
+        token_meter=token_meter,
         event_logger=event_logger,
         summary_complete=lambda messages, schemas: complete_for(
             "summary", messages, schemas
@@ -181,7 +186,8 @@ def _subagent_runner(
     permission_policy: PermissionPolicy,
     permission_prompt: PermissionPrompt | None,
     event_logger: EventLogger,
-    max_context_chars: int | None,
+    max_context_tokens: int | None,
+    token_meter: TokenMeter,
     tool_hooks: ToolHooks | None,
     recovery_policy: RecoveryPolicy,
     skill_catalog: SkillCatalog,
@@ -203,7 +209,8 @@ def _subagent_runner(
         permission_policy=permission_policy,
         permission_prompt=permission_prompt,
         event_logger=event_logger,
-        max_context_chars=max_context_chars,
+        max_context_tokens=max_context_tokens,
+        token_meter=token_meter,
         tool_hooks=tool_hooks,
         recovery_policy=recovery_policy,
         skill_catalog=skill_catalog,
@@ -220,7 +227,8 @@ def create_run_context(
     permission_policy: PermissionPolicy = DEFAULT_PERMISSION_POLICY,
     permission_prompt: PermissionPrompt | None = None,
     event_logger: EventLogger = NULL_EVENT_LOGGER,
-    max_context_chars: int | None = None,
+    max_context_tokens: int | None = None,
+    token_meter: TokenMeter = DEFAULT_TOKEN_METER,
     tool_hooks: ToolHooks | None = None,
     subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS,
     allow_subagent: bool = True,
@@ -229,12 +237,13 @@ def create_run_context(
     skill_catalog: SkillCatalog | None = None,
     memory_enabled: bool = False,
     memory_extraction_enabled: bool = True,
+    is_main_agent: bool = True,
 ) -> AgentRunContext:
     """Compose one run from top-level policy to concrete runtime state."""
 
     _validate_run_configuration(
         max_turns=max_turns,
-        max_context_chars=max_context_chars,
+        max_context_tokens=max_context_tokens,
         subagent_max_turns=subagent_max_turns,
     )
 
@@ -248,7 +257,7 @@ def create_run_context(
     )
     todo_manager = TodoManager()
     compaction_request = (
-        CompactionRequest() if max_context_chars is not None else None
+        CompactionRequest() if max_context_tokens is not None else None
     )
 
     recovery = RecoveryExecutor(recovery_policy, event_logger=event_logger)
@@ -264,7 +273,8 @@ def create_run_context(
         extraction_enabled=memory_extraction_enabled,
         complete_for=complete_for,
         event_logger=event_logger,
-        max_context_chars=max_context_chars,
+        max_context_tokens=max_context_tokens,
+        token_meter=token_meter,
     )
 
     subagent = _subagent_runner(
@@ -275,7 +285,8 @@ def create_run_context(
         permission_policy=permission_policy,
         permission_prompt=permission_prompt,
         event_logger=event_logger,
-        max_context_chars=max_context_chars,
+        max_context_tokens=max_context_tokens,
+        token_meter=token_meter,
         tool_hooks=tool_hooks,
         recovery_policy=recovery_policy,
         skill_catalog=active_skill_catalog,
@@ -286,7 +297,8 @@ def create_run_context(
         provider=provider,
         workspace=workspace,
         tool_registry=ToolRegistry(),
-        max_context_chars=max_context_chars,
+        max_context_tokens=max_context_tokens,
+        token_meter=token_meter,
         max_turns=max_turns,
         subagent_max_turns=subagent_max_turns,
         allow_subagent=allow_subagent,
@@ -305,13 +317,15 @@ def create_run_context(
         final_answer_hook=memory.final_answer_hook,
         test_runner=test_runner,
         permission_rejections=PermissionRejectionTracker(),
+        is_main_agent=is_main_agent,
     )
     context.tool_registry = discover_tools(context)
     context.compactor = _compactor(
         workspace,
         provider,
         context.tools,
-        max_context_chars,
+        max_context_tokens,
+        token_meter,
         complete_for,
         event_logger,
     )

@@ -466,6 +466,34 @@ class EventLifecycleTest(unittest.TestCase):
             "run_failed", [event["event_type"] for event in logger.events]
         )
 
+    def test_finalization_tool_call_produces_no_tool_events_and_finishes(self) -> None:
+        logger = RecordingEventLogger()
+        provider = FakeProvider(
+            [
+                ModelResponse(
+                    "best available answer",
+                    None,
+                    [ToolCall("forbidden-1", "list_files", "{}")],
+                    "tool_calls",
+                )
+            ]
+        )
+
+        answer = agent_loop(
+            provider,
+            self.workspace,
+            [],
+            max_turns=1,
+            event_logger=logger,
+        )
+
+        self.assertEqual(answer, "best available answer")
+        event_names = [event["event_type"] for event in logger.events]
+        self.assertNotIn("tool_called", event_names)
+        self.assertNotIn("tool_started", event_names)
+        self.assertNotIn("tool_result", event_names)
+        self.assertEqual(event_names[-1], "run_finished")
+
     def test_context_and_turn_budget_are_recorded_for_each_main_request(self) -> None:
         logger = RecordingEventLogger()
         provider = FakeProvider(
@@ -485,7 +513,7 @@ class EventLifecycleTest(unittest.TestCase):
             self.workspace,
             [{"role": "user", "content": "inspect"}],
             max_turns=2,
-            max_context_chars=100_000,
+            max_context_tokens=25_000,
             event_logger=logger,
         )
 
@@ -499,8 +527,8 @@ class EventLifecycleTest(unittest.TestCase):
             [item.get("finalization", False) for item in prepared],
             [False, True],
         )
-        self.assertTrue(all(item["hard_limit"] == 100_000 for item in prepared))
-        self.assertTrue(all(item["soft_limit"] == 80_000 for item in prepared))
+        self.assertTrue(all(item["hard_limit"] == 25_000 for item in prepared))
+        self.assertTrue(all(item["soft_limit"] == 20_000 for item in prepared))
         self.assertTrue(all(item["pressure"] < 1 for item in prepared))
         self.assertFalse(
             any(event["event_type"] == "context_compacted" for event in logger.events)
@@ -518,8 +546,8 @@ class EventLifecycleTest(unittest.TestCase):
             [False, True],
         )
         self.assertEqual(
-            [item["context_chars"] for item in requested],
-            [item["context_chars"] for item in prepared],
+            [item["context_tokens"] for item in requested],
+            [item["context_tokens"] for item in prepared],
         )
         responded = [
             event["data"]

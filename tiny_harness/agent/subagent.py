@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from pathlib import Path
 
+from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import EventLogger, ScopedEventLogger, EventType, EventLogError
 from tiny_harness.runtime.hooks import ToolHooks
@@ -27,7 +28,8 @@ class SubagentExecutor:
         permission_policy: PermissionPolicy,
         permission_prompt: PermissionPrompt | None,
         event_logger: EventLogger,
-        max_context_chars: int | None,
+        max_context_tokens: int | None,
+        token_meter: TokenMeter = DEFAULT_TOKEN_METER,
         tool_hooks: ToolHooks | None,
         recovery_policy: RecoveryPolicy,
         skill_catalog: SkillCatalog,
@@ -41,7 +43,8 @@ class SubagentExecutor:
         self.permission_policy = permission_policy
         self.permission_prompt = permission_prompt
         self.event_logger = event_logger
-        self.max_context_chars = max_context_chars
+        self.max_context_tokens = max_context_tokens
+        self.token_meter = token_meter
         self.tool_hooks = tool_hooks
         self.recovery_policy = recovery_policy
         self.skill_catalog = skill_catalog
@@ -77,7 +80,8 @@ class SubagentExecutor:
                 permission_policy=self.permission_policy,
                 permission_prompt=self.permission_prompt,
                 event_logger=child_logger,
-                max_context_chars=self.max_context_chars,
+                max_context_tokens=self.max_context_tokens,
+                token_meter=self.token_meter,
                 tool_hooks=self.tool_hooks,
                 subagent_max_turns=self.max_turns,
                 allow_subagent=False,
@@ -86,6 +90,7 @@ class SubagentExecutor:
                 test_runner=self.test_runner,
                 memory_enabled=self.memory_enabled,
                 memory_extraction_enabled=False,
+                is_main_agent=False,
             )
         except EventLogError:
             raise

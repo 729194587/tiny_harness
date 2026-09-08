@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +17,7 @@ from tiny_harness.runtime.recovery import RecoveryPolicy
 
 DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MAX_CONTEXT_CHARS = 100_000
+DEFAULT_MAX_CONTEXT_TOKENS = 125_000
 
 
 def _positive_int(value: str) -> int:
@@ -72,17 +72,17 @@ def _parser() -> argparse.ArgumentParser:
     output_group.add_argument("--verbose", action="store_true", help="额外显示耗时、上下文和模型运行信息")
     context_group = parser.add_mutually_exclusive_group()
     context_group.add_argument(
-        "--max-context-chars",
+        "--max-context-tokens",
         type=_positive_int,
-        default=DEFAULT_MAX_CONTEXT_CHARS,
+        default=DEFAULT_MAX_CONTEXT_TOKENS,
         help=(
-            "发送给模型的 compact JSON 上下文字符上限"
-            f"（默认：{DEFAULT_MAX_CONTEXT_CHARS}）"
+            "发送给模型的估算上下文 token 上限"
+            f"（默认：{DEFAULT_MAX_CONTEXT_TOKENS}）"
         ),
     )
     context_group.add_argument(
         "--no-context-compaction",
-        dest="max_context_chars",
+        dest="max_context_tokens",
         action="store_const",
         const=None,
         help="关闭上下文预算与压缩",
@@ -126,7 +126,7 @@ def _ask_permission(tool_name: str, arguments: Mapping[str, Any]) -> bool:
 def _system_prompt(
     workspace: Path,
     *,
-    max_context_chars: int | None,
+    max_context_tokens: int | None,
     memory_enabled: bool = False,
 ) -> str:
     shell_name = "cmd.exe" if os.name == "nt" else "/bin/sh"
@@ -140,6 +140,9 @@ def _system_prompt(
         "When the information already available is sufficient to answer the user's request "
         "reliably, stop using tools and provide the answer. "
         "Do not continue searching only to reconfirm facts that are already established. "
+        "Treat the remaining main-agent turn budget as a finite resource. Use tools only "
+        "for evidence gaps that genuinely block a reliable answer, and increasingly "
+        "prioritize synthesis and completion as that budget decreases. "
         "Do not repeat completed investigation unless the earlier evidence is no longer "
         "available or a new uncertainty makes it necessary. "
         "Match the amount of investigation and verification to the task. "
@@ -154,7 +157,7 @@ def _system_prompt(
         "completed, and do not repeat delegated investigation in the parent unless necessary."
     )
 
-    if max_context_chars is not None:
+    if max_context_tokens is not None:
         prompt += (
             " Use compact after completing a stage when older details can be "
             "replaced by a factual summary. Treat TinyHarness context summaries "
@@ -176,12 +179,13 @@ def _run_repl(
     *,
     model: str,
     workspace: Path,
-    max_context_chars: int | None,
+    max_context_tokens: int | None,
     quiet: bool = False,
+    console_provider: Callable[[], ConsoleEventLogger | None] | None = None,
 ) -> int:
     context_label = (
-        f"{max_context_chars:,} 字符"
-        if max_context_chars is not None
+        f"{max_context_tokens:,} tokens（估算）"
+        if max_context_tokens is not None
         else "已关闭"
     )
     if not quiet:
@@ -211,7 +215,10 @@ def _run_repl(
             continue
 
         answer = session.submit(task)
-        print(f"\n助手> {answer}\n")
+        print(f"\n助手> {answer}")
+        console = console_provider() if console_provider is not None else None
+        summary = console.summary(model=model) if console is not None else ""
+        print(f"\n{summary}\n" if summary else "")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -249,13 +256,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         workspace,
         _system_prompt(
             workspace,
-            max_context_chars=args.max_context_chars,
+            max_context_tokens=args.max_context_tokens,
             memory_enabled=args.memory,
         ),
         max_turns=args.max_turns,
         permission_prompt=_ask_permission,
         event_logger_factory=event_logger_factory,
-        max_context_chars=args.max_context_chars,
+        max_context_tokens=args.max_context_tokens,
         subagent_max_turns=args.subagent_max_turns,
         recovery_policy=RecoveryPolicy(max_retries=args.max_model_retries),
         memory_enabled=args.memory,
@@ -267,12 +274,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 session,
                 model=model,
                 workspace=workspace,
-                max_context_chars=args.max_context_chars,
+                max_context_tokens=args.max_context_tokens,
                 quiet=args.quiet,
+                console_provider=lambda: console,
             )
 
         answer = session.submit(args.task)
         print(answer)
+        if console is not None and (summary := console.summary(model=model)):
+            print(f"\n{summary}")
         return 0
     except Exception as error:
         # Exception messages and tracebacks can include arguments or tool content.

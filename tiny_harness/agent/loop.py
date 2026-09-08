@@ -10,11 +10,12 @@ from tiny_harness.agent.context import (
     initialize_run_state,
     run_started_data,
 )
-from tiny_harness.agent.messages import assistant_message_from_response
+from tiny_harness.agent.messages import ModelResponse, assistant_message_from_response
 from tiny_harness.agent.tool_batch import execute_tool_batch
 from tiny_harness.agent.turn import call_model, model_request_inputs
+from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter
 from tiny_harness.models.base import ModelProvider
-from tiny_harness.runtime.context import context_char_count, prepare_context
+from tiny_harness.runtime.context import context_token_count, prepare_context
 from tiny_harness.runtime.events import (
     NULL_EVENT_LOGGER,
     EventLogError,
@@ -64,19 +65,21 @@ def agent_loop(
                 context,
                 finalization=finalization,
             )
-            context_chars = context_char_count(request_messages, request_tools)
-            hard_limit = context.max_context_chars
+            context_tokens = context_token_count(
+                request_messages, request_tools, context.token_meter
+            )
+            hard_limit = context.max_context_tokens
             soft_limit = context.compactor.soft_limit if context.compactor else None
             context.event_logger.emit(
                 EventType.CONTEXT_PREPARED,
                 {
                     "turn": turn,
-                    "context_chars": context_chars,
+                    "context_tokens": context_tokens,
                     "soft_limit": soft_limit,
                     "hard_limit": hard_limit,
                     **({"finalization": True} if finalization else {}),
                     "pressure": (
-                        context_chars / hard_limit if hard_limit is not None else None
+                        context_tokens / hard_limit if hard_limit is not None else None
                     ),
                 },
             )
@@ -86,10 +89,14 @@ def agent_loop(
                 context,
                 finalization=finalization,
             )
-            assistant_message = assistant_message_from_response(response)
-
             if finalization and response.tool_calls:
-                raise RuntimeError("Finalization turn cannot request tools")
+                response = ModelResponse(
+                    content=response.content,
+                    reasoning_content=response.reasoning_content,
+                    tool_calls=[],
+                    finish_reason="stop",
+                )
+            assistant_message = assistant_message_from_response(response)
 
             if not response.tool_calls:
                 answer = response.content or ""
@@ -143,7 +150,8 @@ def run_agent(
     permission_policy: PermissionPolicy = DEFAULT_PERMISSION_POLICY,
     permission_prompt: PermissionPrompt | None = None,
     event_logger: EventLogger = NULL_EVENT_LOGGER,
-    max_context_chars: int | None = None,
+    max_context_tokens: int | None = None,
+    token_meter: TokenMeter = DEFAULT_TOKEN_METER,
     tool_hooks: ToolHooks | None = None,
     subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS,
     allow_subagent: bool = True,
@@ -152,6 +160,7 @@ def run_agent(
     skill_catalog: SkillCatalog | None = None,
     memory_enabled: bool = False,
     memory_extraction_enabled: bool = True,
+    is_main_agent: bool = True,
 ) -> str:
     """兼容配置入口：装配运行上下文后进入三参数核心循环。"""
 
@@ -162,7 +171,8 @@ def run_agent(
         permission_policy=permission_policy,
         permission_prompt=permission_prompt,
         event_logger=event_logger,
-        max_context_chars=max_context_chars,
+        max_context_tokens=max_context_tokens,
+        token_meter=token_meter,
         tool_hooks=tool_hooks,
         subagent_max_turns=subagent_max_turns,
         allow_subagent=allow_subagent,
@@ -171,6 +181,7 @@ def run_agent(
         skill_catalog=skill_catalog,
         memory_enabled=memory_enabled,
         memory_extraction_enabled=memory_extraction_enabled,
+        is_main_agent=is_main_agent,
     )
     active_request = next(
         (

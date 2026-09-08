@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter
+
 from tiny_harness.agent.messages import ModelResponse
 from tiny_harness.runtime.events import EventLogError, EventLogger, EventType
 from tiny_harness.runtime.hooks import FinalAnswerHook, FinalAnswerHookContext
@@ -96,7 +98,8 @@ class MemoryRuntime:
     _catalog: MemoryCatalog
     _complete_for: MemoryCompletionRouter
     _event_logger: EventLogger
-    _max_context_chars: int | None
+    _max_context_tokens: int | None
+    _token_meter: TokenMeter
     final_answer_hook: FinalAnswerHook | None
 
     def run_metadata(self) -> dict[str, Any]:
@@ -128,7 +131,8 @@ class MemoryRuntime:
                     tools,
                 ),
                 self._event_logger,
-                max_context_chars=self._max_context_chars,
+                max_context_tokens=self._max_context_tokens,
+                token_meter=self._token_meter,
             )
             return
         upsert_memory_markers(
@@ -145,7 +149,8 @@ def create_memory_runtime(
     extraction_enabled: bool,
     complete_for: MemoryCompletionRouter,
     event_logger: EventLogger,
-    max_context_chars: int | None = None,
+    max_context_tokens: int | None = None,
+    token_meter: TokenMeter = DEFAULT_TOKEN_METER,
 ) -> MemoryRuntime:
     """Compose one complete Memory lifecycle behind its Agent-facing facade."""
 
@@ -168,7 +173,8 @@ def create_memory_runtime(
                 tools,
             ),
             event_logger,
-            max_context_chars=max_context_chars,
+            max_context_tokens=max_context_tokens,
+            token_meter=token_meter,
         )
         if enabled and extraction_enabled
         else None
@@ -178,7 +184,8 @@ def create_memory_runtime(
         _catalog=catalog,
         _complete_for=complete_for,
         _event_logger=event_logger,
-        _max_context_chars=max_context_chars,
+        _max_context_tokens=max_context_tokens,
+        _token_meter=token_meter,
         final_answer_hook=final_answer_hook,
     )
 
@@ -193,7 +200,8 @@ def prepare_memory_context(
     complete: MemoryComplete,
     event_logger: EventLogger,
     *,
-    max_context_chars: int | None = None,
+    max_context_tokens: int | None = None,
+    token_meter: TokenMeter = DEFAULT_TOKEN_METER,
 ) -> MemorySelection:
     """Select, load, inject, and report relevant Memory for one run."""
 
@@ -202,7 +210,8 @@ def prepare_memory_context(
         messages,
         active_request,
         complete,
-        max_context_chars=max_context_chars,
+        max_context_tokens=max_context_tokens,
+        token_meter=token_meter,
     )
     loaded = load_relevant_memories(catalog, selection.filenames)
     upsert_memory_markers(messages, catalog, loaded)
@@ -227,7 +236,8 @@ def create_memory_final_answer_hook(
     consolidation_complete: MemoryComplete,
     event_logger: EventLogger,
     *,
-    max_context_chars: int | None = None,
+    max_context_tokens: int | None = None,
+    token_meter: TokenMeter = DEFAULT_TOKEN_METER,
 ) -> FinalAnswerHook:
     """Create a fail-open observer that extracts before returning an answer."""
 
@@ -242,7 +252,8 @@ def create_memory_final_answer_hook(
                 context.messages,
                 context.final_answer,
                 extraction_complete,
-                max_context_chars=max_context_chars,
+                max_context_tokens=max_context_tokens,
+                token_meter=token_meter,
             )
         except EventLogError:
             raise
@@ -268,7 +279,8 @@ def create_memory_final_answer_hook(
                 catalog.workspace,
                 consolidation_complete,
                 event_logger,
-                max_context_chars=max_context_chars,
+                max_context_tokens=max_context_tokens,
+                token_meter=token_meter,
             )
 
     return memory_final_answer_hook
@@ -316,14 +328,10 @@ def format_memory_catalog(
     return render(selected)
 
 
-def _request_char_count(messages: list[dict[str, Any]]) -> int:
-    return len(
-        json.dumps(
-            {"messages": messages, "tools": []},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-    )
+def _request_token_count(
+    messages: list[dict[str, Any]], token_meter: TokenMeter
+) -> int:
+    return token_meter.estimate(messages, [])
 
 
 def _recent_user_text(
@@ -437,7 +445,8 @@ def select_relevant_memories(
     active_request: str,
     complete: MemoryComplete,
     *,
-    max_context_chars: int | None = None,
+    max_context_tokens: int | None = None,
+    token_meter: TokenMeter = DEFAULT_TOKEN_METER,
 ) -> MemorySelection:
     """Use a tool-free side-query, falling back to deterministic keywords."""
 
@@ -448,8 +457,8 @@ def select_relevant_memories(
         return MemorySelection((), "none")
     request = _selection_request(catalog, recent)
     if (
-        max_context_chars is not None
-        and _request_char_count(request) > max_context_chars
+        max_context_tokens is not None
+        and _request_token_count(request, token_meter) > max_context_tokens
     ):
         return MemorySelection(
             keyword_memory_selection(catalog, recent),
@@ -648,7 +657,8 @@ def extract_and_write_memories(
     candidate_answer: str,
     complete: MemoryComplete,
     *,
-    max_context_chars: int | None = None,
+    max_context_tokens: int | None = None,
+    token_meter: TokenMeter = DEFAULT_TOKEN_METER,
 ) -> MemoryWriteResult:
     """Run one bounded, tool-free extraction request and persist new items."""
 
@@ -657,8 +667,8 @@ def extract_and_write_memories(
         return MemoryWriteResult(0, 0)
     request = _extraction_request(catalog, dialogue)
     if (
-        max_context_chars is not None
-        and _request_char_count(request) > max_context_chars
+        max_context_tokens is not None
+        and _request_token_count(request, token_meter) > max_context_tokens
     ):
         raise MemoryExtractionError("Memory extraction request exceeds context budget")
     response = complete(request, [])
@@ -851,7 +861,8 @@ def consolidate_memories_if_needed(
     complete: MemoryComplete,
     event_logger: EventLogger,
     *,
-    max_context_chars: int | None = None,
+    max_context_tokens: int | None = None,
+    token_meter: TokenMeter = DEFAULT_TOKEN_METER,
     threshold: int = CONSOLIDATE_THRESHOLD,
 ) -> MemoryConsolidationResult:
     """Run one synchronous, fail-closed consolidation transaction when due."""
@@ -882,8 +893,8 @@ def consolidate_memories_if_needed(
         snapshot = snapshot_memories_for_consolidation(workspace)
         request = _consolidation_request(snapshot)
         if (
-            max_context_chars is not None
-            and _request_char_count(request) > max_context_chars
+            max_context_tokens is not None
+            and _request_token_count(request, token_meter) > max_context_tokens
         ):
             event_logger.emit(
                 EventType.MEMORY_CONSOLIDATION_SKIPPED,

@@ -405,7 +405,7 @@ class SubagentTest(unittest.TestCase):
                 provider,
                 self.workspace,
                 [{"role": "user", "content": "delegate"}],
-                max_context_chars=100_000,
+                max_context_tokens=25_000,
                 event_logger=logger,
             )
 

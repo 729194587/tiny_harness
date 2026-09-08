@@ -41,12 +41,12 @@ class ExecuteToolBatchTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def context(self, *, event_logger=None, max_context_chars=None):
+    def context(self, *, event_logger=None, max_context_tokens=None):
         keyword_arguments = {"allow_subagent": False}
         if event_logger is not None:
             keyword_arguments["event_logger"] = event_logger
-        if max_context_chars is not None:
-            keyword_arguments["max_context_chars"] = max_context_chars
+        if max_context_tokens is not None:
+            keyword_arguments["max_context_tokens"] = max_context_tokens
         return create_run_context(
             object(),
             self.workspace,
@@ -96,7 +96,7 @@ class ExecuteToolBatchTest(unittest.TestCase):
 
     def test_manual_compaction_runs_after_the_complete_batch(self) -> None:
         compactor = RecordingCompactor()
-        context = self.context(max_context_chars=100_000)
+        context = self.context(max_context_tokens=25_000)
         context.compactor = compactor
         context.current_turn = 1
         messages = []

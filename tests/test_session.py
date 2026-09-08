@@ -52,7 +52,7 @@ class AgentSessionTest(unittest.TestCase):
             provider,
             self.workspace,
             "system",
-            max_context_chars=100_000,
+            max_context_tokens=25_000,
         )
 
         self.assertEqual(session.submit("FIRST_TASK"), "FIRST_ANSWER")
@@ -62,6 +62,9 @@ class AgentSessionTest(unittest.TestCase):
             message
             for message in provider.calls[1]["messages"]
             if message.get("name") != "tinyharness_skill_catalog"
+            and not str(message.get("content", "")).startswith(
+                "TinyHarness runtime state:"
+            )
         ]
         self.assertEqual(
             [(item["role"], item.get("content")) for item in second_request],
@@ -71,6 +74,14 @@ class AgentSessionTest(unittest.TestCase):
                 ("assistant", "FIRST_ANSWER"),
                 ("user", "SECOND_TASK"),
             ],
+        )
+        self.assertFalse(
+            any(
+                str(message.get("content", "")).startswith(
+                    "TinyHarness runtime state:"
+                )
+                for message in session.messages
+            )
         )
         self.assertEqual(session.messages[-1]["content"], "SECOND_ANSWER")
 

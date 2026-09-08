@@ -11,11 +11,13 @@ from typing import Any
 from uuid import uuid4
 
 from tiny_harness.agent.messages import ModelResponse
+from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger, EventType
 
 
 SOFT_LIMIT_RATIO = 0.8
+COMPACTION_TARGET_RATIO = 0.55
 
 
 class ContextError(RuntimeError):
@@ -49,6 +51,7 @@ class CompactionConfig:
     keep_recent_results: int = 3
     micro_result_chars: int = 120
     summary_input_chars: int = 80_000
+    compaction_target_ratio: float = COMPACTION_TARGET_RATIO
     reactive_target_ratio: float = 0.75
 
 
@@ -57,8 +60,8 @@ class PreparedContext:
     """保持协议合法的模型上下文及其压缩元数据。"""
 
     messages: list[dict[str, Any]]
-    before_chars: int
-    after_chars: int
+    before_tokens: int
+    after_tokens: int
     persisted_results: int = 0
     archived_messages: int = 0
     shortened_results: int = 0
@@ -111,21 +114,17 @@ class CompactionRequest:
         return "Compaction requested after this tool batch."
 
 
-def context_char_count(
+def context_token_count(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
+    token_meter: TokenMeter = DEFAULT_TOKEN_METER,
 ) -> int:
-    """统计紧凑 JSON 模型请求上下文的字符数。"""
+    """Estimate tokens for a complete model request context."""
 
     try:
-        serialized = json.dumps(
-            {"messages": messages, "tools": tools},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
+        return token_meter.estimate(messages, tools)
     except (TypeError, ValueError) as error:
         raise ContextProtocolError("Context must be JSON serializable") from error
-    return len(serialized)
 
 
 def _tool_call_ids(message: dict[str, Any]) -> list[str]:
@@ -271,7 +270,8 @@ def _required_latest_blocks(
 
 def _protected_recent_indices(
     blocks: list[list[dict[str, Any]]],
-    budget_chars: int,
+    budget_tokens: int,
+    token_meter: TokenMeter,
 ) -> set[int]:
     """Protect required state plus a contiguous, budget-sized execution tail."""
 
@@ -281,20 +281,23 @@ def _protected_recent_indices(
     protected = {
         index for index, block in enumerate(blocks) if id(block) in required_ids
     }
-    used = sum(
-        len(json.dumps(blocks[index], ensure_ascii=False, separators=(",", ":")))
-        for index in protected
-    )
+    empty_overhead = context_token_count([], [], token_meter)
+
+    def selected_tokens(indices: set[int]) -> int:
+        selected = _flatten([], [blocks[index] for index in sorted(indices)])
+        return max(
+            0,
+            context_token_count(selected, [], token_meter) - empty_overhead,
+        )
+
     for index in range(len(blocks) - 1, -1, -1):
         if index in protected:
             continue
-        block_chars = len(
-            json.dumps(blocks[index], ensure_ascii=False, separators=(",", ":"))
-        )
-        if used + block_chars > budget_chars:
+        candidate = protected | {index}
+        candidate_tokens = selected_tokens(candidate)
+        if candidate_tokens > budget_tokens:
             break
         protected.add(index)
-        used += block_chars
     return protected
 
 
@@ -328,8 +331,9 @@ class ContextCompactor:
         workspace: Path,
         provider: ModelProvider,
         tools: list[dict[str, Any]],
-        max_chars: int,
+        max_tokens: int,
         *,
+        token_meter: TokenMeter = DEFAULT_TOKEN_METER,
         event_logger: EventLogger = NULL_EVENT_LOGGER,
         config: CompactionConfig = CompactionConfig(),
         summary_complete: Callable[
@@ -338,27 +342,38 @@ class ContextCompactor:
         ]
         | None = None,
     ) -> None:
-        if max_chars < 1:
-            raise ValueError("max_chars must be at least 1")
+        if max_tokens < 1:
+            raise ValueError("max_tokens must be at least 1")
+        if not 0 < config.compaction_target_ratio < SOFT_LIMIT_RATIO:
+            raise ValueError(
+                "compaction_target_ratio must be between 0 and the soft limit ratio"
+            )
         self.workspace = workspace.resolve()
         self.provider = provider
         self.tools = copy.deepcopy(tools)
-        self.max_chars = max_chars
+        self.max_tokens = max_tokens
+        self.token_meter = token_meter
         self.event_logger = event_logger
         self.config = config
         self._summary_complete = summary_complete or provider.complete
 
     @property
     def soft_limit(self) -> int:
-        """Return the normal compaction target below the hard request limit."""
+        """Return the pressure threshold that triggers automatic compaction."""
 
-        return max(1, int(self.max_chars * SOFT_LIMIT_RATIO))
+        return max(1, int(self.max_tokens * SOFT_LIMIT_RATIO))
+
+    @property
+    def target_limit(self) -> int:
+        """Return the target pursued after automatic compaction is triggered."""
+
+        return max(1, int(self.max_tokens * self.config.compaction_target_ratio))
 
     @property
     def recent_tail_budget(self) -> int:
         """Derive recent execution protection from hard/soft headroom."""
 
-        return max(1, self.max_chars - self.soft_limit)
+        return max(1, self.max_tokens - self.soft_limit)
 
     def _artifact_directory(self, leaf: str) -> Path:
         candidate = self.workspace / ".tinyharness" / "context" / leaf
@@ -407,10 +422,18 @@ class ContextCompactor:
             ) from error
         return self._relative_artifact_path(path)
 
-    def _persist_tool_result(self, tool_call_id: str, content: str) -> str:
+    def _persist_tool_result(
+        self,
+        tool_call_id: str,
+        content: str,
+        *,
+        tool_name: str | None = None,
+        arguments: str | None = None,
+    ) -> str:
         directory = self._artifact_directory("tool-results")
         safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", tool_call_id)[:80] or "unknown"
-        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        digest = content_hash[:12]
         path: Path | None = None
         collision: FileExistsError | None = None
         for _ in range(3):
@@ -438,9 +461,22 @@ class ContextCompactor:
         tail_chars = preview_chars // 2
         head = content[:head_chars]
         tail = content[-tail_chars:] if tail_chars else ""
+        argument_limit = min(512, preview_chars)
+        bounded_arguments = None
+        if arguments is not None:
+            bounded_arguments = arguments[:argument_limit]
+            if len(arguments) > argument_limit:
+                bounded_arguments += "...[arguments truncated]"
+        metadata = []
+        if tool_name:
+            metadata.append(f"Tool: {tool_name}")
+        if bounded_arguments is not None:
+            metadata.append(f"Arguments: {bounded_arguments}")
         return (
             "<persisted-tool-result>\n"
-            f"Full output: {relative}\n"
+            + ("\n".join(metadata) + "\n" if metadata else "")
+            + f"Full output: {relative}\n"
+            f"Content SHA-256: {content_hash}\n"
             f"Original characters: {len(content)}\n"
             f"Head:\n{head}\n"
             "...[middle omitted; full output persisted]...\n"
@@ -448,19 +484,45 @@ class ContextCompactor:
             "</persisted-tool-result>"
         )
 
+    @staticmethod
+    def _tool_call_metadata(
+        block: list[dict[str, Any]],
+        tool_call_id: str,
+    ) -> tuple[str | None, str | None]:
+        calls = block[0].get("tool_calls")
+        if not isinstance(calls, list):
+            return None, None
+        for call in calls:
+            if not isinstance(call, dict) or call.get("id") != tool_call_id:
+                continue
+            function = call.get("function")
+            if not isinstance(function, dict):
+                return None, None
+            name = function.get("name")
+            arguments = function.get("arguments")
+            return (
+                name if isinstance(name, str) else None,
+                arguments if isinstance(arguments, str) else None,
+            )
+        return None, None
+
     def pressure_compact_tool_results(
         self,
         messages: list[dict[str, Any]],
-        target_chars: int,
+        target_tokens: int,
         persisted_tool_call_ids: list[str] | None = None,
     ) -> int:
         """Persist old/large ToolResults until the pressure target is met."""
 
-        if target_chars < 1:
-            raise ValueError("target_chars must be at least 1")
+        if target_tokens < 1:
+            raise ValueError("target_tokens must be at least 1")
         _, blocks = _split_context(messages)
-        protected = _protected_recent_indices(blocks, self.recent_tail_budget)
-        candidates: list[tuple[int, int, int, dict[str, Any], str]] = []
+        protected = _protected_recent_indices(
+            blocks, self.recent_tail_budget, self.token_meter
+        )
+        candidates: list[
+            tuple[int, int, int, dict[str, Any], str, str | None, str | None]
+        ] = []
         for block_index, block in enumerate(blocks):
             for result_index, message in enumerate(block):
                 if message.get("role") != "tool":
@@ -468,37 +530,34 @@ class ContextCompactor:
                 content = str(message.get("content", ""))
                 if "<persisted-tool-result>" in content:
                     continue
-                oversized = len(content) > self.config.large_result_chars
                 compactable = len(content) > self.config.micro_result_chars
                 if not compactable:
                     continue
-                if oversized and block_index not in protected:
-                    tier = 0
-                elif oversized:
-                    tier = 1
-                elif block_index not in protected:
-                    tier = 2
-                else:
-                    tier = 3
+                call_id = str(message["tool_call_id"])
+                tool_name, arguments = self._tool_call_metadata(block, call_id)
+                tier = 0 if block_index not in protected else 1
                 candidates.append(
-                    (tier, block_index, result_index, message, content)
+                    (
+                        tier,
+                        block_index,
+                        result_index,
+                        message,
+                        content,
+                        tool_name,
+                        arguments,
+                    )
                 )
 
-        candidates.sort(
-            key=lambda item: (
-                item[0],
-                -len(item[4]) if item[0] < 2 else item[1],
-                item[1],
-                item[2],
-            )
-        )
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]))
         persisted = 0
-        for _, _, _, message, content in candidates:
-            if context_char_count(messages, self.tools) <= target_chars:
+        for _, _, _, message, content, tool_name, arguments in candidates:
+            if context_token_count(messages, self.tools, self.token_meter) <= target_tokens:
                 break
             replacement = self._persist_tool_result(
                 str(message["tool_call_id"]),
                 content,
+                tool_name=tool_name,
+                arguments=arguments,
             )
             if len(replacement) >= len(content):
                 continue
@@ -525,7 +584,7 @@ class ContextCompactor:
         total = sum(len(str(message.get("content", ""))) for message in results)
         batch_limit = min(
             self.config.tool_result_batch_chars,
-            max(1, self.max_chars // 2),
+            max(1, self.max_tokens * 2),
         )
         persisted = 0
         for message in sorted(
@@ -539,7 +598,17 @@ class ContextCompactor:
             threshold = min(self.config.large_result_chars, batch_limit)
             if len(content) <= threshold:
                 continue
-            replacement = self._persist_tool_result(str(message["tool_call_id"]), content)
+            call_id = str(message["tool_call_id"])
+            tool_name, arguments = self._tool_call_metadata(
+                tool_blocks[-1],
+                call_id,
+            )
+            replacement = self._persist_tool_result(
+                call_id,
+                content,
+                tool_name=tool_name,
+                arguments=arguments,
+            )
             if len(replacement) >= len(content):
                 continue
             message["content"] = replacement
@@ -691,9 +760,9 @@ class ContextCompactor:
         messages: list[dict[str, Any]],
         transcript: str,
         *,
-        max_chars: int | None = None,
+        max_tokens: int | None = None,
     ) -> list[dict[str, Any]]:
-        limit = self.max_chars if max_chars is None else max_chars
+        limit = self.max_tokens if max_tokens is None else max_tokens
         serialized = json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
         input_limit = min(self.config.summary_input_chars, len(serialized))
 
@@ -721,13 +790,13 @@ class ContextCompactor:
 
         while input_limit >= 0:
             request = build(input_limit)
-            if context_char_count(request, []) <= limit:
+            if context_token_count(request, [], self.token_meter) <= limit:
                 return request
             if input_limit == 0:
                 break
             input_limit = max(0, input_limit - max(1, input_limit // 4))
         raise ContextLimitError(
-            "Summary request overhead exceeds configured character budget"
+            "Summary request overhead exceeds configured token budget"
         )
 
     def _fit_summary_marker(
@@ -738,9 +807,9 @@ class ContextCompactor:
         todo_state: str,
         transcript: str,
         *,
-        max_chars: int | None = None,
+        max_tokens: int | None = None,
     ) -> list[dict[str, Any]]:
-        limit = self.max_chars if max_chars is None else max_chars
+        limit = self.max_tokens if max_tokens is None else max_tokens
 
         def build(text: str) -> list[dict[str, Any]]:
             marker = {
@@ -760,7 +829,7 @@ class ContextCompactor:
             )
 
         candidate = build(summary)
-        if context_char_count(candidate, self.tools) <= limit:
+        if context_token_count(candidate, self.tools, self.token_meter) <= limit:
             return candidate
 
         low = 0
@@ -772,13 +841,13 @@ class ContextCompactor:
             if middle < len(summary):
                 truncated += "\n[summary truncated to fit context budget]"
             candidate = build(truncated)
-            if context_char_count(candidate, self.tools) <= limit:
+            if context_token_count(candidate, self.tools, self.token_meter) <= limit:
                 best = candidate
                 low = middle + 1
             else:
                 high = middle - 1
         if best is None:
-            required = context_char_count(build(""), self.tools)
+            required = context_token_count(build(""), self.tools, self.token_meter)
             raise ContextLimitError(
                 "Required task, Todo, summary marker, latest evidence, and tool "
                 f"schemas exceed context target: {required} > {limit}"
@@ -791,9 +860,9 @@ class ContextCompactor:
         todo_state: str,
         *,
         reason: str,
-        max_chars: int | None = None,
+        max_tokens: int | None = None,
         summary_source_messages: list[dict[str, Any]] | None = None,
-        before_chars: int | None = None,
+        before_tokens: int | None = None,
         persisted_results: int = 0,
         persisted_tool_call_ids: tuple[str, ...] = (),
         archived_messages: int = 0,
@@ -802,7 +871,7 @@ class ContextCompactor:
     ) -> PreparedContext:
         """Summarize the oldest eligible balanced history into one marker."""
 
-        target_chars = self.max_chars if max_chars is None else max_chars
+        target_tokens = self.max_tokens if max_tokens is None else max_tokens
         source_messages = (
             messages
             if summary_source_messages is None
@@ -830,6 +899,7 @@ class ContextCompactor:
             protected = _protected_recent_indices(
                 blocks,
                 self.recent_tail_budget,
+                self.token_meter,
             )
         latest_context = _flatten(
             [],
@@ -850,22 +920,43 @@ class ContextCompactor:
                 "Context compaction has no older history that can be summarized"
             )
         # 在消耗摘要 API 调用前，先证明必须保留的上下文能够放入预算。
-        self._fit_summary_marker(
-            base_prefix,
-            latest_context,
-            "",
-            todo_state,
-            transcript,
-            max_chars=target_chars,
-        )
+        # 自动压缩以 target 为强目标；若 protected history 本身放不下，
+        # 只退回 trigger 上限，而不牺牲最新工作证据。
+        effective_target = target_tokens
+        try:
+            self._fit_summary_marker(
+                base_prefix,
+                latest_context,
+                "",
+                todo_state,
+                transcript,
+                max_tokens=effective_target,
+            )
+        except ContextLimitError:
+            if reason != "automatic" or effective_target >= self.soft_limit:
+                raise
+            effective_target = self.soft_limit
+            self._fit_summary_marker(
+                base_prefix,
+                latest_context,
+                "",
+                todo_state,
+                transcript,
+                max_tokens=effective_target,
+            )
         summary_request = self._summary_request(
             selected_history,
             transcript,
-            max_chars=target_chars,
+            max_tokens=effective_target,
         )
         self.event_logger.emit(
             EventType.CONTEXT_SUMMARY_REQUESTED,
-            {"reason": reason, "input_chars": context_char_count(summary_request, [])},
+            {
+                "reason": reason,
+                "input_tokens": context_token_count(
+                    summary_request, [], self.token_meter
+                ),
+            },
         )
         response = self._summary_complete(summary_request, [])
         self.event_logger.emit(
@@ -887,7 +978,7 @@ class ContextCompactor:
             response.content,
             todo_state,
             transcript,
-            max_chars=target_chars,
+            max_tokens=effective_target,
         )
         remaining_result_ids = set(_tool_result_ids(compacted))
         summarized_tool_call_ids = tuple(
@@ -897,12 +988,12 @@ class ContextCompactor:
         )
         prepared = PreparedContext(
             messages=copy.deepcopy(compacted),
-            before_chars=(
-                before_chars
-                if before_chars is not None
-                else context_char_count(source_messages, self.tools)
+            before_tokens=(
+                before_tokens
+                if before_tokens is not None
+                else context_token_count(source_messages, self.tools, self.token_meter)
             ),
-            after_chars=context_char_count(compacted, self.tools),
+            after_tokens=context_token_count(compacted, self.tools, self.token_meter),
             persisted_results=persisted_results,
             archived_messages=archived_messages,
             shortened_results=shortened_results,
@@ -919,12 +1010,12 @@ class ContextCompactor:
         messages: list[dict[str, Any]],
         todo_state: str,
         *,
-        failed_request_chars: int,
+        failed_request_tokens: int,
     ) -> PreparedContext:
         """将一次被 API 拒绝的上下文强制缩减至少 25%。"""
 
-        if failed_request_chars < 1:
-            raise ValueError("failed_request_chars must be at least 1")
+        if failed_request_tokens < 1:
+            raise ValueError("failed_request_tokens must be at least 1")
         if not 0 < self.config.reactive_target_ratio < 1:
             raise ValueError("reactive_target_ratio must be between 0 and 1")
 
@@ -938,11 +1029,11 @@ class ContextCompactor:
                 "Reactive compaction has no older history that can be removed"
             )
 
-        target_chars = min(
-            self.max_chars,
-            int(failed_request_chars * self.config.reactive_target_ratio),
+        target_tokens = min(
+            self.max_tokens,
+            int(failed_request_tokens * self.config.reactive_target_ratio),
         )
-        if target_chars < 1:
+        if target_tokens < 1:
             raise ContextLimitError("Reactive context target is too small")
 
         transcript = self._write_transcript(messages)
@@ -958,19 +1049,21 @@ class ContextCompactor:
             "",
             todo_state,
             transcript,
-            max_chars=target_chars,
+            max_tokens=target_tokens,
         )
 
         summary_request = self._summary_request(
             messages,
             transcript,
-            max_chars=target_chars,
+            max_tokens=target_tokens,
         )
         self.event_logger.emit(
             EventType.CONTEXT_SUMMARY_REQUESTED,
             {
                 "reason": "reactive",
-                "input_chars": context_char_count(summary_request, []),
+                "input_tokens": context_token_count(
+                    summary_request, [], self.token_meter
+                ),
             },
         )
         response = self._summary_complete(summary_request, [])
@@ -997,17 +1090,17 @@ class ContextCompactor:
             response.content,
             todo_state,
             transcript,
-            max_chars=target_chars,
+            max_tokens=target_tokens,
         )
-        after_chars = context_char_count(compacted, self.tools)
-        if after_chars > target_chars:
+        after_tokens = context_token_count(compacted, self.tools, self.token_meter)
+        if after_tokens > target_tokens:
             raise ContextLimitError(
                 "Reactive context did not meet the required shrink margin"
             )
         prepared = PreparedContext(
             messages=copy.deepcopy(compacted),
-            before_chars=failed_request_chars,
-            after_chars=after_chars,
+            before_tokens=failed_request_tokens,
+            after_tokens=after_tokens,
             summarized=True,
             transcript_written=True,
             summarized_tool_call_ids=tuple(
@@ -1024,8 +1117,8 @@ class ContextCompactor:
             EventType.CONTEXT_COMPACTED,
             {
                 "reason": reason,
-                "before_chars": prepared.before_chars,
-                "after_chars": prepared.after_chars,
+                "before_tokens": prepared.before_tokens,
+                "after_tokens": prepared.after_tokens,
                 "persisted_results": prepared.persisted_results,
                 "archived_messages": prepared.archived_messages,
                 "shortened_results": prepared.shortened_results,
@@ -1079,18 +1172,23 @@ def prepare_context(
         return None
 
     working = copy.deepcopy(messages)
-    before_chars = context_char_count(working, compactor.tools)
+    before_tokens = context_token_count(
+        working, compactor.tools, compactor.token_meter
+    )
     before_todo_messages = copy.deepcopy(working)
     working = compactor.upsert_todo_marker(working, todo_state)
     todo_state_updated = working != before_todo_messages
-    measured_chars = context_char_count(working, compactor.tools)
+    measured_tokens = context_token_count(
+        working, compactor.tools, compactor.token_meter
+    )
     soft_limit = compactor.soft_limit
+    target_limit = compactor.target_limit
 
-    if measured_chars <= soft_limit:
+    if measured_tokens <= soft_limit:
         prepared = PreparedContext(
             messages=copy.deepcopy(working),
-            before_chars=before_chars,
-            after_chars=measured_chars,
+            before_tokens=before_tokens,
+            after_tokens=measured_tokens,
             todo_state_updated=todo_state_updated,
         )
         if prepared.lossy_changed:
@@ -1100,15 +1198,17 @@ def prepare_context(
         persisted_tool_call_ids: list[str] = []
         persisted = compactor.pressure_compact_tool_results(
             working,
-            soft_limit,
+            target_limit,
             persisted_tool_call_ids,
         )
-        after_chars = context_char_count(working, compactor.tools)
-        if after_chars <= soft_limit:
+        after_tokens = context_token_count(
+            working, compactor.tools, compactor.token_meter
+        )
+        if after_tokens <= target_limit:
             prepared = PreparedContext(
                 messages=copy.deepcopy(working),
-                before_chars=before_chars,
-                after_chars=after_chars,
+                before_tokens=before_tokens,
+                after_tokens=after_tokens,
                 persisted_results=persisted,
                 todo_state_updated=todo_state_updated,
                 persisted_tool_call_ids=tuple(persisted_tool_call_ids),
@@ -1119,20 +1219,22 @@ def prepare_context(
                 working,
                 todo_state,
                 reason="automatic",
-                max_chars=soft_limit,
+                max_tokens=target_limit,
                 summary_source_messages=summary_source,
-                before_chars=before_chars,
+                before_tokens=before_tokens,
                 persisted_results=persisted,
                 persisted_tool_call_ids=tuple(persisted_tool_call_ids),
             )
 
     # All stages are transactional; callers commit prepared.messages once.
     validate_active_request(prepared.messages, active_request)
-    final_chars = context_char_count(prepared.messages, compactor.tools)
-    if final_chars > soft_limit:
+    final_tokens = context_token_count(
+        prepared.messages, compactor.tools, compactor.token_meter
+    )
+    if final_tokens > soft_limit:
         raise ContextLimitError(
             "Prepared context exceeds the automatic soft limit: "
-            f"{final_chars} > {soft_limit}"
+            f"{final_tokens} > {soft_limit}"
         )
     return prepared
 
@@ -1140,14 +1242,15 @@ def prepare_context(
 def trim_context_blocks(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
-    max_chars: int,
+    max_tokens: int,
+    token_meter: TokenMeter = DEFAULT_TOKEN_METER,
 ) -> PreparedContext:
     """作为兼容辅助函数，执行确定性的完整消息块裁剪。"""
 
-    if max_chars < 1:
-        raise ValueError("max_chars must be at least 1")
+    if max_tokens < 1:
+        raise ValueError("max_tokens must be at least 1")
     prefix, blocks = _split_context(messages)
-    before = context_char_count(messages, tools)
+    before = context_token_count(messages, tools, token_meter)
     kept = list(blocks)
     dropped_messages = 0
     dropped_blocks = 0
@@ -1156,7 +1259,7 @@ def trim_context_blocks(
     }
     while kept:
         candidate = _flatten(prefix, kept)
-        if context_char_count(candidate, tools) <= max_chars:
+        if context_token_count(candidate, tools, token_meter) <= max_tokens:
             break
         ranges = _turn_ranges(kept)
         if len(ranges) > 1 and not any(
@@ -1181,15 +1284,15 @@ def trim_context_blocks(
         dropped_blocks += len(removed)
         dropped_messages += sum(len(block) for block in removed)
     prepared_messages = _flatten(prefix, kept)
-    size = context_char_count(prepared_messages, tools)
-    if size > max_chars:
+    size = context_token_count(prepared_messages, tools, token_meter)
+    if size > max_tokens:
         raise ContextLimitError(
-            f"Context exceeds configured character budget: {size} > {max_chars}"
+            f"Context exceeds configured token budget: {size} > {max_tokens}"
         )
     return PreparedContext(
         messages=copy.deepcopy(prepared_messages),
-        before_chars=before,
-        after_chars=size,
+        before_tokens=before,
+        after_tokens=size,
         dropped_blocks=dropped_blocks,
         dropped_messages=dropped_messages,
     )

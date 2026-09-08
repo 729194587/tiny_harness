@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from tiny_harness.agent.messages import ModelResponse, validate_model_response
 from tiny_harness.models.base import ModelErrorKind, ModelProviderError
-from tiny_harness.runtime.context import context_char_count
+from tiny_harness.runtime.context import context_token_count
 from tiny_harness.runtime.events import EventType
 from tiny_harness.runtime.recovery import RecoveryState
 
@@ -24,6 +24,17 @@ FINALIZATION_INSTRUCTION = (
 )
 
 
+def _runtime_state(context: AgentRunContext, *, finalization: bool) -> str:
+    remaining_turns = context.max_turns - context.current_turn
+    return (
+        "TinyHarness runtime state:\n"
+        f"- current main-agent turn: {context.current_turn} / {context.max_turns}\n"
+        f"- remaining main-agent turns: {remaining_turns}\n"
+        f"- finalization: {str(finalization).lower()}\n"
+        f"- tools available: {str(not finalization and bool(context.tools)).lower()}"
+    )
+
+
 def model_request_inputs(
     messages: list[dict[str, Any]],
     context: AgentRunContext,
@@ -33,15 +44,23 @@ def model_request_inputs(
     """Build one request without committing runtime-only instructions to history."""
 
     request_messages = copy.deepcopy(messages)
-    if finalization:
-        insert_at = 0
-        while (
-            insert_at < len(request_messages)
-            and request_messages[insert_at].get("role") == "system"
-        ):
-            insert_at += 1
+    insert_at = 0
+    while (
+        insert_at < len(request_messages)
+        and request_messages[insert_at].get("role") == "system"
+    ):
+        insert_at += 1
+    if context.is_main_agent:
         request_messages.insert(
             insert_at,
+            {
+                "role": "system",
+                "content": _runtime_state(context, finalization=finalization),
+            },
+        )
+    if finalization:
+        request_messages.insert(
+            insert_at + int(context.is_main_agent),
             {"role": "system", "content": FINALIZATION_INSTRUCTION},
         )
     return request_messages, ([] if finalization else context.tools)
@@ -82,12 +101,16 @@ def call_model(
                 request_metadata={
                     "max_turns": context.max_turns,
                     "remaining_turns": context.max_turns - context.current_turn,
-                    "context_chars": context_char_count(
+                    "context_tokens": context_token_count(
                         request_messages,
                         request_tools,
+                        context.token_meter,
                     ),
                 },
                 finalization=finalization,
+                tool_choice=(
+                    "none" if finalization else ("auto" if request_tools else None)
+                ),
             )
             break
         except ModelProviderError as error:
@@ -101,14 +124,15 @@ def call_model(
             # 先占用本次逻辑请求唯一的 reactive recovery 机会，避免摘要失败
             # 后递归触发第二次 reactive compact。
             recovery_state.reactive_compact_used = True
-            failed_request_chars = context_char_count(
+            failed_request_tokens = context_token_count(
                 request_messages,
                 request_tools,
+                context.token_meter,
             )
             prepared = context.compactor.reactive_compact(
                 messages,
                 context.todo_manager.render(),
-                failed_request_chars=failed_request_chars,
+                failed_request_tokens=failed_request_tokens,
             )
             messages[:] = prepared.messages
             request_messages, request_tools = model_request_inputs(

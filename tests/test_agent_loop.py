@@ -128,7 +128,7 @@ class AgentLoopTest(unittest.TestCase):
         context = create_run_context(
             provider,
             self.workspace,
-            max_context_chars=100_000,
+            max_context_tokens=25_000,
             allow_subagent=False,
             skill_catalog=discover_skills(self.workspace, sources=()),
         )
@@ -410,7 +410,7 @@ class AgentLoopTest(unittest.TestCase):
             provider,
             self.workspace,
             [],
-            max_context_chars=100_000,
+            max_context_tokens=25_000,
         )
 
         self.assertEqual(answer, "done")
@@ -633,6 +633,68 @@ class AgentLoopTest(unittest.TestCase):
         self.assertEqual(answer, "done early")
         self.assertEqual(len(provider.calls), 2)
         self.assertTrue(provider.calls[1]["tools"])
+
+    def test_finalization_tool_call_is_not_executed_or_committed(self) -> None:
+        provider = FakeProvider(
+            [
+                ModelResponse(
+                    "best available answer",
+                    None,
+                    [ToolCall("forbidden-1", "list_files", "{}")],
+                    "tool_calls",
+                )
+            ]
+        )
+        messages = [{"role": "user", "content": "inspect"}]
+
+        answer = agent_loop(
+            provider,
+            self.workspace,
+            messages,
+            max_turns=1,
+            allow_subagent=False,
+        )
+
+        self.assertEqual(answer, "best available answer")
+        self.assertFalse(any(item.get("role") == "tool" for item in messages))
+        self.assertFalse(any(item.get("tool_calls") for item in messages))
+        self.assertEqual(messages[-1]["content"], "best available answer")
+
+    def test_twenty_turn_budget_has_nineteen_tool_turns_then_finalization(self) -> None:
+        responses = [
+            ModelResponse(
+                None,
+                None,
+                [ToolCall(f"call-{turn}", "list_files", "{}")],
+                "tool_calls",
+            )
+            for turn in range(1, 20)
+        ]
+        responses.append(ModelResponse("done", None, [], "stop"))
+        provider = FakeProvider(responses)
+
+        answer = agent_loop(provider, self.workspace, [], max_turns=20)
+
+        self.assertEqual(answer, "done")
+        self.assertEqual(len(provider.calls), 20)
+        self.assertTrue(all(call["tools"] for call in provider.calls[:19]))
+        self.assertEqual(provider.calls[19]["tools"], [])
+        states = []
+        for call in provider.calls:
+            markers = [
+                message["content"]
+                for message in call["messages"]
+                if str(message.get("content", "")).startswith(
+                    "TinyHarness runtime state:"
+                )
+            ]
+            self.assertEqual(len(markers), 1)
+            states.append(markers[0])
+        self.assertIn("current main-agent turn: 1 / 20", states[0])
+        self.assertIn("remaining main-agent turns: 19", states[0])
+        self.assertIn("current main-agent turn: 20 / 20", states[-1])
+        self.assertIn("remaining main-agent turns: 0", states[-1])
+        self.assertIn("finalization: true", states[-1])
 
     def test_provider_retry_stays_within_one_logical_turn(self) -> None:
         provider = FakeProvider(

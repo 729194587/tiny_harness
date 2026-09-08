@@ -62,7 +62,7 @@ class SubagentExecutorTest(unittest.TestCase):
             permission_policy=DEFAULT_PERMISSION_POLICY,
             permission_prompt=None,
             event_logger=logger,
-            max_context_chars=10_000,
+            max_context_tokens=2_500,
             tool_hooks=None,
             recovery_policy=RecoveryPolicy(max_retries=0),
             test_runner=test_runner,

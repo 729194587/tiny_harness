@@ -1,9 +1,11 @@
 """Contract implemented by model adapters."""
 
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from tiny_harness.agent.messages import ModelResponse
+
+ToolChoice = Literal["auto", "none"]
 
 
 class ModelErrorKind(str, Enum):
@@ -49,3 +51,32 @@ class ModelProvider(Protocol):
     ) -> ModelResponse:
         """Return one normalized model response."""
         ...
+
+
+class ToolChoiceModelProvider(ModelProvider, Protocol):
+    """Optional provider capability for explicit tool-selection policy."""
+
+    supports_tool_choice: bool
+
+    def complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        tool_choice: ToolChoice | None = None,
+    ) -> ModelResponse:
+        """Return one response using the requested tool-selection policy."""
+        ...
+
+
+def complete_with_tool_choice(
+    provider: ModelProvider,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    tool_choice: ToolChoice | None,
+) -> ModelResponse:
+    """Use explicit tool choice when supported, preserving legacy providers."""
+
+    if getattr(provider, "supports_tool_choice", False):
+        return provider.complete(messages, tools, tool_choice=tool_choice)
+    return provider.complete(messages, tools)

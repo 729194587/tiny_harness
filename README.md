@@ -119,11 +119,19 @@ python -m tiny_harness --workspace .
 - `--workspace`
 - `--max-turns`
 - `--max-model-retries`
-- `--max-context-chars`
+- `--max-context-tokens`
 - `--no-context-compaction`
 - `--subagent-max-turns`
 - `--event-log`
 - `--memory`
+
+TinyHarness 使用 token-aware context budgeting：上下文预算覆盖 system
+prompt、messages 和 tool schemas。默认的 `HeuristicTokenMeter` 按紧凑 JSON
+序列化后约每 4 个字符估算 1 token，因此无需绑定具体模型 tokenizer；未来可注入
+provider-specific tokenizer 或基于 API usage 校准的实现。超过 token 预算的软阈值时，
+仍沿用既有的工具结果裁剪、历史截断和摘要回退策略。
+CLI 默认 `--max-context-tokens 125000`；Python 入口使用
+`max_context_tokens`，并可通过 `token_meter` 注入替代实现。
 
 ## 项目结构
 

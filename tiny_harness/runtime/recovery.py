@@ -11,6 +11,8 @@ from tiny_harness.models.base import (
     ModelErrorKind,
     ModelProvider,
     ModelProviderError,
+    ToolChoice,
+    complete_with_tool_choice,
 )
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger, EventType
 
@@ -118,6 +120,7 @@ class RecoveryExecutor:
         context_recovery_available: bool = False,
         request_metadata: Mapping[str, Any] | None = None,
         finalization: bool = False,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
         """Return a response or raise after bounded transient retries."""
 
@@ -134,7 +137,12 @@ class RecoveryExecutor:
                 },
             )
             try:
-                response = provider.complete(messages, tools)
+                response = complete_with_tool_choice(
+                    provider,
+                    messages,
+                    tools,
+                    tool_choice,
+                )
             except Exception as error:
                 transient = (
                     isinstance(error, ModelProviderError)

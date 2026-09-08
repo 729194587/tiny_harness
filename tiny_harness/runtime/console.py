@@ -41,7 +41,7 @@ def _use_color(stream: TextIO) -> bool:
         return False
 
 
-class ConsoleEventLogger:
+class _LegacyConsoleEventLogger:
     """Progress goes to stderr so stdout remains the final answer channel."""
 
     def __init__(self, *, quiet: bool = False, verbose: bool = False,
@@ -120,7 +120,7 @@ class ConsoleEventLogger:
                 if "error_type" in d:
                     line += " " + identifier(d["error_type"])
         elif event_type == EventType.CONTEXT_COMPACTED:
-            line = status(f"上下文已压缩：{short(d.get('before_chars', '?'))} → {short(d.get('after_chars', '?'))} 字符")
+            line = status(f"上下文已压缩：{short(d.get('before_tokens', '?'))} → {short(d.get('after_tokens', '?'))} tokens")
         elif event_type == EventType.TODO_UPDATED:
             line = status(f"任务进度：已完成 {short(d.get('completed', 0))}/{short(d.get('total', 0))}，进行中 {short(d.get('in_progress', 0))}")
         elif event_type == EventType.MODEL_RETRY_SCHEDULED:
@@ -140,7 +140,7 @@ class ConsoleEventLogger:
                       EventType.CONTEXT_SUMMARY_RESPONDED: "上下文摘要已生成"}
             if event_type in labels:
                 details = " ".join(f"{label}={identifier(d[k]) if k == 'error_type' else short(d[k])}" for k, label in
-                                   (("turn", "轮次"), ("context_chars", "上下文字符"), ("attempt", "尝试"),
+                                   (("turn", "轮次"), ("context_tokens", "上下文 tokens"), ("attempt", "尝试"),
                                     ("purpose", "用途"), ("error_type", "异常")) if k in d)
                 line = (status(labels[event_type]) + " " + details).rstrip()
         if event_type == EventType.RUN_STARTED and d.get("agent_scope") != "subagent":
@@ -160,3 +160,8 @@ class ConsoleEventLogger:
                 raise EventLogError("Failed to write console progress") from error
             if event_type == EventType.RUN_FAILED:
                 self.run_failure_reported = True
+
+
+# Console Renderer v2 replaces the legacy per-tool renderer while keeping the
+# public import stable for library and CLI callers.
+from tiny_harness.runtime.console_v2 import ConsoleEventLogger

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from tiny_harness.agent.loop import run_agent
 from tiny_harness.agent.messages import ModelResponse, ToolCall
+from tiny_harness.runtime.context import context_token_count
 from tiny_harness.runtime.hooks import ToolHooks
 from tiny_harness.runtime.permissions import PermissionDecision
 from tiny_harness.runtime.skills import discover_skills
@@ -251,7 +252,7 @@ class SkillRuntimeTest(unittest.TestCase):
             provider,
             self.workspace,
             [{"role": "user", "content": "task"}],
-            max_context_chars=20_000,
+            max_context_tokens=5_000,
         )
 
         self.assertEqual(answer, "done")
@@ -263,8 +264,10 @@ class SkillRuntimeTest(unittest.TestCase):
         )
         self.assertIn("<persisted-tool-result>", tool_result["content"])
         self.assertLess(
-            len(json.dumps(second_request, ensure_ascii=False, separators=(",", ":"))),
-            20_000,
+            context_token_count(
+                second_request["messages"], second_request["tools"]
+            ),
+            5_000,
         )
         artifacts = list(
             (self.workspace / ".tinyharness" / "context" / "tool-results").glob(

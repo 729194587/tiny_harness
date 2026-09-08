@@ -71,6 +71,29 @@ class ChatCompletionsProviderTest(unittest.TestCase):
             [{"model": "test-model", "messages": messages, "tools": tools}],
         )
 
+    def test_serializes_explicit_tool_choice(self) -> None:
+        api_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(content="done", tool_calls=None),
+                )
+            ]
+        )
+        client, completions = fake_client(api_response)
+        provider = ChatCompletionsProvider(
+            "secret", "https://example.test", "test-model", client=client
+        )
+        tools = [{"type": "function", "function": {"name": "read_file"}}]
+
+        provider.complete([], tools, tool_choice="auto")
+        provider.complete([], [], tool_choice="none")
+
+        self.assertEqual(completions.calls[0]["tool_choice"], "auto")
+        self.assertEqual(completions.calls[0]["tools"], tools)
+        self.assertEqual(completions.calls[1]["tool_choice"], "none")
+        self.assertEqual(completions.calls[1]["tools"], [])
+
     def test_normalizes_text_response_without_reasoning_extension(self) -> None:
         api_response = SimpleNamespace(
             choices=[
@@ -92,6 +115,7 @@ class ChatCompletionsProviderTest(unittest.TestCase):
         self.assertEqual(result.tool_calls, [])
         self.assertEqual(result.finish_reason, "stop")
         self.assertNotIn("tools", client.chat.completions.calls[0])
+        self.assertNotIn("tool_choice", client.chat.completions.calls[0])
 
     def test_normalizes_multiple_tool_calls_and_reasoning_extension(self) -> None:
         api_response = SimpleNamespace(

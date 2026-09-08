@@ -192,7 +192,7 @@ class MemoryTest(unittest.TestCase):
             [{"role": "user", "content": "use tabs"}],
             "use tabs",
             lambda *_: self.fail("side query must not run"),
-            max_context_chars=10,
+            max_context_tokens=3,
         )
 
         self.assertEqual(selection.filenames, ("tabs.md",))

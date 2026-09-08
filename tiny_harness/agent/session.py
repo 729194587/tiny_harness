@@ -10,6 +10,7 @@ from tiny_harness.agent.context import (
     create_run_context,
 )
 from tiny_harness.agent.loop import agent_loop
+from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger
 from tiny_harness.runtime.permissions import PermissionPrompt
@@ -46,7 +47,8 @@ class AgentSession:
         *,
         max_turns: int = 20,
         permission_prompt: PermissionPrompt | None = None,
-        max_context_chars: int | None = None,
+        max_context_tokens: int | None = None,
+        token_meter: TokenMeter = DEFAULT_TOKEN_METER,
         subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS,
         recovery_policy: RecoveryPolicy = RecoveryPolicy(),
         memory_enabled: bool = False,
@@ -64,7 +66,8 @@ class AgentSession:
         ]
         self.max_turns = max_turns
         self.permission_prompt = permission_prompt
-        self.max_context_chars = max_context_chars
+        self.max_context_tokens = max_context_tokens
+        self.token_meter = token_meter
         self.subagent_max_turns = subagent_max_turns
         self.recovery_policy = recovery_policy
         self.memory_enabled = memory_enabled
@@ -100,7 +103,8 @@ class AgentSession:
             max_turns=self.max_turns,
             permission_prompt=self.permission_prompt,
             event_logger=self.event_logger_factory(),
-            max_context_chars=self.max_context_chars,
+            max_context_tokens=self.max_context_tokens,
+            token_meter=self.token_meter,
             subagent_max_turns=self.subagent_max_turns,
             recovery_policy=self.recovery_policy,
             skill_catalog=self.skill_catalog,

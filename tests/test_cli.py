@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from tiny_harness.__main__ import (
     DEFAULT_BASE_URL,
-    DEFAULT_MAX_CONTEXT_CHARS,
+    DEFAULT_MAX_CONTEXT_TOKENS,
     DEFAULT_MODEL,
     _ask_permission,
     main,
@@ -66,8 +66,8 @@ class CliTest(unittest.TestCase):
             session_class.call_args.kwargs["permission_prompt"], _ask_permission
         )
         self.assertEqual(
-            session_class.call_args.kwargs["max_context_chars"],
-            DEFAULT_MAX_CONTEXT_CHARS,
+            session_class.call_args.kwargs["max_context_tokens"],
+            DEFAULT_MAX_CONTEXT_TOKENS,
         )
         self.assertEqual(
             session_class.call_args.kwargs["subagent_max_turns"],
@@ -157,8 +157,8 @@ class CliTest(unittest.TestCase):
                         "task",
                         "--workspace",
                         str(self.workspace),
-                        "--max-context-chars",
-                        "9000",
+                        "--max-context-tokens",
+                        "2250",
                         "--subagent-max-turns",
                         "4",
                         "--max-model-retries",
@@ -166,7 +166,7 @@ class CliTest(unittest.TestCase):
                     ]
                 )
 
-        self.assertEqual(session_class.call_args.kwargs["max_context_chars"], 9000)
+        self.assertEqual(session_class.call_args.kwargs["max_context_tokens"], 2250)
         self.assertEqual(session_class.call_args.kwargs["subagent_max_turns"], 4)
         self.assertEqual(
             session_class.call_args.kwargs["recovery_policy"],
@@ -188,7 +188,7 @@ class CliTest(unittest.TestCase):
                     ]
                 )
 
-        self.assertIsNone(session_class.call_args.kwargs["max_context_chars"])
+        self.assertIsNone(session_class.call_args.kwargs["max_context_tokens"])
         self.assertNotIn("Use compact", session_class.call_args.args[2])
 
     @patch("tiny_harness.__main__.AgentSession")
@@ -278,7 +278,7 @@ class CliTest(unittest.TestCase):
     def test_rejects_invalid_numeric_arguments(self) -> None:
         cases = [
             (["task", "--max-turns", "0"], "必须大于或等于 1"),
-            (["task", "--max-context-chars", "0"], "必须大于或等于 1"),
+            (["task", "--max-context-tokens", "0"], "必须大于或等于 1"),
             (["task", "--subagent-max-turns", "0"], "必须大于或等于 1"),
             (["task", "--max-model-retries", "-1"], "必须大于或等于 0"),
         ]
@@ -316,8 +316,8 @@ class CliTest(unittest.TestCase):
                 main(
                     [
                         "task",
-                        "--max-context-chars",
-                        "9000",
+                        "--max-context-tokens",
+                        "2250",
                         "--no-context-compaction",
                     ]
                 )

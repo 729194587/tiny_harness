@@ -116,7 +116,7 @@ class MemoryRuntimeTest(unittest.TestCase):
             self.workspace,
             messages,
             memory_enabled=True,
-            max_context_chars=100_000,
+            max_context_tokens=25_000,
             event_logger=logger,
         )
 
@@ -353,7 +353,7 @@ class MemoryRuntimeTest(unittest.TestCase):
             self.workspace,
             [{"role": "user", "content": "Remember one more durable fact"}],
             memory_enabled=True,
-            max_context_chars=100_000,
+            max_context_tokens=25_000,
             event_logger=logger,
         )
 
