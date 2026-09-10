@@ -6,18 +6,60 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from evals.swe_bench_lite.__main__ import _parser, main
 from evals.swe_bench_lite.calibration import CalibrationResult
 from evals.swe_bench_lite.data import load_agent_tasks
-from evals.swe_bench_lite.pipeline import DEFAULT_SELECTED_TASKS
+from evals.swe_bench_lite.pipeline import DEFAULT_SELECTED_TASKS, run_selected_smoke
 
 
 MODULE = "evals.swe_bench_lite.__main__"
 
 
 class BatchCalibrationTest(unittest.TestCase):
+    def test_single_non_smoke_candidate_calibration(self):
+        instance_id = "sqlfluff__sqlfluff-2419"
+        self.assertNotIn(instance_id, [task.instance_id for task in load_agent_tasks(DEFAULT_SELECTED_TASKS)])
+        with tempfile.TemporaryDirectory() as directory, \
+             patch(f"{MODULE}.calibrate_task", return_value=CalibrationResult(
+                 instance_id, "CALIBRATED", True, True, True, True,
+             )) as calibrate, \
+             patch(f"{MODULE}.ChatCompletionsProvider") as provider, \
+             patch(f"{MODULE}.run_selected_smoke") as rollout, \
+             patch.dict("os.environ", {}, clear=True), redirect_stdout(io.StringIO()):
+            code = main(["calibrate", "--instance-id", instance_id,
+                         "--results-root", directory, "--run-id", "single"])
+            self.assertEqual(code, 0)
+            calibrate.assert_called_once()
+            task, bundle, _ = calibrate.call_args.args
+            self.assertEqual(task.instance_id, instance_id)
+            self.assertEqual(bundle.instance_id, instance_id)
+            summary = json.loads((Path(directory) / "single" / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["total_candidates"], 1)
+            self.assertEqual(summary["calibrated_instance_ids"], [instance_id])
+            provider.assert_not_called()
+            rollout.assert_not_called()
+
+    def test_unknown_calibration_candidate_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch(f"{MODULE}.calibrate_task") as calibrate:
+            with self.assertRaisesRegex(ValueError, "Unknown calibration candidate instance: unknown-task"):
+                main(["calibrate", "--instance-id", "unknown-task", "--results-root", directory])
+            calibrate.assert_not_called()
+
+    def test_rollout_still_rejects_non_smoke_candidate(self):
+        provider, calibrator, rollout = Mock(), Mock(), Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "Unknown selected smoke instance: sqlfluff__sqlfluff-2419"):
+                run_selected_smoke(
+                    provider, model_name_or_path="unused", results_root=Path(directory),
+                    instance_id="sqlfluff__sqlfluff-2419", calibrator=calibrator, rollout=rollout,
+                )
+        provider.complete.assert_not_called()
+        calibrator.assert_not_called()
+        rollout.assert_not_called()
+
     def test_real_candidate_and_smoke_sources_with_mock_calibration(self):
         with DEFAULT_SELECTED_TASKS.with_name("task_catalog.csv").open(encoding="utf-8-sig") as stream:
             catalog_ids = [row["instance_id"] for row in csv.DictReader(stream)]

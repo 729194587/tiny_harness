@@ -87,8 +87,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_dir = (args.results_root / run_id).resolve()
         run_dir.mkdir(parents=True, exist_ok=True)
         # dev.jsonl is the full Dev dataset underlying the catalog and smoke set.
-        source = Path(__file__).with_name("dev.jsonl") if args.all_candidates else args.selected
-        tasks = select_instances(load_agent_tasks(source), args.instance_id)
+        source = (
+            Path(__file__).with_name("dev.jsonl")
+            if args.all_candidates or args.instance_id is not None else args.selected
+        )
+        candidates = load_agent_tasks(source)
+        try:
+            tasks = select_instances(candidates, args.instance_id)
+        except ValueError:
+            raise ValueError(f"Unknown calibration candidate instance: {args.instance_id}") from None
         bundles = {
             bundle.instance_id: bundle
             for bundle in select_instances(
