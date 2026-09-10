@@ -11,11 +11,12 @@ from tiny_harness.agent.context import (
     run_started_data,
 )
 from tiny_harness.agent.messages import ModelResponse, assistant_message_from_response
+from tiny_harness.agent.environment import EnvironmentAdapter
 from tiny_harness.agent.tool_batch import execute_tool_batch
 from tiny_harness.agent.turn import call_model, model_request_inputs
 from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter
 from tiny_harness.models.base import ModelProvider
-from tiny_harness.runtime.context import context_token_count, prepare_context
+from tiny_harness.runtime.context import prepare_context
 from tiny_harness.runtime.events import (
     NULL_EVENT_LOGGER,
     EventLogError,
@@ -51,6 +52,7 @@ def agent_loop(
         for turn in range(1, context.max_turns + 1):
             context.current_turn = turn
             finalization = turn == context.max_turns
+            context.token_meter.reconcile(messages, context.tools)
             prepared = prepare_context(
                 messages,
                 context.compactor,
@@ -66,8 +68,8 @@ def agent_loop(
                 context,
                 finalization=finalization,
             )
-            context_tokens = context_token_count(
-                request_messages, request_tools, context.token_meter
+            context_tokens = context.token_meter.estimate_request(
+                messages, request_messages, request_tools
             )
             hard_limit = context.max_context_tokens
             soft_limit = context.compactor.soft_limit if context.compactor else None
@@ -163,6 +165,7 @@ def run_agent(
     memory_enabled: bool = False,
     memory_extraction_enabled: bool = True,
     is_main_agent: bool = True,
+    environment_adapter: EnvironmentAdapter | None = None,
 ) -> str:
     """兼容配置入口：装配运行上下文后进入三参数核心循环。"""
 
@@ -185,6 +188,7 @@ def run_agent(
         memory_enabled=memory_enabled,
         memory_extraction_enabled=memory_extraction_enabled,
         is_main_agent=is_main_agent,
+        environment_adapter=environment_adapter,
     )
     active_request = next(
         (

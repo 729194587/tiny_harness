@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from tiny_harness.agent.messages import ModelResponse
+from tiny_harness.agent.environment import EnvironmentAdapter, ENVIRONMENT_CONTEXT_MARKER
 from tiny_harness.agent.subagent import SubagentExecutor
-from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter
+from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter, CalibratedTokenMeter
 from tiny_harness.memory import MemoryRuntime, create_memory_runtime
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.context import CompactionRequest, ContextCompactor
@@ -35,6 +36,7 @@ from tiny_harness.runtime.shell_runner import DEFAULT_SHELL_RUNNER, ShellRunner
 from tiny_harness.runtime.test_runner import TestRunner
 from tiny_harness.runtime.todos import TodoManager
 from tiny_harness.tools.discovery import discover_tools
+from tiny_harness.tools.definition import ToolDefinition
 from tiny_harness.tools.registry import ToolRegistry
 from tiny_harness.tools.task import SubagentRunner
 
@@ -76,6 +78,7 @@ class AgentRunContext:
     current_turn: int = 0
     rounds_since_todo: int = 0
     last_finish_reason: str | None = None
+    environment_context: str = ""
 
     @property
     def tools(self) -> list[dict[str, Any]]:
@@ -109,6 +112,16 @@ def initialize_run_state(
 ) -> None:
     """在第一次模型调用前插入可选的 run-scoped 控制状态。"""
 
+    messages[:] = [
+        message for message in messages
+        if message.get("name") != ENVIRONMENT_CONTEXT_MARKER
+    ]
+    if context.environment_context:
+        messages.append({
+            "role": "user",
+            "name": ENVIRONMENT_CONTEXT_MARKER,
+            "content": context.environment_context,
+        })
     upsert_skill_catalog_marker(messages, context.skill_catalog)
     context.memory.initialize(messages, active_request)
 
@@ -196,6 +209,7 @@ def _subagent_runner(
     memory_enabled: bool,
     test_runner: TestRunner | None,
     shell_runner: ShellRunner,
+    environment_adapter: EnvironmentAdapter | None,
 ) -> SubagentRunner | None:
     if not enabled:
         return None
@@ -220,6 +234,7 @@ def _subagent_runner(
         memory_enabled=memory_enabled,
         test_runner=test_runner,
         shell_runner=shell_runner,
+        environment_adapter=environment_adapter,
     )
 
 
@@ -243,6 +258,7 @@ def create_run_context(
     memory_enabled: bool = False,
     memory_extraction_enabled: bool = True,
     is_main_agent: bool = True,
+    environment_adapter: EnvironmentAdapter | None = None,
 ) -> AgentRunContext:
     """Compose one run from top-level policy to concrete runtime state."""
 
@@ -265,6 +281,8 @@ def create_run_context(
         CompactionRequest() if max_context_tokens is not None else None
     )
 
+    token_meter = (token_meter if isinstance(token_meter, CalibratedTokenMeter)
+                   else CalibratedTokenMeter(token_meter))
     recovery = RecoveryExecutor(recovery_policy, event_logger=event_logger)
     context: AgentRunContext
     complete_for = _completion_router(
@@ -291,7 +309,8 @@ def create_run_context(
         permission_prompt=permission_prompt,
         event_logger=event_logger,
         max_context_tokens=max_context_tokens,
-        token_meter=token_meter,
+        token_meter=token_meter.heuristic,
+        environment_adapter=environment_adapter,
         tool_hooks=tool_hooks,
         recovery_policy=recovery_policy,
         skill_catalog=active_skill_catalog,
@@ -327,6 +346,15 @@ def create_run_context(
         is_main_agent=is_main_agent,
     )
     context.tool_registry = discover_tools(context)
+    if environment_adapter is not None:
+        for definition in environment_adapter.build_tools(context):
+            if not isinstance(definition, ToolDefinition):
+                raise TypeError("Environment adapter must return ToolDefinition objects")
+            context.tool_registry.register(definition)
+        initial_context = environment_adapter.initial_context(context)
+        if not isinstance(initial_context, str):
+            raise TypeError("Environment adapter initial context must be a string")
+        context.environment_context = initial_context
     context.compactor = _compactor(
         workspace,
         provider,

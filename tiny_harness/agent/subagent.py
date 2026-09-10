@@ -5,6 +5,7 @@ from pathlib import Path
 
 from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter
 from tiny_harness.models.base import ModelProvider
+from tiny_harness.agent.environment import EnvironmentAdapter
 from tiny_harness.runtime.events import EventLogger, ScopedEventLogger, EventType, EventLogError
 from tiny_harness.runtime.hooks import ToolHooks
 from tiny_harness.runtime.permissions import PermissionPolicy, PermissionPrompt
@@ -37,6 +38,7 @@ class SubagentExecutor:
         shell_runner: ShellRunner = DEFAULT_SHELL_RUNNER,
         test_runner: TestRunner | None = None,
         memory_enabled: bool = False,
+        environment_adapter: EnvironmentAdapter | None = None,
     ) -> None:
         self.run_agent = run_agent
         self.provider = provider
@@ -53,6 +55,7 @@ class SubagentExecutor:
         self.test_runner = test_runner
         self.shell_runner = shell_runner
         self.memory_enabled = memory_enabled
+        self.environment_adapter = environment_adapter
 
     def __call__(self, prompt: str, parent_tool_call_id: str) -> str:
         child_messages = [
@@ -96,6 +99,8 @@ class SubagentExecutor:
                 memory_enabled=self.memory_enabled,
                 memory_extraction_enabled=False,
                 is_main_agent=False,
+                **({"environment_adapter": self.environment_adapter}
+                   if self.environment_adapter is not None else {}),
             )
         except EventLogError:
             raise

@@ -10,7 +10,8 @@ from tiny_harness.agent.context import (
     create_run_context,
 )
 from tiny_harness.agent.loop import agent_loop
-from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter
+from tiny_harness.agent.environment import EnvironmentAdapter, ENVIRONMENT_CONTEXT_MARKER
+from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter, CalibratedTokenMeter
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger
 from tiny_harness.runtime.permissions import PermissionPrompt
@@ -24,6 +25,7 @@ RUN_SCOPED_MARKERS = frozenset(
         "tinyharness_relevant_memory",
         "tinyharness_skill_catalog",
         "tinyharness_todo_state",
+        ENVIRONMENT_CONTEXT_MARKER,
     }
 )
 
@@ -53,8 +55,10 @@ class AgentSession:
         recovery_policy: RecoveryPolicy = RecoveryPolicy(),
         memory_enabled: bool = False,
         event_logger_factory: Callable[[], EventLogger] = _null_event_logger,
+        environment_adapter: EnvironmentAdapter | None = None,
     ) -> None:
         self.provider = provider
+        self.environment_adapter = environment_adapter
         self.workspace = workspace.resolve()
         self.skill_catalog = discover_skills(self.workspace)
         self.system_message: dict[str, Any] = {
@@ -67,7 +71,7 @@ class AgentSession:
         self.max_turns = max_turns
         self.permission_prompt = permission_prompt
         self.max_context_tokens = max_context_tokens
-        self.token_meter = token_meter
+        self.token_meter = CalibratedTokenMeter(token_meter)
         self.subagent_max_turns = subagent_max_turns
         self.recovery_policy = recovery_policy
         self.memory_enabled = memory_enabled
@@ -109,6 +113,7 @@ class AgentSession:
             recovery_policy=self.recovery_policy,
             skill_catalog=self.skill_catalog,
             memory_enabled=self.memory_enabled,
+            environment_adapter=self.environment_adapter,
         )
         answer = agent_loop(self.messages, context, task)
         self._remove_run_scoped_markers()
@@ -118,12 +123,16 @@ class AgentSession:
     def clear(self) -> None:
         """Forget conversation messages without deleting workspace artifacts."""
 
+        self.token_meter.reset()
         self.messages[:] = [copy.deepcopy(self.system_message)]
         self._failed = False
 
     def _remove_run_scoped_markers(self) -> None:
+        before = len(self.messages)
         self.messages[:] = [
             message
             for message in self.messages
             if message.get("name") not in RUN_SCOPED_MARKERS
         ]
+        if len(self.messages) != before:
+            self.token_meter.reset()
