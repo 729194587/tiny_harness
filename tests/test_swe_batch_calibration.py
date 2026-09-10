@@ -1,3 +1,4 @@
+import csv
 import io
 import json
 import tempfile
@@ -9,12 +10,54 @@ from unittest.mock import patch
 
 from evals.swe_bench_lite.__main__ import _parser, main
 from evals.swe_bench_lite.calibration import CalibrationResult
+from evals.swe_bench_lite.data import load_agent_tasks
+from evals.swe_bench_lite.pipeline import DEFAULT_SELECTED_TASKS
 
 
 MODULE = "evals.swe_bench_lite.__main__"
 
 
 class BatchCalibrationTest(unittest.TestCase):
+    def test_real_candidate_and_smoke_sources_with_mock_calibration(self):
+        with DEFAULT_SELECTED_TASKS.with_name("task_catalog.csv").open(encoding="utf-8-sig") as stream:
+            catalog_ids = [row["instance_id"] for row in csv.DictReader(stream)]
+        smoke_ids = [task.instance_id for task in load_agent_tasks(DEFAULT_SELECTED_TASKS)]
+        self.assertEqual(len(smoke_ids), 4)
+        self.assertGreater(len(catalog_ids), len(smoke_ids))
+        for flag, expected_ids in (("--all-selected", smoke_ids), ("--all-candidates", catalog_ids)):
+            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as directory:
+                calls = []
+
+                def calibrate(task, bundle, output_dir):
+                    self.assertEqual(task.instance_id, bundle.instance_id)
+                    self.assertTrue(bundle.eval_script)
+                    self.assertEqual(output_dir, Path(directory) / "batch" / "tasks" / task.instance_id / "calibration")
+                    calls.append(task.instance_id)
+                    if len(calls) == 1:
+                        return CalibrationResult(task.instance_id, "CALIBRATION_FAILED", False, True, True, True)
+                    if len(calls) == 2:
+                        raise PermissionError("infrastructure failure")
+                    return CalibrationResult(task.instance_id, "CALIBRATED", True, True, True, True)
+
+                with patch(f"{MODULE}.calibrate_task", side_effect=calibrate), \
+                     patch(f"{MODULE}.ChatCompletionsProvider") as provider, \
+                     patch(f"{MODULE}.run_selected_smoke") as rollout, \
+                     patch.dict("os.environ", {}, clear=True), redirect_stdout(io.StringIO()):
+                    code = main(["calibrate", flag, "--results-root", directory, "--run-id", "batch"])
+                provider.assert_not_called()
+                rollout.assert_not_called()
+                self.assertEqual(code, 2)
+                self.assertEqual(calls, expected_ids)
+                summary = json.loads((Path(directory) / "batch" / "summary.json").read_text(encoding="utf-8"))
+                self.assertEqual(summary["total_candidates"], len(expected_ids))
+                self.assertEqual(summary["calibrated_count"], len(expected_ids) - 2)
+                self.assertEqual(summary["calibration_failed_count"], 1)
+                self.assertEqual(summary["error_count"], 1)
+                self.assertEqual(summary["calibrated_instance_ids"], expected_ids[2:])
+                self.assertEqual(summary["failed_instance_ids"], expected_ids[:1])
+                self.assertEqual(summary["error_instance_ids"], expected_ids[1:2])
+                self.assertEqual([row["instance_id"] for row in summary["results"]], expected_ids)
+
     def run_batch(self, outcomes, selection=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -78,10 +121,15 @@ class BatchCalibrationTest(unittest.TestCase):
                 self.assertEqual(summary["status"], "CALIBRATED" if code == 0 else "CALIBRATION_FAILED")
 
     def test_selection_options_are_mutually_exclusive(self):
-        with redirect_stdout(io.StringIO()), patch("sys.stderr", io.StringIO()):
-            with self.assertRaises(SystemExit) as caught:
-                _parser().parse_args(["calibrate", "--all-selected", "--instance-id", "task-0"])
-        self.assertEqual(caught.exception.code, 2)
+        for options in (
+            ["--all-selected", "--instance-id", "task-0"],
+            ["--all-candidates", "--instance-id", "task-0"],
+            ["--all-candidates", "--all-selected"],
+        ):
+            with self.subTest(options=options), patch("sys.stderr", io.StringIO()):
+                with self.assertRaises(SystemExit) as caught:
+                    _parser().parse_args(["calibrate", *options])
+            self.assertEqual(caught.exception.code, 2)
 
 
 if __name__ == "__main__":

@@ -39,6 +39,10 @@ def _parser() -> argparse.ArgumentParser:
                 "--all-selected", action="store_true",
                 help="Calibrate all selected smoke tasks sequentially (the default)",
             )
+            selection.add_argument(
+                "--all-candidates", action="store_true",
+                help="Calibrate the complete Dev candidate pool from dev.jsonl",
+            )
         command.add_argument("--selected", type=Path, default=DEFAULT_SELECTED_TASKS)
         command.add_argument("--results-root", type=Path, default=DEFAULT_RESULTS_ROOT)
         command.add_argument("--run-id")
@@ -82,11 +86,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_id = args.run_id or new_run_id("calibration")
         run_dir = (args.results_root / run_id).resolve()
         run_dir.mkdir(parents=True, exist_ok=True)
-        tasks = select_instances(load_agent_tasks(args.selected), args.instance_id)
+        # dev.jsonl is the full Dev dataset underlying the catalog and smoke set.
+        source = Path(__file__).with_name("dev.jsonl") if args.all_candidates else args.selected
+        tasks = select_instances(load_agent_tasks(source), args.instance_id)
         bundles = {
             bundle.instance_id: bundle
             for bundle in select_instances(
-                load_evaluation_bundles(args.selected), args.instance_id
+                load_evaluation_bundles(source), args.instance_id
             )
         }
         results = []
@@ -131,6 +137,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 CALIBRATED if exit_code == 0 else CALIBRATION_FAILED
             ),
             "counts": counts,
+            "total_candidates": len(rows),
+            "calibrated_count": counts[CALIBRATED],
+            "calibration_failed_count": counts[CALIBRATION_FAILED],
+            "error_count": counts["ERROR"],
+            "calibrated_instance_ids": [row["instance_id"] for row in rows if row["status"] == CALIBRATED],
+            "failed_instance_ids": [row["instance_id"] for row in rows if row["status"] == CALIBRATION_FAILED],
+            "error_instance_ids": [row["instance_id"] for row in rows if row["status"] == "ERROR"],
             "results": rows,
         }
         summary_path = run_dir / "summary.json"
