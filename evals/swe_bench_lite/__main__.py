@@ -16,7 +16,7 @@ from tiny_harness.__main__ import (
 )
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
 
-from .calibration import calibrate_task
+from .calibration import CALIBRATED, CALIBRATION_FAILED, CalibrationResult, calibrate_task
 from .data import load_agent_tasks, load_evaluation_bundles
 from .evaluator import new_run_id, run_official_evaluation
 from .pipeline import (
@@ -32,7 +32,13 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     for name in ("calibrate", "run"):
         command = subparsers.add_parser(name)
-        command.add_argument("--instance-id")
+        selection = command.add_mutually_exclusive_group()
+        selection.add_argument("--instance-id")
+        if name == "calibrate":
+            selection.add_argument(
+                "--all-selected", action="store_true",
+                help="Calibrate all selected smoke tasks sequentially (the default)",
+            )
         command.add_argument("--selected", type=Path, default=DEFAULT_SELECTED_TASKS)
         command.add_argument("--results-root", type=Path, default=DEFAULT_RESULTS_ROOT)
         command.add_argument("--run-id")
@@ -83,14 +89,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 load_evaluation_bundles(args.selected), args.instance_id
             )
         }
-        results = [
-            calibrate_task(
-                task,
-                bundles[task.instance_id],
-                run_dir / "tasks" / task.instance_id / "calibration",
-            )
-            for task in tasks
-        ]
+        results = []
+        for task in tasks:
+            try:
+                result = calibrate_task(
+                    task,
+                    bundles[task.instance_id],
+                    run_dir / "tasks" / task.instance_id / "calibration",
+                )
+            except Exception as error:
+                # Include failures outside calibrate_task's guard, e.g. output I/O.
+                result = CalibrationResult(
+                    task.instance_id, CALIBRATION_FAILED,
+                    False, False, False, False, type(error).__name__,
+                )
+            results.append(result)
         (run_dir / "metadata.json").write_text(
             json.dumps(
                 {
@@ -102,8 +115,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             + "\n",
             encoding="utf-8",
         )
-        print(run_dir)
-        return 0 if all(result.calibrated for result in results) else 1
+        rows = [
+            {**asdict(result), "status": "ERROR" if result.error_type else result.status}
+            for result in results
+        ]
+        counts = {
+            status: sum(row["status"] == status for row in rows)
+            for status in (CALIBRATED, CALIBRATION_FAILED, "ERROR")
+        }
+        exit_code = 2 if counts["ERROR"] else (
+            0 if rows and counts[CALIBRATED] == len(rows) else 1
+        )
+        summary = {
+            "status": "ERROR" if exit_code == 2 else (
+                CALIBRATED if exit_code == 0 else CALIBRATION_FAILED
+            ),
+            "counts": counts,
+            "results": rows,
+        }
+        summary_path = run_dir / "summary.json"
+        summary_path.write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        columns = (
+            "instance_id", "status", "baseline_ftp_failed", "baseline_ptp_passed",
+            "gold_ftp_passed", "gold_ptp_passed", "error_type",
+        )
+        print("\t".join(columns))
+        for row in rows:
+            print("\t".join(str(row[column]) if row[column] is not None else "-" for column in columns))
+        print(f"汇总 JSON: {summary_path}")
+        return exit_code
     api_key = os.getenv("TINYHARNESS_API_KEY")
     if not api_key:
         raise SystemExit("TINYHARNESS_API_KEY is required for run")
