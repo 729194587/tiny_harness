@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import tempfile
@@ -154,7 +155,7 @@ class DockerTaskEnvironment:
             )
             return self
         except BaseException:
-            self.close()
+            self.close(suppress_errors=True)
             raise
 
     def exec(self, command: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -185,15 +186,37 @@ class DockerTaskEnvironment:
         except (OSError, subprocess.SubprocessError):
             pass
 
-    def close(self) -> None:
+    def close(self, *, suppress_errors: bool = False) -> None:
+        # Attempt even after a failed docker run: it may have started the container.
+        if self._temporary is not None and os.name == "posix":
+            getuid = getattr(os, "getuid", None)
+            getgid = getattr(os, "getgid", None)
+            if getuid is not None and getgid is not None:
+                try:
+                    _run(
+                        [
+                            "docker", "exec", "--user", "0:0", self.container_name,
+                            "chown", "-R", "-h", f"{getuid()}:{getgid()}",
+                            CONTAINER_WORKSPACE,
+                        ],
+                        timeout=self.command_timeout_seconds,
+                        check=False,
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    pass
         self._remove_container(self.container_name)
         self._remove_container(self.bootstrap_name)
         if self._temporary is not None:
-            self._temporary.cleanup()
+            try:
+                self._temporary.cleanup()
+            except Exception:
+                if not suppress_errors:
+                    raise
+                # Keep the temporary directory reference when deletion failed.
+                return
             self._temporary = None
         self.workspace = None
         self.shell_runner = None
 
     def __exit__(self, exc_type, exc, traceback) -> None:
-        del exc_type, exc, traceback
-        self.close()
+        self.close(suppress_errors=exc_type is not None)
