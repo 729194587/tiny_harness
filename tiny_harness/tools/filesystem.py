@@ -37,9 +37,26 @@ def write_file(workspace: Path, path: str, content: str) -> str:
 
     file_path = _resolve_path(workspace, path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_text(content, encoding="utf-8")
+    with file_path.open("w", encoding="utf-8", newline="") as stream:
+        stream.write(content)
     byte_count = len(content.encode("utf-8"))
     return f"Wrote {byte_count} bytes to {path}"
+
+
+def _file_newline(content: str) -> str | None:
+    if "\r\n" in content:
+        return "\r\n"
+    if "\n" in content:
+        return "\n"
+    if "\r" in content:
+        return "\r"
+    return None
+
+
+def _normalize_newlines(content: str, newline: str | None) -> str:
+    if newline is None:
+        return content
+    return content.replace("\r\n", "\n").replace("\r", "\n").replace("\n", newline)
 
 
 def edit_file(workspace: Path, path: str, old_text: str, new_text: str) -> str:
@@ -49,8 +66,12 @@ def edit_file(workspace: Path, path: str, old_text: str, new_text: str) -> str:
         raise ValueError("old_text must not be empty")
 
     file_path = _resolve_path(workspace, path)
-    content = file_path.read_text(encoding="utf-8")
-    occurrence_count = content.count(old_text)
+    with file_path.open("r", encoding="utf-8", newline="") as stream:
+        content = stream.read()
+    newline = _file_newline(content)
+    normalized_old_text = _normalize_newlines(old_text, newline)
+    normalized_new_text = _normalize_newlines(new_text, newline)
+    occurrence_count = content.count(normalized_old_text)
     if occurrence_count == 0:
         raise ValueError(f"Text not found in {path}")
     if occurrence_count > 1:
@@ -58,7 +79,9 @@ def edit_file(workspace: Path, path: str, old_text: str, new_text: str) -> str:
             f"Text is not unique in {path}: found {occurrence_count} occurrences"
         )
 
-    file_path.write_text(content.replace(old_text, new_text, 1), encoding="utf-8")
+    updated = content.replace(normalized_old_text, normalized_new_text, 1)
+    with file_path.open("w", encoding="utf-8", newline="") as stream:
+        stream.write(updated)
     return f"Edited {path}"
 
 

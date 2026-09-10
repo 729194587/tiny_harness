@@ -31,6 +31,7 @@ from tiny_harness.runtime.skills import (
     discover_skills,
     upsert_skill_catalog_marker,
 )
+from tiny_harness.runtime.shell_runner import DEFAULT_SHELL_RUNNER, ShellRunner
 from tiny_harness.runtime.test_runner import TestRunner
 from tiny_harness.runtime.todos import TodoManager
 from tiny_harness.tools.discovery import discover_tools
@@ -69,6 +70,7 @@ class AgentRunContext:
     subagent_runner: SubagentRunner | None
     final_answer_hook: FinalAnswerHook | None
     test_runner: TestRunner | None
+    shell_runner: ShellRunner
     permission_rejections: PermissionRejectionTracker
     is_main_agent: bool = True
     current_turn: int = 0
@@ -193,6 +195,7 @@ def _subagent_runner(
     skill_catalog: SkillCatalog,
     memory_enabled: bool,
     test_runner: TestRunner | None,
+    shell_runner: ShellRunner,
 ) -> SubagentRunner | None:
     if not enabled:
         return None
@@ -216,6 +219,7 @@ def _subagent_runner(
         skill_catalog=skill_catalog,
         memory_enabled=memory_enabled,
         test_runner=test_runner,
+        shell_runner=shell_runner,
     )
 
 
@@ -234,6 +238,7 @@ def create_run_context(
     allow_subagent: bool = True,
     recovery_policy: RecoveryPolicy = RecoveryPolicy(),
     test_runner: TestRunner | None = None,
+    shell_runner: ShellRunner = DEFAULT_SHELL_RUNNER,
     skill_catalog: SkillCatalog | None = None,
     memory_enabled: bool = False,
     memory_extraction_enabled: bool = True,
@@ -292,6 +297,7 @@ def create_run_context(
         skill_catalog=active_skill_catalog,
         memory_enabled=memory_enabled,
         test_runner=test_runner,
+        shell_runner=shell_runner,
     )
     context = AgentRunContext(
         provider=provider,
@@ -316,6 +322,7 @@ def create_run_context(
         subagent_runner=subagent,
         final_answer_hook=memory.final_answer_hook,
         test_runner=test_runner,
+        shell_runner=shell_runner,
         permission_rejections=PermissionRejectionTracker(),
         is_main_agent=is_main_agent,
     )

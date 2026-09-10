@@ -9,6 +9,9 @@ description = "A minimal coding agent harness for Chat Completions model APIs"
 requires-python = ">=3.10"
 dependencies = ["openai>=1.0", "PyYAML>=6.0"]
 
+[project.optional-dependencies]
+swe-bench = ["swebench==5.0.2"]
+
 [project.scripts]
 tinyharness = "tiny_harness.__main__:main"
 

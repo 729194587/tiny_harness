@@ -170,6 +170,11 @@ class SubagentTest(unittest.TestCase):
             child_messages[1],
             {"role": "user", "content": "DELEGATED_PROMPT"},
         )
+        self.assertIn(
+            "sharing the same workspace as the parent agent",
+            child_messages[0]["content"],
+        )
+        self.assertNotIn(str(self.workspace), child_messages[0]["content"])
         child_json = json.dumps(child_request["messages"])
         self.assertNotIn("PARENT_SECRET_SYSTEM", child_json)
         self.assertNotIn("PARENT_SECRET_TASK", child_json)

@@ -30,6 +30,7 @@ from tiny_harness.runtime.permissions import (
 )
 from tiny_harness.runtime.recovery import RecoveryPolicy
 from tiny_harness.runtime.skills import SkillCatalog
+from tiny_harness.runtime.shell_runner import DEFAULT_SHELL_RUNNER, ShellRunner
 from tiny_harness.runtime.test_runner import TestRunner
 
 
@@ -157,6 +158,7 @@ def run_agent(
     allow_subagent: bool = True,
     recovery_policy: RecoveryPolicy = RecoveryPolicy(),
     test_runner: TestRunner | None = None,
+    shell_runner: ShellRunner = DEFAULT_SHELL_RUNNER,
     skill_catalog: SkillCatalog | None = None,
     memory_enabled: bool = False,
     memory_extraction_enabled: bool = True,
@@ -178,6 +180,7 @@ def run_agent(
         allow_subagent=allow_subagent,
         recovery_policy=recovery_policy,
         test_runner=test_runner,
+        shell_runner=shell_runner,
         skill_catalog=skill_catalog,
         memory_enabled=memory_enabled,
         memory_extraction_enabled=memory_extraction_enabled,

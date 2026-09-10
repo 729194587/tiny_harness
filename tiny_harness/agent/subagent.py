@@ -10,6 +10,7 @@ from tiny_harness.runtime.hooks import ToolHooks
 from tiny_harness.runtime.permissions import PermissionPolicy, PermissionPrompt
 from tiny_harness.runtime.recovery import RecoveryPolicy
 from tiny_harness.runtime.skills import SkillCatalog
+from tiny_harness.runtime.shell_runner import DEFAULT_SHELL_RUNNER, ShellRunner
 from tiny_harness.runtime.test_runner import TestRunner
 
 AgentEntrypoint = Callable[..., str]
@@ -33,6 +34,7 @@ class SubagentExecutor:
         tool_hooks: ToolHooks | None,
         recovery_policy: RecoveryPolicy,
         skill_catalog: SkillCatalog,
+        shell_runner: ShellRunner = DEFAULT_SHELL_RUNNER,
         test_runner: TestRunner | None = None,
         memory_enabled: bool = False,
     ) -> None:
@@ -49,6 +51,7 @@ class SubagentExecutor:
         self.recovery_policy = recovery_policy
         self.skill_catalog = skill_catalog
         self.test_runner = test_runner
+        self.shell_runner = shell_runner
         self.memory_enabled = memory_enabled
 
     def __call__(self, prompt: str, parent_tool_call_id: str) -> str:
@@ -56,7 +59,8 @@ class SubagentExecutor:
             {
                 "role": "system",
                 "content": (
-                    f"You are a coding subagent working in {self.workspace}. "
+                    "You are a coding subagent sharing the same workspace as "
+                    "the parent agent. "
                     "Complete only the delegated task and return a concise "
                     "final answer. Use todo_write for multi-step work."
                 ),
@@ -88,6 +92,7 @@ class SubagentExecutor:
                 recovery_policy=self.recovery_policy,
                 skill_catalog=self.skill_catalog,
                 test_runner=self.test_runner,
+                shell_runner=self.shell_runner,
                 memory_enabled=self.memory_enabled,
                 memory_extraction_enabled=False,
                 is_main_agent=False,

@@ -45,6 +45,39 @@ class FilesystemToolsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Text not found"):
             edit_file(self.workspace, "example.txt", "missing", "new")
 
+    def test_edit_preserves_lf_without_whole_file_newline_changes(self) -> None:
+        path = self.workspace / "lf.txt"
+        path.write_bytes(b"first\nTARGET\nthird\n")
+
+        edit_file(self.workspace, "lf.txt", "TARGET", "changed")
+
+        self.assertEqual(path.read_bytes(), b"first\nchanged\nthird\n")
+        self.assertNotIn(b"\r\n", path.read_bytes())
+
+    def test_edit_preserves_crlf_and_normalizes_replacement_to_it(self) -> None:
+        path = self.workspace / "crlf.txt"
+        path.write_bytes(b"first\r\nTARGET\r\nthird\r\n")
+
+        edit_file(
+            self.workspace,
+            "crlf.txt",
+            "TARGET\nthird",
+            "changed\nreplacement",
+        )
+
+        self.assertEqual(
+            path.read_bytes(),
+            b"first\r\nchanged\r\nreplacement\r\n",
+        )
+
+    def test_write_file_does_not_translate_newlines(self) -> None:
+        write_file(self.workspace, "exact.txt", "one\ntwo\r\nthree\n")
+
+        self.assertEqual(
+            (self.workspace / "exact.txt").read_bytes(),
+            b"one\ntwo\r\nthree\n",
+        )
+
     def test_list_files_returns_sorted_direct_children(self) -> None:
         (self.workspace / "zeta.txt").write_text("z", encoding="utf-8")
         (self.workspace / "Alpha.txt").write_text("a", encoding="utf-8")
