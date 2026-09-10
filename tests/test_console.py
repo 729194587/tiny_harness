@@ -404,7 +404,7 @@ class ConsoleV2Test(unittest.TestCase):
         text = stdout.getvalue()
         self.assertTrue(text.startswith("final answer\n\n────────────────\n"))
         self.assertIn("model: test-model\nturns: 1\ntool calls: 0", text)
-        self.assertIn("tokens: 1.5k input / ? output", text)
+        self.assertIn("tokens: 1.5k (预估) input / ? output", text)
 
     def test_tty_styles_are_faint_and_redirects_are_plain(self):
         tty = io.StringIO()

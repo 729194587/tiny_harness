@@ -94,6 +94,50 @@ class DockerCleanupTest(unittest.TestCase):
         self.assertEqual([call.args[0][1] for call in run.call_args_list[5:]], ["rm", "rm"])
         self.temporary.cleanup.assert_called_once()
 
+    def test_setup_makes_workspace_writable_after_reset_before_host_write(self):
+        self.temporary.name = str(Path.cwd())
+        operations = Mock()
+        with patch(f"{MODULE}.tempfile.TemporaryDirectory", return_value=self.temporary), \
+             patch.object(Path, "mkdir"), \
+             patch.object(Path, "open", unittest.mock.mock_open()) as host_open, \
+             patch(f"{MODULE}._run") as run:
+            operations.attach_mock(run, "run")
+            operations.attach_mock(host_open, "host_open")
+            self.assertIs(self.environment.__enter__(), self.environment)
+        calls = operations.mock_calls
+        reset_index = next(
+            i for i, call in enumerate(calls)
+            if call[0] == "run" and "git reset --hard" in call.args[0][-1]
+        )
+        permission_call = calls[reset_index + 1]
+        self.assertEqual(permission_call.args[0], [
+            "docker", "exec", "--user", "0:0", self.environment.container_name,
+            "chmod", "-R", "a+rwX", "/testbed",
+        ])
+        self.assertEqual(permission_call.kwargs, {"timeout": 7, "check": True})
+        self.assertEqual(calls[reset_index + 2][0], "host_open")
+
+    def test_permission_setup_failure_closes_environment_and_propagates(self):
+        self.temporary.name = str(Path.cwd())
+        primary = subprocess.CalledProcessError(1, "chmod")
+
+        def fake_run(argv, **kwargs):
+            if "chmod" in argv:
+                raise primary
+
+        with patch(f"{MODULE}.tempfile.TemporaryDirectory", return_value=self.temporary), \
+             patch(f"{MODULE}.os", self.posix), \
+             patch(f"{MODULE}._run", side_effect=fake_run) as run, \
+             patch.object(Path, "open") as host_open:
+            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                self.environment.__enter__()
+        self.assertIs(caught.exception, primary)
+        host_open.assert_not_called()
+        self.assertEqual(run.call_args_list[-3].args[0][5], "chown")
+        self.assertEqual([call.args[0][1] for call in run.call_args_list[-2:]], ["rm", "rm"])
+        self.temporary.cleanup.assert_called_once()
+        self.assertIsNone(self.environment.workspace)
+
 
 if __name__ == "__main__":
     unittest.main()

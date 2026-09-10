@@ -111,10 +111,6 @@ class DockerTaskEnvironment:
                 timeout=self.command_timeout_seconds,
             )
             self._remove_container(self.bootstrap_name)
-            exclude = self.workspace / ".git" / "info" / "exclude"
-            exclude.parent.mkdir(parents=True, exist_ok=True)
-            with exclude.open("a", encoding="utf-8") as stream:
-                stream.write("\n.tinyharness/\n")
             mount = f"type=bind,source={self.workspace},target={CONTAINER_WORKSPACE}"
             run_argv = [
                 "docker",
@@ -153,6 +149,21 @@ class DockerTaskEnvironment:
                 f"git reset --hard {self.task.base_commit} && git clean -fdx",
                 check=True,
             )
+            # Copy/reset can leave files owned by a different UID from the host
+            # agent. Both host tools and container commands need write access to
+            # this disposable bind mount, including directories and Git metadata.
+            _run(
+                [
+                    "docker", "exec", "--user", "0:0", self.container_name,
+                    "chmod", "-R", "a+rwX", CONTAINER_WORKSPACE,
+                ],
+                timeout=self.command_timeout_seconds,
+                check=True,
+            )
+            exclude = self.workspace / ".git" / "info" / "exclude"
+            exclude.parent.mkdir(parents=True, exist_ok=True)
+            with exclude.open("a", encoding="utf-8") as stream:
+                stream.write("\n.tinyharness/\n")
             return self
         except BaseException:
             self.close(suppress_errors=True)
