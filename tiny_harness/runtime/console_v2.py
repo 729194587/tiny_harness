@@ -122,6 +122,10 @@ class ConsoleRenderer:
         return (data.get("agent_scope"), data.get("parent_tool_call_id"), data.get("tool_call_id"))
 
     def _record_tokens(self, event_type: EventType, data: Mapping[str, Any]) -> None:
+        # Summary/compaction events also carry heuristic input_tokens; those
+        # are neither another API request nor actual provider usage.
+        if event_type not in (EventType.MODEL_REQUESTED, EventType.MODEL_RESPONDED):
+            return
         for key in ("input_tokens", "prompt_tokens"):
             if isinstance(data.get(key), (int, float)):
                 self._input_tokens += int(data[key])
@@ -139,7 +143,8 @@ class ConsoleRenderer:
     def _emit_verbose(self, event_type: EventType, data: Mapping[str, Any]) -> None:
         safe = []
         for key in ("turn", "tool_name", "outcome", "error_type", "duration_ms",
-                    "context_tokens", "before_tokens", "after_tokens"):
+                    "context_tokens", "before_tokens", "after_tokens",
+                    "prompt_tokens", "completion_tokens", "total_tokens"):
             if key in data and (value := _short(data[key])):
                 safe.append(f"{key}={value}")
         error = event_type in {EventType.RUN_FAILED, EventType.TOOL_DENIED,
@@ -162,6 +167,14 @@ class ConsoleRenderer:
             return
         if event_type not in self._TOOL_EVENTS:
             self._flush_tool_burst()
+        if event_type == EventType.MODEL_RESPONDED:
+            usage = " / ".join(
+                f"实际{label} {d[key]} tokens"
+                for key, label in (("prompt_tokens", "输入"), ("completion_tokens", "输出"))
+                if type(d.get(key)) is int
+            )
+            if usage:
+                self._write(usage, style=_DIM_GRAY)
         self._update(event_type, d, key, aggregate=True)
 
     def _update(self, event_type: EventType, d: Mapping[str, Any], key: tuple[Any, ...],
@@ -238,6 +251,8 @@ class ConsoleRenderer:
             duration = (self._finished_at if self._finished_at is not None else now) - (self._started_at if self._started_at is not None else now)
         effective_input = self._input_tokens if self._has_input_tokens else self._estimated_input_tokens
         input_tokens = _human_number(effective_input if self._has_input_tokens or self._estimated_input_tokens else None)
+        if not self._has_input_tokens and self._estimated_input_tokens:
+            input_tokens += " (预估)"
         output_tokens = _human_number(self._output_tokens if self._has_output_tokens else None)
         text = "\n".join(("────────────────", "", "Run summary", f"model: {_short(model)}",
                           f"turns: {self._turns}", f"tool calls: {self._tool_calls}",

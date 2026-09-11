@@ -11,6 +11,7 @@ from typing import Any
 
 from tiny_harness.__main__ import DEFAULT_MAX_CONTEXT_TOKENS
 from tiny_harness.agent.loop import run_agent
+from tiny_harness.agent.environment import EnvironmentAdapter
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import JsonlEventLogger
 from tiny_harness.runtime.permissions import PermissionDecision
@@ -56,6 +57,7 @@ def rollout_task(
     max_context_tokens: int | None = DEFAULT_MAX_CONTEXT_TOKENS,
     environment_factory: Callable[..., DockerTaskEnvironment] = DockerTaskEnvironment,
     agent_entrypoint: Callable[..., str] = run_agent,
+    environment_adapter: EnvironmentAdapter | None = None,
 ) -> RolloutResult:
     """Run an agent using only SweTask; evaluator bundles cannot enter this API."""
 
@@ -85,6 +87,8 @@ def rollout_task(
                 event_logger=JsonlEventLogger(events_path),
                 shell_runner=environment.shell_runner,
                 memory_enabled=False,
+                **({"environment_adapter": environment_adapter}
+                   if environment_adapter is not None else {}),
             )
             model_patch = environment.collect_patch()
         final_path.write_text(answer, encoding="utf-8")
@@ -160,6 +164,7 @@ def run_selected_smoke(
     max_context_tokens: int | None = DEFAULT_MAX_CONTEXT_TOKENS,
     calibrator: Callable[..., CalibrationResult] = calibrate_task,
     rollout: Callable[..., RolloutResult] = rollout_task,
+    environment_adapter: EnvironmentAdapter | None = None,
 ) -> Path:
     """Calibrate then serially roll out the selected four-task smoke set."""
 
@@ -203,6 +208,8 @@ def run_selected_smoke(
                 max_turns=max_turns,
                 subagent_max_turns=subagent_max_turns,
                 max_context_tokens=max_context_tokens,
+                **({"environment_adapter": environment_adapter}
+                   if environment_adapter is not None else {}),
             )
         except (KeyboardInterrupt, SystemExit):
             raise

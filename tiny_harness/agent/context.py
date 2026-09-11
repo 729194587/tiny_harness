@@ -14,7 +14,8 @@ from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter, Ca
 from tiny_harness.memory import MemoryRuntime, create_memory_runtime
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.context import CompactionRequest, ContextCompactor
-from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger
+from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger, CompositeEventLogger
+from tiny_harness.runtime.progress import ProgressTracker
 from tiny_harness.runtime.hooks import FinalAnswerHook, ToolHooks
 from tiny_harness.runtime.permissions import (
     DEFAULT_PERMISSION_POLICY,
@@ -79,6 +80,7 @@ class AgentRunContext:
     rounds_since_todo: int = 0
     last_finish_reason: str | None = None
     environment_context: str = ""
+    progress_tracker: ProgressTracker | None = None
 
     @property
     def tools(self) -> list[dict[str, Any]]:
@@ -210,6 +212,7 @@ def _subagent_runner(
     test_runner: TestRunner | None,
     shell_runner: ShellRunner,
     environment_adapter: EnvironmentAdapter | None,
+    progress_enabled: bool,
 ) -> SubagentRunner | None:
     if not enabled:
         return None
@@ -235,6 +238,7 @@ def _subagent_runner(
         test_runner=test_runner,
         shell_runner=shell_runner,
         environment_adapter=environment_adapter,
+        progress_enabled=progress_enabled,
     )
 
 
@@ -259,6 +263,7 @@ def create_run_context(
     memory_extraction_enabled: bool = True,
     is_main_agent: bool = True,
     environment_adapter: EnvironmentAdapter | None = None,
+    progress_enabled: bool = False,
 ) -> AgentRunContext:
     """Compose one run from top-level policy to concrete runtime state."""
 
@@ -283,6 +288,10 @@ def create_run_context(
 
     token_meter = (token_meter if isinstance(token_meter, CalibratedTokenMeter)
                    else CalibratedTokenMeter(token_meter))
+    downstream_logger = event_logger
+    progress_tracker = ProgressTracker() if progress_enabled else None
+    if progress_tracker is not None:
+        event_logger = CompositeEventLogger(event_logger, progress_tracker)
     recovery = RecoveryExecutor(recovery_policy, event_logger=event_logger)
     context: AgentRunContext
     complete_for = _completion_router(
@@ -307,10 +316,11 @@ def create_run_context(
         max_turns=subagent_max_turns,
         permission_policy=permission_policy,
         permission_prompt=permission_prompt,
-        event_logger=event_logger,
+        event_logger=downstream_logger,
         max_context_tokens=max_context_tokens,
         token_meter=token_meter.heuristic,
         environment_adapter=environment_adapter,
+        progress_enabled=progress_enabled,
         tool_hooks=tool_hooks,
         recovery_policy=recovery_policy,
         skill_catalog=active_skill_catalog,
@@ -344,6 +354,7 @@ def create_run_context(
         shell_runner=shell_runner,
         permission_rejections=PermissionRejectionTracker(),
         is_main_agent=is_main_agent,
+        progress_tracker=progress_tracker,
     )
     context.tool_registry = discover_tools(context)
     if environment_adapter is not None:

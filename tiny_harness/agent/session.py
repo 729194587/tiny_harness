@@ -56,9 +56,11 @@ class AgentSession:
         memory_enabled: bool = False,
         event_logger_factory: Callable[[], EventLogger] = _null_event_logger,
         environment_adapter: EnvironmentAdapter | None = None,
+        progress_enabled: bool = False,
     ) -> None:
         self.provider = provider
         self.environment_adapter = environment_adapter
+        self.progress_enabled = progress_enabled
         self.workspace = workspace.resolve()
         self.skill_catalog = discover_skills(self.workspace)
         self.system_message: dict[str, Any] = {
@@ -114,6 +116,7 @@ class AgentSession:
             skill_catalog=self.skill_catalog,
             memory_enabled=self.memory_enabled,
             environment_adapter=self.environment_adapter,
+            progress_enabled=self.progress_enabled,
         )
         answer = agent_loop(self.messages, context, task)
         self._remove_run_scoped_markers()

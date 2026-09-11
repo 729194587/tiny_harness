@@ -29,6 +29,9 @@ class ModelResponse:
     reasoning_content: str | None
     tool_calls: list[ToolCall]
     finish_reason: str
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
 
 
 class ModelProtocolError(RuntimeError):

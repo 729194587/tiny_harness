@@ -39,6 +39,7 @@ class SubagentExecutor:
         test_runner: TestRunner | None = None,
         memory_enabled: bool = False,
         environment_adapter: EnvironmentAdapter | None = None,
+        progress_enabled: bool = False,
     ) -> None:
         self.run_agent = run_agent
         self.provider = provider
@@ -56,6 +57,7 @@ class SubagentExecutor:
         self.shell_runner = shell_runner
         self.memory_enabled = memory_enabled
         self.environment_adapter = environment_adapter
+        self.progress_enabled = progress_enabled
 
     def __call__(self, prompt: str, parent_tool_call_id: str) -> str:
         child_messages = [
@@ -99,6 +101,7 @@ class SubagentExecutor:
                 memory_enabled=self.memory_enabled,
                 memory_extraction_enabled=False,
                 is_main_agent=False,
+                **({"progress_enabled": True} if self.progress_enabled else {}),
                 **({"environment_adapter": self.environment_adapter}
                    if self.environment_adapter is not None else {}),
             )

@@ -21,7 +21,9 @@ from evals.swe_bench_lite.data import (
 )
 from evals.swe_bench_lite.docker_workspace import DockerTaskEnvironment
 from evals.swe_bench_lite.evaluator import run_official_evaluation
-from evals.swe_bench_lite.pipeline import rollout_task
+from evals.swe_bench_lite.pipeline import rollout_task, run_selected_smoke
+from tiny_harness.agent.messages import ModelResponse, ToolCall
+from tiny_harness.environments import CodingEnvironmentAdapter
 
 
 def task():
@@ -120,6 +122,7 @@ class SweDataBoundaryTest(unittest.TestCase):
         self.assertEqual(result.model_patch, "MODEL PATCH")
         self.assertEqual(FakeEnvironment.instances[-1].network_mode, "none")
         self.assertEqual(observed["options"]["max_context_tokens"], 125_000)
+        self.assertNotIn("environment_adapter", observed["options"])
         prompt = json.dumps(observed["messages"])
         self.assertIn("PUBLIC ISSUE", prompt)
         self.assertIn("Use relative paths with all tools", prompt)
@@ -155,6 +158,7 @@ class SweCliContextBudgetTest(unittest.TestCase):
     def test_default_matches_tinyharness_cli(self):
         args = _parser().parse_args(["run"])
         self.assertEqual(args.max_context_tokens, 125_000)
+        self.assertFalse(args.coding_environment)
 
     def test_explicit_context_budget(self):
         args = _parser().parse_args(
@@ -185,6 +189,86 @@ class SweCliContextBudgetTest(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertIsNone(run_selected.call_args.kwargs["max_context_tokens"])
+        self.assertIsNone(run_selected.call_args.kwargs["environment_adapter"])
+
+    def test_coding_environment_flag_reaches_pipeline(self):
+        with (
+            patch.dict(os.environ, {"TINYHARNESS_API_KEY": "test-key"}),
+            patch("evals.swe_bench_lite.__main__.ChatCompletionsProvider"),
+            patch("evals.swe_bench_lite.__main__.run_selected_smoke", return_value=Path("run")) as run,
+        ):
+            self.assertEqual(main(["run", "--coding-environment"]), 0)
+        self.assertIsInstance(run.call_args.kwargs["environment_adapter"], CodingEnvironmentAdapter)
+
+
+class SweAdapterIntegrationTest(unittest.TestCase):
+    def test_selected_smoke_forwards_adapter_and_preserves_default(self):
+        for adapter in (None, CodingEnvironmentAdapter()):
+            with self.subTest(adapter=adapter), tempfile.TemporaryDirectory() as temporary:
+                observed = {}
+
+                def rollout(value, provider, output, **options):
+                    observed.update(options)
+                    (output / "metadata.json").write_text("{}", encoding="utf-8")
+                    return SimpleNamespace(instance_id=value.instance_id, model_patch="patch")
+
+                from evals.swe_bench_lite.calibration import CalibrationResult
+                calibrated = CalibrationResult(task().instance_id, CALIBRATED, True, True, True, True, None)
+                with (
+                    patch("evals.swe_bench_lite.pipeline.load_agent_tasks", return_value=[task()]),
+                    patch("evals.swe_bench_lite.pipeline.load_evaluation_bundles", return_value=[bundle()]),
+                ):
+                    run_selected_smoke(
+                        object(), model_name_or_path="model", results_root=Path(temporary),
+                        run_id="test", calibrator=lambda *args: calibrated,
+                        rollout=rollout, environment_adapter=adapter,
+                    )
+                if adapter is None:
+                    self.assertNotIn("environment_adapter", observed)
+                else:
+                    self.assertIs(observed["environment_adapter"], adapter)
+
+    def test_rollout_runs_adapter_tools_through_real_runtime(self):
+        commands = []
+        requests = []
+
+        class Environment(FakeEnvironment):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                (self.workspace / "README.md").write_text("public docs", encoding="utf-8")
+                self.shell_runner = SimpleNamespace(run=self.run)
+
+            def run(self, workspace, command):
+                commands.append((workspace, command))
+                return "Exit code: 0\n? new.py"
+
+        class Provider:
+            def complete(self, messages, tools):
+                requests.append(json.loads(json.dumps({"messages": messages, "tools": tools})))
+                if len(requests) == 1:
+                    return ModelResponse(None, None, [ToolCall("git-1", "git_status", "{}")], "tool_calls")
+                return ModelResponse("done", None, [], "stop")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "rollout"
+            result = rollout_task(
+                task(), Provider(), output, model_name_or_path="model", max_turns=3,
+                environment_factory=Environment, environment_adapter=CodingEnvironmentAdapter(),
+            )
+            events = [json.loads(line) for line in (output / "events.jsonl").read_text().splitlines()]
+        self.assertEqual(result.final_answer, "done")
+        self.assertEqual(len(commands), 1)
+        self.assertIn("status --porcelain=v2", commands[0][1])
+        self.assertEqual(commands[0][0], Environment.instances[-1].workspace)
+        self.assertTrue(Environment.instances[-1].closed)
+        self.assertIn("git_diff", [tool["function"]["name"] for tool in requests[0]["tools"]])
+        marker = next(m for m in requests[0]["messages"]
+                      if m.get("name") == "tinyharness_environment_context")
+        self.assertIn("README.md", marker["content"])
+        self.assertIn("? new.py", next(m["content"] for m in requests[1]["messages"]
+                                       if m.get("role") == "tool"))
+        git_events = [e["event_type"] for e in events if e["data"].get("tool_call_id") == "git-1"]
+        self.assertEqual(git_events, ["tool_called", "tool_started", "tool_result"])
 
 
 class CalibrationTest(unittest.TestCase):

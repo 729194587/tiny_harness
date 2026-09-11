@@ -206,6 +206,9 @@ class RecoveryExecutor:
                     "turn": turn,
                     "attempt": state.attempt,
                     "finish_reason": response.finish_reason,
+                    **{name: getattr(response, name) for name in
+                       ("prompt_tokens", "completion_tokens", "total_tokens")
+                       if getattr(response, name) is not None},
                     "tool_call_count": len(response.tool_calls),
                     "content_length": len(response.content or ""),
                     **({"finalization": True} if finalization else {}),

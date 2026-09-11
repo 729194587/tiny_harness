@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any
 
 from tiny_harness.agent.messages import ModelResponse, validate_model_response
 from tiny_harness.models.base import ModelErrorKind, ModelProviderError
-from tiny_harness.runtime.context import context_token_count
 from tiny_harness.runtime.events import EventType
 from tiny_harness.runtime.recovery import RecoveryState
 
@@ -58,6 +57,14 @@ def model_request_inputs(
                 "content": _runtime_state(context, finalization=finalization),
             },
         )
+    if context.progress_tracker is not None:
+        request_messages.insert(
+            insert_at,
+            {"role": "system", "content": context.progress_tracker.render(
+                turn=context.current_turn, max_turns=context.max_turns,
+            )},
+        )
+        insert_at += 1
     if finalization:
         request_messages.insert(
             insert_at + int(context.is_main_agent),
@@ -101,10 +108,8 @@ def call_model(
                 request_metadata={
                     "max_turns": context.max_turns,
                     "remaining_turns": context.max_turns - context.current_turn,
-                    "context_tokens": context_token_count(
-                        request_messages,
-                        request_tools,
-                        context.token_meter,
+                    "context_tokens": context.token_meter.estimate_request(
+                        messages, request_messages, request_tools,
                     ),
                 },
                 finalization=finalization,
@@ -124,10 +129,8 @@ def call_model(
             # 先占用本次逻辑请求唯一的 reactive recovery 机会，避免摘要失败
             # 后递归触发第二次 reactive compact。
             recovery_state.reactive_compact_used = True
-            failed_request_tokens = context_token_count(
-                request_messages,
-                request_tools,
-                context.token_meter,
+            failed_request_tokens = context.token_meter.estimate_request(
+                messages, request_messages, request_tools,
             )
             prepared = context.compactor.reactive_compact(
                 messages,
@@ -154,4 +157,7 @@ def call_model(
 
     context.last_finish_reason = response.finish_reason
     validate_model_response(response)
+    context.token_meter.observe(
+        messages, request_messages, request_tools, response.prompt_tokens
+    )
     return response

@@ -166,6 +166,7 @@ def run_agent(
     memory_extraction_enabled: bool = True,
     is_main_agent: bool = True,
     environment_adapter: EnvironmentAdapter | None = None,
+    progress_enabled: bool = False,
 ) -> str:
     """兼容配置入口：装配运行上下文后进入三参数核心循环。"""
 
@@ -189,6 +190,7 @@ def run_agent(
         memory_extraction_enabled=memory_extraction_enabled,
         is_main_agent=is_main_agent,
         environment_adapter=environment_adapter,
+        progress_enabled=progress_enabled,
     )
     active_request = next(
         (

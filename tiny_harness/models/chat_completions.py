@@ -165,4 +165,9 @@ class ChatCompletionsProvider(ToolChoiceModelProvider):
             reasoning_content=getattr(message, "reasoning_content", None),
             tool_calls=tool_calls,
             finish_reason=choice.finish_reason,
+            **{
+                name: value if type(value) is int and value >= 0 else None
+                for name in ("prompt_tokens", "completion_tokens", "total_tokens")
+                for value in (getattr(getattr(response, "usage", None), name, None),)
+            },
         )

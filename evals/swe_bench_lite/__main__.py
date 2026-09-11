@@ -15,6 +15,7 @@ from tiny_harness.__main__ import (
     DEFAULT_MODEL,
 )
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
+from tiny_harness.environments import CodingEnvironmentAdapter
 
 from .calibration import CALIBRATED, CALIBRATION_FAILED, CalibrationResult, calibrate_task
 from .data import load_agent_tasks, load_evaluation_bundles
@@ -49,6 +50,10 @@ def _parser() -> argparse.ArgumentParser:
     run = subparsers.choices["run"]
     run.add_argument("--max-turns", type=int, default=20)
     run.add_argument("--subagent-max-turns", type=int, default=10)
+    run.add_argument(
+        "--coding-environment", action="store_true",
+        help="Enable repository context and read-only Git tools for the rollout",
+    )
     context_group = run.add_mutually_exclusive_group()
     context_group.add_argument(
         "--max-context-tokens",
@@ -185,6 +190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_turns=args.max_turns,
         subagent_max_turns=args.subagent_max_turns,
         max_context_tokens=args.max_context_tokens,
+        environment_adapter=CodingEnvironmentAdapter() if args.coding_environment else None,
     )
     print(run_dir)
     return 0
