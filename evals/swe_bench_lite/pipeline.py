@@ -15,6 +15,7 @@ from tiny_harness.agent.environment import EnvironmentAdapter
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import JsonlEventLogger
 from tiny_harness.runtime.permissions import PermissionDecision
+from tiny_harness.runtime.task_state import TaskStateConfig
 
 from .calibration import CalibrationResult, calibrate_task
 from .data import SweEvaluationBundle, SweTask, load_agent_tasks, load_evaluation_bundles
@@ -59,6 +60,7 @@ def rollout_task(
     agent_entrypoint: Callable[..., str] = run_agent,
     environment_adapter: EnvironmentAdapter | None = None,
     progress_enabled: bool = False,
+    task_state_config: TaskStateConfig = TaskStateConfig(),
 ) -> RolloutResult:
     """Run an agent using only SweTask; evaluator bundles cannot enter this API."""
 
@@ -89,6 +91,7 @@ def rollout_task(
                 shell_runner=environment.shell_runner,
                 memory_enabled=False,
                 progress_enabled=progress_enabled,
+                task_state_config=task_state_config,
                 **({"environment_adapter": environment_adapter}
                    if environment_adapter is not None else {}),
             )
@@ -168,6 +171,7 @@ def run_selected_smoke(
     rollout: Callable[..., RolloutResult] = rollout_task,
     environment_adapter: EnvironmentAdapter | None = None,
     progress_enabled: bool = False,
+    task_state_config: TaskStateConfig = TaskStateConfig(),
 ) -> Path:
     """Calibrate then serially roll out the selected four-task smoke set."""
 
@@ -212,6 +216,7 @@ def run_selected_smoke(
                 subagent_max_turns=subagent_max_turns,
                 max_context_tokens=max_context_tokens,
                 progress_enabled=progress_enabled,
+                task_state_config=task_state_config,
                 **({"environment_adapter": environment_adapter}
                    if environment_adapter is not None else {}),
             )

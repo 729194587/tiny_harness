@@ -24,6 +24,7 @@ from evals.swe_bench_lite.evaluator import run_official_evaluation
 from evals.swe_bench_lite.pipeline import rollout_task, run_selected_smoke
 from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.environments import CodingEnvironmentAdapter
+from tiny_harness.runtime.task_state import TaskStateConfig
 
 
 def task():
@@ -123,6 +124,7 @@ class SweDataBoundaryTest(unittest.TestCase):
         self.assertEqual(FakeEnvironment.instances[-1].network_mode, "none")
         self.assertEqual(observed["options"]["max_context_tokens"], 125_000)
         self.assertIs(observed["options"]["progress_enabled"], False)
+        self.assertEqual(observed["options"]["task_state_config"], TaskStateConfig())
         self.assertNotIn("environment_adapter", observed["options"])
         prompt = json.dumps(observed["messages"])
         self.assertIn("PUBLIC ISSUE", prompt)
@@ -201,6 +203,67 @@ class SweCliContextBudgetTest(unittest.TestCase):
         ):
             self.assertEqual(main(["run", "--coding-environment"]), 0)
         self.assertIsInstance(run.call_args.kwargs["environment_adapter"], CodingEnvironmentAdapter)
+
+
+class SweTaskStateTest(unittest.TestCase):
+    def test_cli_forwards_independent_flags_and_defaults(self):
+        cases = [
+            ([], TaskStateConfig()),
+            (["--task-state"], TaskStateConfig(enabled=True)),
+            (["--task-state", "--task-state-reflection"],
+             TaskStateConfig(enabled=True, reflection_enabled=True)),
+            (["--task-state", "--task-state-reflection", "--task-state-reflection-interval", "5"],
+             TaskStateConfig(enabled=True, reflection_enabled=True, reflection_interval=5)),
+            (["--task-state", "--task-state-reflection-interval", "3"],
+             TaskStateConfig(enabled=True, reflection_interval=3)),
+            (["--task-state-reflection"], TaskStateConfig(reflection_enabled=True)),
+            (["--task-state-reflection-interval", "4"], TaskStateConfig(reflection_interval=4)),
+            (["--task-state-reflection-interval", "0"], TaskStateConfig()),
+        ]
+        for flags, expected in cases:
+            with (
+                self.subTest(flags=flags),
+                patch.dict(os.environ, {"TINYHARNESS_API_KEY": "test-key"}),
+                patch("evals.swe_bench_lite.__main__.ChatCompletionsProvider"),
+                patch("evals.swe_bench_lite.__main__.run_selected_smoke", return_value=Path("run")) as run,
+            ):
+                self.assertEqual(main(["run", *flags]), 0)
+                self.assertEqual(run.call_args.kwargs["task_state_config"], expected)
+
+    def test_cli_rejects_invalid_reflection_intervals(self):
+        for value in ("-1", "1.5", "abc"):
+            with self.subTest(value=value), patch("sys.stderr"):
+                with self.assertRaises(SystemExit) as error:
+                    _parser().parse_args(["run", "--task-state-reflection-interval", value])
+                self.assertEqual(error.exception.code, 2)
+
+    def test_pipeline_forwards_config_through_rollout_to_agent(self):
+        from functools import partial
+        from evals.swe_bench_lite.calibration import CalibrationResult
+
+        calibrated = CalibrationResult(task().instance_id, CALIBRATED, True, True, True, True, None)
+        for config in (None, TaskStateConfig(enabled=True),
+                       TaskStateConfig(enabled=True, reflection_enabled=True, reflection_interval=5)):
+            with self.subTest(config=config), tempfile.TemporaryDirectory() as temporary:
+                observed = []
+
+                def agent(provider, workspace, messages, **options):
+                    observed.append(options["task_state_config"])
+                    return "done"
+
+                with (
+                    patch("evals.swe_bench_lite.pipeline.load_agent_tasks", return_value=[task()]),
+                    patch("evals.swe_bench_lite.pipeline.load_evaluation_bundles", return_value=[bundle()]),
+                ):
+                    run_selected_smoke(
+                        object(), model_name_or_path="model", results_root=Path(temporary),
+                        run_id="test", calibrator=lambda *args: calibrated,
+                        rollout=partial(rollout_task, environment_factory=FakeEnvironment, agent_entrypoint=agent),
+                        **({"task_state_config": config} if config is not None else {}),
+                    )
+                self.assertEqual(observed, [config or TaskStateConfig()])
+                if config is not None:
+                    self.assertIs(observed[0], config)
 
 
 class SweProgressTest(unittest.TestCase):
