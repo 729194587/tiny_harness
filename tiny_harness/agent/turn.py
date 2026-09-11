@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import copy
 from typing import TYPE_CHECKING, Any
 
 from tiny_harness.agent.messages import ModelResponse, validate_model_response
 from tiny_harness.models.base import ModelErrorKind, ModelProviderError
+from tiny_harness.runtime.context import model_context_messages
 from tiny_harness.runtime.events import EventType
 from tiny_harness.runtime.recovery import RecoveryState
 
@@ -42,7 +42,7 @@ def model_request_inputs(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Build one request without committing runtime-only instructions to history."""
 
-    request_messages = copy.deepcopy(messages)
+    request_messages = model_context_messages(messages)
     insert_at = 0
     while (
         insert_at < len(request_messages)

@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from tiny_harness.agent.context import create_run_context
 from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.agent.turn import call_model, model_request_inputs
+from tiny_harness.runtime.context import CompactionConfig, validate_active_request
+from tiny_harness.agent.session import AgentSession
 from tiny_harness.runtime.recovery import RecoveryPolicy
 
 
@@ -80,6 +82,66 @@ class CallModelTest(unittest.TestCase):
 
         self.assertIs(result, response)
         self.assertEqual(messages, [{"role": "user", "content": "task"}])
+
+    def test_large_read_file_is_bounded_on_every_request_without_mutating_history(self):
+        large = "HEAD\n" + "x" * 100_000 + "\nTAIL"
+        threshold = CompactionConfig().large_result_chars
+        items = [
+            ("large", "read_file", large),
+            ("small", "read_file", "short result"),
+            ("boundary", "read_file", "b" * threshold),
+            ("over", "read_file", "c" * (threshold + 1)),
+            ("other", "bash", large),
+        ]
+        messages = [
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": call_id, "type": "function", "function": {
+                    "name": name, "arguments": '{"path":"file.py"}',
+                }} for call_id, name, _ in items
+            ]},
+            *[{"role": "tool", "tool_call_id": call_id, "content": content}
+              for call_id, _, content in items],
+        ]
+        original = copy.deepcopy(messages)
+        provider = FakeProvider([ModelResponse("done", None, [], "stop")] * 3)
+        context = self.context(provider)
+        self.assertIsNone(context.compactor)
+        for finalization in (False, False, True):
+            call_model(messages, context, finalization=finalization)
+            request = provider.calls[-1]["messages"]
+            validate_active_request(request, "task")
+            results = [item for item in request if item["role"] == "tool"]
+            self.assertEqual([item["tool_call_id"] for item in results],
+                             [item[0] for item in items])
+            self.assertLess(len(results[0]["content"]), 3_000)
+            self.assertIn("HEAD", results[0]["content"])
+            self.assertIn("TAIL", results[0]["content"])
+            self.assertIn(str(len(large)), results[0]["content"])
+            self.assertEqual(results[1]["content"], "short result")
+            self.assertEqual(results[2]["content"], "b" * threshold)
+            self.assertLess(len(results[3]["content"]), 3_000)
+            self.assertEqual(results[4]["content"], large)
+            self.assertEqual(messages, original)
+
+    def test_session_preserves_full_read_result_across_submissions(self):
+        content = "start\n" + "x" * 100_000 + "\nend"
+        (self.workspace / "large.txt").write_text(content, encoding="utf-8")
+        provider = FakeProvider([
+            ModelResponse(None, None, [ToolCall(
+                "read", "read_file", '{"path":"large.txt"}'
+            )], "tool_calls"),
+            ModelResponse("done", None, [], "stop"),
+            ModelResponse("done again", None, [], "stop"),
+        ])
+        session = AgentSession(provider, self.workspace, "system")
+        self.assertEqual(session.submit("read the file"), "done")
+        self.assertEqual(session.submit("continue"), "done again")
+        results = [item for item in session.messages if item["role"] == "tool"]
+        self.assertEqual(results[0]["content"], content)
+        for call in provider.calls[1:]:
+            result = next(item for item in call["messages"] if item["role"] == "tool")
+            self.assertLess(len(result["content"]), 3_000)
 
     def test_rejects_invalid_response_without_committing_it(self) -> None:
         response = ModelResponse(

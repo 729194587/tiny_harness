@@ -205,6 +205,45 @@ def _split_context(
     return prefix, blocks
 
 
+def model_context_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Bound read_file payloads in a request copy, retaining full runtime history.
+
+    This projection applies even without a context budget. It neither persists
+    artifacts nor commits the shortened results back to canonical messages.
+    """
+
+    working = copy.deepcopy(messages)
+    _, blocks = _split_context(working)
+    config = CompactionConfig()
+    for block in blocks:
+        for message in block:
+            if message.get("role") != "tool":
+                continue
+            content = message.get("content")
+            if not isinstance(content, str) or len(content) <= config.large_result_chars:
+                continue
+            tool_name, _ = ContextCompactor._tool_call_metadata(
+                block, message["tool_call_id"]
+            )
+            if tool_name != "read_file":
+                continue
+            head_chars = (config.result_preview_chars + 1) // 2
+            tail_chars = config.result_preview_chars // 2
+            message["content"] = (
+                "<read-file-preview>\n"
+                f"Original characters: {len(content)}\n"
+                "Middle omitted from model context; full result retained in runtime history.\n"
+                "Use existing bash with a bounded line range to inspect omitted file content.\n"
+                f"Head:\n{content[:head_chars]}\n"
+                "...[middle omitted]...\n"
+                f"Tail:\n{content[-tail_chars:]}\n"
+                "</read-file-preview>"
+            )
+    return working
+
+
 def _is_control_message(message: dict[str, Any]) -> bool:
     name = message.get("name")
     return isinstance(name, str) and name.startswith("tinyharness_")
