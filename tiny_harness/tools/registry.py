@@ -27,6 +27,7 @@ from tiny_harness.runtime.permissions import (
     permission_denial_feedback,
     resolve_permission,
 )
+from tiny_harness.runtime.tool_trace import ToolTraceConfig
 from tiny_harness.tools.definition import ToolDefinition
 
 
@@ -114,6 +115,7 @@ def dispatch(
     permission_rejections: PermissionRejectionTracker | None = None,
     turn: int = 0,
     tool_called_logged: bool = False,
+    tool_trace: ToolTraceConfig = ToolTraceConfig(),
 ) -> ToolResult:
     """Authorize and execute one registered Tool, converting failures to text."""
 
@@ -143,6 +145,7 @@ def dispatch(
                 "duration_ms": 0,
                 "content_length": len(content),
                 "content_hash": hash_text(content),
+                **tool_trace.result_metadata(content),
             },
         )
         return ToolResult(tool_call_id=call.id, content=content)
@@ -190,6 +193,7 @@ def dispatch(
                     "duration_ms": 0,
                     "content_length": len(result.content),
                     "content_hash": hash_text(result.content),
+                    **tool_trace.result_metadata(result.content),
                 },
             )
             return result
@@ -232,6 +236,7 @@ def dispatch(
                 "duration_ms": 0,
                 "content_length": len(result.content),
                 "content_hash": hash_text(result.content),
+                **tool_trace.result_metadata(result.content),
             },
         )
         return result
@@ -281,6 +286,7 @@ def dispatch(
             **({"error_type": error_type} if error_type else {}),
             "content_length": len(content),
             "content_hash": hash_text(content),
+            **tool_trace.result_metadata(content),
         },
     )
 

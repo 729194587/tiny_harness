@@ -15,6 +15,8 @@ from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter, Ca
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger
 from tiny_harness.runtime.permissions import PermissionPrompt
+from tiny_harness.runtime.tool_trace import ToolTraceConfig
+from tiny_harness.runtime.task_state import TASK_STATE_MARKER, TaskStateConfig
 from tiny_harness.runtime.recovery import RecoveryPolicy
 from tiny_harness.runtime.skills import discover_skills
 
@@ -26,6 +28,7 @@ RUN_SCOPED_MARKERS = frozenset(
         "tinyharness_skill_catalog",
         "tinyharness_todo_state",
         ENVIRONMENT_CONTEXT_MARKER,
+        TASK_STATE_MARKER,
     }
 )
 
@@ -56,11 +59,15 @@ class AgentSession:
         memory_enabled: bool = False,
         event_logger_factory: Callable[[], EventLogger] = _null_event_logger,
         environment_adapter: EnvironmentAdapter | None = None,
+        tool_trace: ToolTraceConfig = ToolTraceConfig(),
         progress_enabled: bool = False,
+        task_state_config: TaskStateConfig = TaskStateConfig(),
     ) -> None:
         self.provider = provider
         self.environment_adapter = environment_adapter
+        self.tool_trace = tool_trace
         self.progress_enabled = progress_enabled
+        self.task_state_config = task_state_config
         self.workspace = workspace.resolve()
         self.skill_catalog = discover_skills(self.workspace)
         self.system_message: dict[str, Any] = {
@@ -116,7 +123,9 @@ class AgentSession:
             skill_catalog=self.skill_catalog,
             memory_enabled=self.memory_enabled,
             environment_adapter=self.environment_adapter,
+            tool_trace=self.tool_trace,
             progress_enabled=self.progress_enabled,
+            task_state_config=self.task_state_config,
         )
         answer = agent_loop(self.messages, context, task)
         self._remove_run_scoped_markers()

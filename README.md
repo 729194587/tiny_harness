@@ -18,6 +18,29 @@ LLM response
 
 `clear()` 显式丢弃会话历史并解除 failed 状态，不撤销工具副作用；空任务的输入校验失败不会使 Session 进入 failed 状态。直接使用 `run_agent()` / `agent_loop()` 的调用方应在异常后自行丢弃运行或重建会话，不能把可能未闭合的 messages 直接用于下一次运行。
 
+### TaskState（可选）
+
+通过 Python API 的 `task_state_config` 参数为 `AgentSession`、`run_agent()` 或
+`create_run_context()` 启用运行级工作状态：
+
+```python
+from tiny_harness.runtime.task_state import TaskStateConfig
+
+task_state_config = TaskStateConfig(
+    enabled=True,
+    reflection_enabled=True,
+    reflection_interval=5,
+)
+```
+
+状态包含 `goal/current_focus/facts/hypotheses/completed/failed_attempts/next_steps`，
+每次 run 独立创建；Session 下次提交和子代理均使用新的状态，不写入跨会话记忆。
+`TOOL_RESULT` 自动记录调用返回或失败；handler 返回并不表示任务语义成功。
+状态注入模型上下文并计入预算。可选反思在自动、手动、恢复压缩前，以及每完成
+指定轮数后的下一轮开始前执行；间隔为 `0` 时只在压缩前反思。
+反思使用无工具模型请求，普通失败或非法 JSON 保留原状态，事件日志故障仍上抛。
+默认完全关闭；仅设置 `enabled=True` 时不增加反思调用。
+
 ## Tools
 
 每个 Tool module 通过 `build_tools(context)` 返回零个或多个 `ToolDefinition`。一个 definition 同时拥有 model-facing 元数据与可执行 handler：

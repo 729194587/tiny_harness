@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from tiny_harness.runtime.shell_runner import DEFAULT_SHELL_RUNNER, ShellRunner
+from tiny_harness.runtime.tool_trace import ToolTraceConfig
 from tiny_harness.tools.definition import ToolDefinition
 
 if TYPE_CHECKING:
@@ -32,6 +33,11 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
                 "required": ["command"],
                 "additionalProperties": False,
             },
+            trace_metadata=lambda arguments: (
+                {"command": arguments["command"]}
+                if getattr(context, "tool_trace", ToolTraceConfig()).enabled
+                and isinstance(arguments.get("command"), str) else {}
+            ),
             execute=lambda call, arguments: bash(
                 workspace, runner=runner, **arguments
             ),

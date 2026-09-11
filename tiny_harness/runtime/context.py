@@ -395,6 +395,7 @@ class ContextCompactor:
         self.event_logger = event_logger
         self.config = config
         self._summary_complete = summary_complete or provider.complete
+        self.before_compaction: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None
 
     @property
     def soft_limit(self) -> int:
@@ -910,6 +911,8 @@ class ContextCompactor:
     ) -> PreparedContext:
         """Summarize the oldest eligible balanced history into one marker."""
 
+        if reason != "automatic" and self.before_compaction is not None:
+            messages = self.before_compaction(copy.deepcopy(messages))
         target_tokens = self.max_tokens if max_tokens is None else max_tokens
         source_messages = (
             messages
@@ -1053,6 +1056,8 @@ class ContextCompactor:
     ) -> PreparedContext:
         """将一次被 API 拒绝的上下文强制缩减至少 25%。"""
 
+        if self.before_compaction is not None:
+            messages = self.before_compaction(copy.deepcopy(messages))
         if failed_request_tokens < 1:
             raise ValueError("failed_request_tokens must be at least 1")
         if not 0 < self.config.reactive_target_ratio < 1:
@@ -1233,6 +1238,8 @@ def prepare_context(
         if prepared.lossy_changed:
             compactor.emit_compacted(prepared, "automatic")
     else:
+        if compactor.before_compaction is not None:
+            working = compactor.before_compaction(working)
         summary_source = copy.deepcopy(working)
         persisted_tool_call_ids: list[str] = []
         persisted = compactor.pressure_compact_tool_results(

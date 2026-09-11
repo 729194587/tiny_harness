@@ -108,6 +108,7 @@ def execute_tool_batch(
             permission_rejections=context.permission_rejections,
             turn=context.current_turn,
             tool_called_logged=True,
+            tool_trace=context.tool_trace,
         )
         messages.append(
             {
