@@ -58,6 +58,7 @@ def rollout_task(
     environment_factory: Callable[..., DockerTaskEnvironment] = DockerTaskEnvironment,
     agent_entrypoint: Callable[..., str] = run_agent,
     environment_adapter: EnvironmentAdapter | None = None,
+    progress_enabled: bool = False,
 ) -> RolloutResult:
     """Run an agent using only SweTask; evaluator bundles cannot enter this API."""
 
@@ -87,6 +88,7 @@ def rollout_task(
                 event_logger=JsonlEventLogger(events_path),
                 shell_runner=environment.shell_runner,
                 memory_enabled=False,
+                progress_enabled=progress_enabled,
                 **({"environment_adapter": environment_adapter}
                    if environment_adapter is not None else {}),
             )
@@ -165,6 +167,7 @@ def run_selected_smoke(
     calibrator: Callable[..., CalibrationResult] = calibrate_task,
     rollout: Callable[..., RolloutResult] = rollout_task,
     environment_adapter: EnvironmentAdapter | None = None,
+    progress_enabled: bool = False,
 ) -> Path:
     """Calibrate then serially roll out the selected four-task smoke set."""
 
@@ -208,6 +211,7 @@ def run_selected_smoke(
                 max_turns=max_turns,
                 subagent_max_turns=subagent_max_turns,
                 max_context_tokens=max_context_tokens,
+                progress_enabled=progress_enabled,
                 **({"environment_adapter": environment_adapter}
                    if environment_adapter is not None else {}),
             )

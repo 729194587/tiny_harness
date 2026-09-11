@@ -51,6 +51,10 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--max-turns", type=int, default=20)
     run.add_argument("--subagent-max-turns", type=int, default=10)
     run.add_argument(
+        "--progress", action="store_true",
+        help="Enable run-scoped execution state observations for the rollout",
+    )
+    run.add_argument(
         "--coding-environment", action="store_true",
         help="Enable repository context and read-only Git tools for the rollout",
     )
@@ -190,6 +194,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_turns=args.max_turns,
         subagent_max_turns=args.subagent_max_turns,
         max_context_tokens=args.max_context_tokens,
+        progress_enabled=args.progress,
         environment_adapter=CodingEnvironmentAdapter() if args.coding_environment else None,
     )
     print(run_dir)
