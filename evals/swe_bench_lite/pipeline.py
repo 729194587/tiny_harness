@@ -16,6 +16,7 @@ from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import JsonlEventLogger
 from tiny_harness.runtime.permissions import PermissionDecision
 from tiny_harness.runtime.task_state import TaskStateConfig
+from tiny_harness.runtime.tool_trace import ToolTraceConfig
 
 from .calibration import CalibrationResult, calibrate_task
 from .data import SweEvaluationBundle, SweTask, load_agent_tasks, load_evaluation_bundles
@@ -88,6 +89,7 @@ def rollout_task(
                 max_context_tokens=max_context_tokens,
                 permission_policy=ContainerPermissionPolicy(),
                 event_logger=JsonlEventLogger(events_path),
+                tool_trace=ToolTraceConfig(enabled=True, result_preview_chars=200),
                 shell_runner=environment.shell_runner,
                 memory_enabled=False,
                 progress_enabled=progress_enabled,

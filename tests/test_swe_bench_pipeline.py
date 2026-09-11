@@ -25,6 +25,7 @@ from evals.swe_bench_lite.pipeline import rollout_task, run_selected_smoke
 from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.environments import CodingEnvironmentAdapter
 from tiny_harness.runtime.task_state import TaskStateConfig
+from tiny_harness.runtime.tool_trace import ToolTraceConfig
 
 
 def task():
@@ -125,6 +126,8 @@ class SweDataBoundaryTest(unittest.TestCase):
         self.assertEqual(observed["options"]["max_context_tokens"], 125_000)
         self.assertIs(observed["options"]["progress_enabled"], False)
         self.assertEqual(observed["options"]["task_state_config"], TaskStateConfig())
+        self.assertEqual(observed["options"]["tool_trace"],
+                         ToolTraceConfig(enabled=True, result_preview_chars=200))
         self.assertNotIn("environment_adapter", observed["options"])
         prompt = json.dumps(observed["messages"])
         self.assertIn("PUBLIC ISSUE", prompt)
@@ -155,6 +158,43 @@ class SweDataBoundaryTest(unittest.TestCase):
         )
 
         self.assertIsNone(observed["max_context_tokens"])
+
+    def test_rollout_records_bash_trace_without_truncating_model_result(self):
+        command = "echo trace"
+        tool_output = "output " * 100
+        requests = []
+
+        class Environment(FakeEnvironment):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.shell_runner = SimpleNamespace(run=lambda *args: tool_output)
+
+        class Provider:
+            def complete(self, messages, tools):
+                requests.append(json.loads(json.dumps(messages)))
+                if len(requests) == 1:
+                    return ModelResponse(None, None, [ToolCall(
+                        "bash-1", "bash", json.dumps({"command": command})
+                    )], "tool_calls")
+                return ModelResponse("done", None, [], "stop")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "out"
+            result = rollout_task(
+                task(), Provider(), output, model_name_or_path="model",
+                max_turns=3, environment_factory=Environment,
+            )
+            events = [json.loads(line) for line in
+                      (output / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+
+        tool_events = {event["event_type"]: event["data"] for event in events
+                       if event["data"].get("tool_call_id") == "bash-1"}
+        self.assertEqual(tool_events["tool_called"]["command"], command)
+        self.assertEqual(tool_events["tool_result"]["content_preview"], tool_output[:200])
+        self.assertEqual(tool_events["tool_result"]["content_length"], len(tool_output))
+        self.assertEqual(next(message["content"] for message in requests[1]
+                              if message.get("role") == "tool"), tool_output)
+        self.assertEqual(result.final_answer, "done")
 
 
 class SweCliContextBudgetTest(unittest.TestCase):
