@@ -14,6 +14,7 @@ from tiny_harness.models.chat_completions import ChatCompletionsProvider
 from tiny_harness.runtime.events import CompositeEventLogger, EventLogError, JsonlEventLogger
 from tiny_harness.runtime.console import ConsoleEventLogger, short, trace_summary
 from tiny_harness.runtime.recovery import RecoveryPolicy
+from tiny_harness.runtime.task_state import TaskStateConfig
 
 DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
@@ -103,6 +104,23 @@ def _parser() -> argparse.ArgumentParser:
             "启用 workspace 持久 Memory（会增加无工具模型调用并写入 "
             ".tinyharness/memory）"
         ),
+    )
+    parser.add_argument(
+        "--task-state",
+        action="store_true",
+        help="启用运行级 TaskStateManager（默认关闭）",
+    )
+    parser.add_argument(
+        "--task-state-reflection",
+        action="store_true",
+        help="启用 LLM 任务状态反思（需同时启用 --task-state，默认关闭）",
+    )
+    parser.add_argument(
+        "--task-state-reflection-interval",
+        type=_non_negative_int,
+        default=0,
+        metavar="N",
+        help="任务状态反思的轮次间隔（默认：0，仅压缩前；需显式启用反思）",
     )
     return parser
 
@@ -266,6 +284,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         subagent_max_turns=args.subagent_max_turns,
         recovery_policy=RecoveryPolicy(max_retries=args.max_model_retries),
         memory_enabled=args.memory,
+        task_state_config=TaskStateConfig(
+            enabled=args.task_state,
+            reflection_enabled=args.task_state_reflection,
+            reflection_interval=args.task_state_reflection_interval,
+        ),
     )
 
     try:
