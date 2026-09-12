@@ -30,7 +30,6 @@ from tiny_harness.runtime.permissions import (
     PermissionPrompt,
 )
 from tiny_harness.runtime.tool_trace import ToolTraceConfig
-from tiny_harness.runtime.task_state import TaskStateConfig
 from tiny_harness.runtime.recovery import RecoveryPolicy
 from tiny_harness.runtime.skills import SkillCatalog
 from tiny_harness.runtime.shell_runner import DEFAULT_SHELL_RUNNER, ShellRunner
@@ -54,8 +53,6 @@ def agent_loop(
         for turn in range(1, context.max_turns + 1):
             context.current_turn = turn
             finalization = turn == context.max_turns
-            if context.task_state_manager is not None:
-                messages[:] = context.task_state_manager.prepare_turn(messages, turn)
             context.token_meter.reconcile(messages, context.tools)
             prepared = prepare_context(
                 messages,
@@ -172,7 +169,7 @@ def run_agent(
     environment_adapter: EnvironmentAdapter | None = None,
     tool_trace: ToolTraceConfig = ToolTraceConfig(),
     progress_enabled: bool = False,
-    task_state_config: TaskStateConfig = TaskStateConfig(),
+    working_memory_enabled: bool = False,
 ) -> str:
     """兼容配置入口：装配运行上下文后进入三参数核心循环。"""
 
@@ -198,7 +195,7 @@ def run_agent(
         environment_adapter=environment_adapter,
         tool_trace=tool_trace,
         progress_enabled=progress_enabled,
-        task_state_config=task_state_config,
+        working_memory_enabled=working_memory_enabled,
     )
     active_request = next(
         (

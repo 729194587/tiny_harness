@@ -13,11 +13,9 @@ from tiny_harness.__main__ import (
     DEFAULT_BASE_URL,
     DEFAULT_MAX_CONTEXT_TOKENS,
     DEFAULT_MODEL,
-    _non_negative_int,
 )
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
 from tiny_harness.environments import CodingEnvironmentAdapter
-from tiny_harness.runtime.task_state import TaskStateConfig
 
 from .calibration import CALIBRATED, CALIBRATION_FAILED, CalibrationResult, calibrate_task
 from .data import load_agent_tasks, load_evaluation_bundles
@@ -53,17 +51,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--max-turns", type=int, default=20)
     run.add_argument("--subagent-max-turns", type=int, default=10)
     run.add_argument(
-        "--task-state", action="store_true",
-        help="Enable run-scoped TaskStateManager (default: disabled)",
-    )
-    run.add_argument(
-        "--task-state-reflection", action="store_true",
-        help="Enable LLM task state reflection (requires --task-state)",
-    )
-    run.add_argument(
-        "--task-state-reflection-interval", type=_non_negative_int, default=0,
-        metavar="N",
-        help="Reflection turn interval (default: 0, pre-compaction only; requires reflection)",
+        "--working-memory", action="store_true",
+        help="Enable task-scoped Working Memory (default: disabled)",
     )
     run.add_argument(
         "--progress", action="store_true",
@@ -210,11 +199,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         subagent_max_turns=args.subagent_max_turns,
         max_context_tokens=args.max_context_tokens,
         progress_enabled=args.progress,
-        task_state_config=TaskStateConfig(
-            enabled=args.task_state,
-            reflection_enabled=args.task_state_reflection,
-            reflection_interval=args.task_state_reflection_interval,
-        ),
+        working_memory_enabled=args.working_memory,
         environment_adapter=CodingEnvironmentAdapter() if args.coding_environment else None,
     )
     print(run_dir)

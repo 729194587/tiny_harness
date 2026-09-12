@@ -40,6 +40,7 @@ class EventType(str, Enum):
     TOOL_DENIED = "tool_denied"
     TOOL_RESULT = "tool_result"
     TODO_UPDATED = "todo_updated"
+    WORKING_MEMORY_UPDATED = "working_memory_updated"
     SUBAGENT_STARTED = "subagent_started"
     SUBAGENT_FINISHED = "subagent_finished"
     SUBAGENT_FAILED = "subagent_failed"

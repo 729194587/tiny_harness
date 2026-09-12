@@ -17,7 +17,6 @@ from tiny_harness.agent.context import DEFAULT_SUBAGENT_MAX_TURNS
 from tiny_harness.runtime.events import CompositeEventLogger, JsonlEventLogger
 from tiny_harness.runtime.console import ConsoleEventLogger
 from tiny_harness.runtime.recovery import RecoveryPolicy
-from tiny_harness.runtime.task_state import TaskStateConfig
 
 
 class CliTest(unittest.TestCase):
@@ -80,33 +79,26 @@ class CliTest(unittest.TestCase):
         )
         self.assertFalse(session_class.call_args.kwargs["memory_enabled"])
         self.assertEqual(
-            session_class.call_args.kwargs["task_state_config"], TaskStateConfig()
+            session_class.call_args.kwargs["working_memory_enabled"], False
         )
         session_class.return_value.submit.assert_called_once_with("create a file")
 
     @patch("tiny_harness.__main__.AgentSession")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")
-    def test_task_state_options_are_independent(self, _, session_class) -> None:
-        cases = [
-            (["--task-state"], TaskStateConfig(enabled=True)),
-            (["--task-state", "--task-state-reflection"],
-             TaskStateConfig(enabled=True, reflection_enabled=True)),
-            (["--task-state", "--task-state-reflection", "--task-state-reflection-interval", "5"],
-             TaskStateConfig(enabled=True, reflection_enabled=True, reflection_interval=5)),
-            (["--task-state", "--task-state-reflection-interval", "3"],
-             TaskStateConfig(enabled=True, reflection_interval=3)),
-            (["--task-state-reflection"], TaskStateConfig(reflection_enabled=True)),
-            (["--task-state-reflection-interval", "4"], TaskStateConfig(reflection_interval=4)),
-            (["--task-state-reflection-interval", "0"], TaskStateConfig()),
-        ]
+    def test_working_memory_option(self, _, session_class) -> None:
         session_class.return_value.submit.return_value = "done"
-        for options, expected in cases:
-            with self.subTest(options=options):
-                with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
-                    with contextlib.redirect_stdout(io.StringIO()):
-                        exit_code = main(["task", "--workspace", str(self.workspace), *options])
-                self.assertEqual(exit_code, 0)
-                self.assertEqual(session_class.call_args.kwargs["task_state_config"], expected)
+        with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
+            with contextlib.redirect_stdout(io.StringIO()):
+                exit_code = main(["task", "--workspace", str(self.workspace), "--working-memory"])
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(session_class.call_args.kwargs["working_memory_enabled"])
+
+    def test_legacy_task_state_flags_are_removed(self) -> None:
+        for flag in ("--task-state", "--task-state-reflection", "--task-state-reflection-interval"):
+            with self.subTest(flag=flag), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    main(["task", flag])
+                self.assertEqual(error.exception.code, 2)
 
     @patch("tiny_harness.__main__.AgentSession")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")
@@ -309,9 +301,6 @@ class CliTest(unittest.TestCase):
             (["task", "--max-context-tokens", "0"], "必须大于或等于 1"),
             (["task", "--subagent-max-turns", "0"], "必须大于或等于 1"),
             (["task", "--max-model-retries", "-1"], "必须大于或等于 0"),
-            (["task", "--task-state-reflection-interval", "-1"], "必须大于或等于 0"),
-            (["task", "--task-state-reflection-interval", "1.5"], "invalid"),
-            (["task", "--task-state-reflection-interval", "abc"], "invalid"),
         ]
         for arguments, expected in cases:
             with self.subTest(arguments=arguments):

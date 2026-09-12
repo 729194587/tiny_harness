@@ -24,7 +24,6 @@ from tiny_harness.runtime.permissions import (
     PermissionRejectionTracker,
 )
 from tiny_harness.runtime.tool_trace import ToolTraceConfig
-from tiny_harness.runtime.task_state import TASK_STATE_MARKER, TaskStateConfig, TaskStateManager
 from tiny_harness.runtime.recovery import (
     RecoveryExecutor,
     RecoveryPolicy,
@@ -38,6 +37,7 @@ from tiny_harness.runtime.skills import (
 from tiny_harness.runtime.shell_runner import DEFAULT_SHELL_RUNNER, ShellRunner
 from tiny_harness.runtime.test_runner import TestRunner
 from tiny_harness.runtime.todos import TodoManager
+from tiny_harness.runtime.working_memory import WorkingMemory, WorkingMemoryTokenMeter
 from tiny_harness.tools.discovery import discover_tools
 from tiny_harness.tools.definition import ToolDefinition
 from tiny_harness.tools.registry import ToolRegistry
@@ -84,7 +84,7 @@ class AgentRunContext:
     environment_context: str = ""
     tool_trace: ToolTraceConfig = ToolTraceConfig()
     progress_tracker: ProgressTracker | None = None
-    task_state_manager: TaskStateManager | None = None
+    working_memory: WorkingMemory | None = None
 
     @property
     def tools(self) -> list[dict[str, Any]]:
@@ -130,9 +130,8 @@ def initialize_run_state(
         })
     upsert_skill_catalog_marker(messages, context.skill_catalog)
     context.memory.initialize(messages, active_request)
-    messages[:] = [m for m in messages if m.get("name") != TASK_STATE_MARKER]
-    if context.task_state_manager is not None:
-        context.task_state_manager.initialize(active_request)
+    if context.working_memory is not None:
+        context.working_memory.initialize(active_request)
 
 
 ModelCompletion = Callable[
@@ -221,7 +220,7 @@ def _subagent_runner(
     environment_adapter: EnvironmentAdapter | None,
     tool_trace: ToolTraceConfig,
     progress_enabled: bool,
-    task_state_config: TaskStateConfig,
+    working_memory_enabled: bool,
 ) -> SubagentRunner | None:
     if not enabled:
         return None
@@ -249,7 +248,7 @@ def _subagent_runner(
         environment_adapter=environment_adapter,
         tool_trace=tool_trace,
         progress_enabled=progress_enabled,
-        task_state_config=task_state_config,
+        working_memory_enabled=working_memory_enabled,
     )
 
 
@@ -276,7 +275,7 @@ def create_run_context(
     environment_adapter: EnvironmentAdapter | None = None,
     tool_trace: ToolTraceConfig = ToolTraceConfig(),
     progress_enabled: bool = False,
-    task_state_config: TaskStateConfig = TaskStateConfig(),
+    working_memory_enabled: bool = False,
 ) -> AgentRunContext:
     """Compose one run from top-level policy to concrete runtime state."""
 
@@ -312,12 +311,6 @@ def create_run_context(
         recovery,
         lambda: context.current_turn,
     )
-    task_state_manager = (TaskStateManager(
-        task_state_config,
-        lambda messages, schemas: complete_for("task_state_reflection", messages, schemas),
-    ) if task_state_config.enabled else None)
-    if task_state_manager is not None:
-        event_logger = CompositeEventLogger(event_logger, task_state_manager)
     memory = create_memory_runtime(
         workspace,
         enabled=memory_enabled,
@@ -341,7 +334,7 @@ def create_run_context(
         environment_adapter=environment_adapter,
         tool_trace=tool_trace,
         progress_enabled=progress_enabled,
-        task_state_config=task_state_config,
+        working_memory_enabled=working_memory_enabled,
         tool_hooks=tool_hooks,
         recovery_policy=recovery_policy,
         skill_catalog=active_skill_catalog,
@@ -377,7 +370,7 @@ def create_run_context(
         is_main_agent=is_main_agent,
         tool_trace=tool_trace,
         progress_tracker=progress_tracker,
-        task_state_manager=task_state_manager,
+        working_memory=WorkingMemory() if working_memory_enabled else None,
     )
     context.tool_registry = discover_tools(context)
     if environment_adapter is not None:
@@ -398,6 +391,6 @@ def create_run_context(
         complete_for,
         event_logger,
     )
-    if context.compactor is not None and task_state_manager is not None:
-        context.compactor.before_compaction = task_state_manager.before_compaction
+    if context.compactor is not None and context.working_memory is not None:
+        context.compactor.token_meter = WorkingMemoryTokenMeter(token_meter, context.working_memory)
     return context

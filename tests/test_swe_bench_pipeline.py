@@ -24,7 +24,6 @@ from evals.swe_bench_lite.evaluator import run_official_evaluation
 from evals.swe_bench_lite.pipeline import rollout_task, run_selected_smoke
 from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.environments import CodingEnvironmentAdapter
-from tiny_harness.runtime.task_state import TaskStateConfig
 from tiny_harness.runtime.tool_trace import ToolTraceConfig
 
 
@@ -125,7 +124,7 @@ class SweDataBoundaryTest(unittest.TestCase):
         self.assertEqual(FakeEnvironment.instances[-1].network_mode, "none")
         self.assertEqual(observed["options"]["max_context_tokens"], 125_000)
         self.assertIs(observed["options"]["progress_enabled"], False)
-        self.assertEqual(observed["options"]["task_state_config"], TaskStateConfig())
+        self.assertEqual(observed["options"]["working_memory_enabled"], False)
         self.assertEqual(observed["options"]["tool_trace"],
                          ToolTraceConfig(enabled=True, result_preview_chars=200))
         self.assertNotIn("environment_adapter", observed["options"])
@@ -245,50 +244,36 @@ class SweCliContextBudgetTest(unittest.TestCase):
         self.assertIsInstance(run.call_args.kwargs["environment_adapter"], CodingEnvironmentAdapter)
 
 
-class SweTaskStateTest(unittest.TestCase):
-    def test_cli_forwards_independent_flags_and_defaults(self):
-        cases = [
-            ([], TaskStateConfig()),
-            (["--task-state"], TaskStateConfig(enabled=True)),
-            (["--task-state", "--task-state-reflection"],
-             TaskStateConfig(enabled=True, reflection_enabled=True)),
-            (["--task-state", "--task-state-reflection", "--task-state-reflection-interval", "5"],
-             TaskStateConfig(enabled=True, reflection_enabled=True, reflection_interval=5)),
-            (["--task-state", "--task-state-reflection-interval", "3"],
-             TaskStateConfig(enabled=True, reflection_interval=3)),
-            (["--task-state-reflection"], TaskStateConfig(reflection_enabled=True)),
-            (["--task-state-reflection-interval", "4"], TaskStateConfig(reflection_interval=4)),
-            (["--task-state-reflection-interval", "0"], TaskStateConfig()),
-        ]
-        for flags, expected in cases:
+class SweWorkingMemoryTest(unittest.TestCase):
+    def test_cli_forwards_default_and_enabled(self):
+        for enabled in (False, True):
             with (
-                self.subTest(flags=flags),
+                self.subTest(enabled=enabled),
                 patch.dict(os.environ, {"TINYHARNESS_API_KEY": "test-key"}),
                 patch("evals.swe_bench_lite.__main__.ChatCompletionsProvider"),
                 patch("evals.swe_bench_lite.__main__.run_selected_smoke", return_value=Path("run")) as run,
             ):
-                self.assertEqual(main(["run", *flags]), 0)
-                self.assertEqual(run.call_args.kwargs["task_state_config"], expected)
+                self.assertEqual(main(["run"] + (["--working-memory"] if enabled else [])), 0)
+                self.assertIs(run.call_args.kwargs["working_memory_enabled"], enabled)
 
-    def test_cli_rejects_invalid_reflection_intervals(self):
-        for value in ("-1", "1.5", "abc"):
-            with self.subTest(value=value), patch("sys.stderr"):
+    def test_cli_removes_legacy_flags(self):
+        for flag in ("--task-state", "--task-state-reflection", "--task-state-reflection-interval"):
+            with self.subTest(flag=flag), patch("sys.stderr"):
                 with self.assertRaises(SystemExit) as error:
-                    _parser().parse_args(["run", "--task-state-reflection-interval", value])
+                    _parser().parse_args(["run", flag])
                 self.assertEqual(error.exception.code, 2)
 
-    def test_pipeline_forwards_config_through_rollout_to_agent(self):
+    def test_pipeline_forwards_through_rollout_to_agent(self):
         from functools import partial
         from evals.swe_bench_lite.calibration import CalibrationResult
 
         calibrated = CalibrationResult(task().instance_id, CALIBRATED, True, True, True, True, None)
-        for config in (None, TaskStateConfig(enabled=True),
-                       TaskStateConfig(enabled=True, reflection_enabled=True, reflection_interval=5)):
-            with self.subTest(config=config), tempfile.TemporaryDirectory() as temporary:
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled), tempfile.TemporaryDirectory() as temporary:
                 observed = []
 
                 def agent(provider, workspace, messages, **options):
-                    observed.append(options["task_state_config"])
+                    observed.append(options["working_memory_enabled"])
                     return "done"
 
                 with (
@@ -299,11 +284,63 @@ class SweTaskStateTest(unittest.TestCase):
                         object(), model_name_or_path="model", results_root=Path(temporary),
                         run_id="test", calibrator=lambda *args: calibrated,
                         rollout=partial(rollout_task, environment_factory=FakeEnvironment, agent_entrypoint=agent),
-                        **({"task_state_config": config} if config is not None else {}),
+                        **({"working_memory_enabled": True} if enabled else {}),
                     )
-                self.assertEqual(observed, [config or TaskStateConfig()])
-                if config is not None:
-                    self.assertIs(observed[0], config)
+                self.assertEqual(observed, [enabled])
+
+
+class SweExperimentMetadataTest(unittest.TestCase):
+    def test_task_and_run_configuration_match_for_all_outcomes(self):
+        from functools import partial
+        from evals.swe_bench_lite.calibration import CalibrationResult
+
+        for enabled in (False, True):
+            for outcome in ("COMPLETED", "FAILED", "SKIPPED_CALIBRATION_FAILED"):
+                with self.subTest(enabled=enabled, outcome=outcome), tempfile.TemporaryDirectory() as temporary:
+                    adapter = CodingEnvironmentAdapter() if enabled else None
+                    options = ({
+                        "max_turns": 7, "subagent_max_turns": 3, "max_context_tokens": None,
+                        "working_memory_enabled": True, "progress_enabled": True,
+                        "environment_adapter": adapter,
+                    } if enabled else {})
+                    expected = {
+                        "max_turns": 7 if enabled else 20,
+                        "subagent_max_turns": 3 if enabled else 10,
+                        "max_context_tokens": None if enabled else 125000,
+                        "working_memory_enabled": enabled,
+                        "progress_enabled": enabled,
+                        "environment_adapter": (
+                            f"{type(adapter).__module__}.{type(adapter).__qualname__}" if enabled else None
+                        ),
+                        "coding_environment_enabled": enabled,
+                    }
+                    calibrated = CalibrationResult(
+                        task().instance_id,
+                        CALIBRATION_FAILED if outcome == "SKIPPED_CALIBRATION_FAILED" else CALIBRATED,
+                        True, True, True, True,
+                    )
+
+                    def agent(*args, **kwargs):
+                        if outcome == "FAILED":
+                            raise RuntimeError("failed")
+                        return "done"
+
+                    with (
+                        patch("evals.swe_bench_lite.pipeline.load_agent_tasks", return_value=[task()]),
+                        patch("evals.swe_bench_lite.pipeline.load_evaluation_bundles", return_value=[bundle()]),
+                    ):
+                        run_dir = run_selected_smoke(
+                            object(), model_name_or_path="model", results_root=Path(temporary),
+                            run_id="test", calibrator=lambda *args: calibrated,
+                            rollout=partial(rollout_task, environment_factory=FakeEnvironment, agent_entrypoint=agent),
+                            **options,
+                        )
+                    run_metadata = json.loads((run_dir / "metadata.json").read_text())
+                    task_metadata = json.loads((run_dir / "tasks" / task().instance_id / "metadata.json").read_text())
+                    self.assertEqual(task_metadata["status"], outcome)
+                    self.assertEqual(run_metadata["tasks"][0]["status"], outcome)
+                    for metadata in (run_metadata, task_metadata, run_metadata["tasks"][0]):
+                        self.assertEqual({key: metadata[key] for key in expected}, expected)
 
 
 class SweProgressTest(unittest.TestCase):

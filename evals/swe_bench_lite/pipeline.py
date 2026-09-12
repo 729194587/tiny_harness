@@ -12,10 +12,10 @@ from typing import Any
 from tiny_harness.__main__ import DEFAULT_MAX_CONTEXT_TOKENS
 from tiny_harness.agent.loop import run_agent
 from tiny_harness.agent.environment import EnvironmentAdapter
+from tiny_harness.environments import CodingEnvironmentAdapter
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import JsonlEventLogger
 from tiny_harness.runtime.permissions import PermissionDecision
-from tiny_harness.runtime.task_state import TaskStateConfig
 from tiny_harness.runtime.tool_trace import ToolTraceConfig
 
 from .calibration import CalibrationResult, calibrate_task
@@ -48,6 +48,30 @@ class RolloutResult:
     model_patch: str
 
 
+def _experiment_config(
+    max_turns: int,
+    subagent_max_turns: int,
+    max_context_tokens: int | None,
+    working_memory_enabled: bool,
+    progress_enabled: bool,
+    environment_adapter: EnvironmentAdapter | None,
+) -> dict[str, Any]:
+    """Use identical configuration fields in task and run metadata."""
+    adapter_type = type(environment_adapter)
+    return {
+        "max_turns": max_turns,
+        "subagent_max_turns": subagent_max_turns,
+        "max_context_tokens": max_context_tokens,
+        "working_memory_enabled": working_memory_enabled,
+        "progress_enabled": progress_enabled,
+        "environment_adapter": (
+            f"{adapter_type.__module__}.{adapter_type.__qualname__}"
+            if environment_adapter is not None else None
+        ),
+        "coding_environment_enabled": isinstance(environment_adapter, CodingEnvironmentAdapter),
+    }
+
+
 def rollout_task(
     task: SweTask,
     provider: ModelProvider,
@@ -61,7 +85,7 @@ def rollout_task(
     agent_entrypoint: Callable[..., str] = run_agent,
     environment_adapter: EnvironmentAdapter | None = None,
     progress_enabled: bool = False,
-    task_state_config: TaskStateConfig = TaskStateConfig(),
+    working_memory_enabled: bool = False,
 ) -> RolloutResult:
     """Run an agent using only SweTask; evaluator bundles cannot enter this API."""
 
@@ -73,6 +97,10 @@ def rollout_task(
     patch_path.touch(exist_ok=True)
     events_path.touch(exist_ok=True)
     started_at = datetime.now(timezone.utc).isoformat()
+    experiment_config = _experiment_config(
+        max_turns, subagent_max_turns, max_context_tokens,
+        working_memory_enabled, progress_enabled, environment_adapter,
+    )
     try:
         with environment_factory(task, network_mode="none") as environment:
             if environment.workspace is None or environment.shell_runner is None:
@@ -93,7 +121,7 @@ def rollout_task(
                 shell_runner=environment.shell_runner,
                 memory_enabled=False,
                 progress_enabled=progress_enabled,
-                task_state_config=task_state_config,
+                working_memory_enabled=working_memory_enabled,
                 **({"environment_adapter": environment_adapter}
                    if environment_adapter is not None else {}),
             )
@@ -103,6 +131,7 @@ def rollout_task(
         metadata = {
             "instance_id": task.instance_id,
             "status": "COMPLETED",
+            **experiment_config,
             "model_name_or_path": model_name_or_path,
             "max_context_tokens": max_context_tokens,
             "started_at": started_at,
@@ -113,6 +142,7 @@ def rollout_task(
         metadata = {
             "instance_id": task.instance_id,
             "status": "FAILED",
+            **experiment_config,
             "model_name_or_path": model_name_or_path,
             "max_context_tokens": max_context_tokens,
             "started_at": started_at,
@@ -173,11 +203,15 @@ def run_selected_smoke(
     rollout: Callable[..., RolloutResult] = rollout_task,
     environment_adapter: EnvironmentAdapter | None = None,
     progress_enabled: bool = False,
-    task_state_config: TaskStateConfig = TaskStateConfig(),
+    working_memory_enabled: bool = False,
 ) -> Path:
     """Calibrate then serially roll out the selected four-task smoke set."""
 
     active_run_id = run_id or new_run_id("smoke")
+    experiment_config = _experiment_config(
+        max_turns, subagent_max_turns, max_context_tokens,
+        working_memory_enabled, progress_enabled, environment_adapter,
+    )
     run_dir = (results_root / active_run_id).resolve()
     run_dir.mkdir(parents=True, exist_ok=False)
     tasks = select_instances(load_agent_tasks(selected_path), instance_id)
@@ -201,6 +235,7 @@ def run_selected_smoke(
             metadata = {
                 "instance_id": task.instance_id,
                 "status": "SKIPPED_CALIBRATION_FAILED",
+                **experiment_config,
                 "calibration": asdict(calibration),
             }
             (task_dir / "metadata.json").write_text(
@@ -218,7 +253,7 @@ def run_selected_smoke(
                 subagent_max_turns=subagent_max_turns,
                 max_context_tokens=max_context_tokens,
                 progress_enabled=progress_enabled,
-                task_state_config=task_state_config,
+                working_memory_enabled=working_memory_enabled,
                 **({"environment_adapter": environment_adapter}
                    if environment_adapter is not None else {}),
             )
@@ -229,6 +264,7 @@ def run_selected_smoke(
                 {
                     "instance_id": task.instance_id,
                     "status": "FAILED",
+                    **experiment_config,
                     "error_type": type(error).__name__,
                 }
             )
@@ -237,11 +273,13 @@ def run_selected_smoke(
         completed_status = {
             "instance_id": task.instance_id,
             "status": "COMPLETED",
+            **experiment_config,
             "calibration": asdict(calibration),
         }
         task_metadata_path = task_dir / "metadata.json"
         task_metadata = json.loads(task_metadata_path.read_text(encoding="utf-8"))
         task_metadata["calibration"] = asdict(calibration)
+        task_metadata.update(experiment_config)
         task_metadata_path.write_text(
             json.dumps(task_metadata, indent=2) + "\n", encoding="utf-8"
         )
@@ -252,6 +290,7 @@ def run_selected_smoke(
         json.dumps(
             {
                 "run_id": active_run_id,
+                **experiment_config,
                 "benchmark": "SWE-bench Lite Dev selected smoke set",
                 "is_full_swe_bench_lite_score": False,
                 "model_name_or_path": model_name_or_path,

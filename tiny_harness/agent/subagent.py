@@ -10,7 +10,6 @@ from tiny_harness.runtime.events import EventLogger, ScopedEventLogger, EventTyp
 from tiny_harness.runtime.hooks import ToolHooks
 from tiny_harness.runtime.permissions import PermissionPolicy, PermissionPrompt
 from tiny_harness.runtime.tool_trace import ToolTraceConfig
-from tiny_harness.runtime.task_state import TaskStateConfig
 from tiny_harness.runtime.recovery import RecoveryPolicy
 from tiny_harness.runtime.skills import SkillCatalog
 from tiny_harness.runtime.shell_runner import DEFAULT_SHELL_RUNNER, ShellRunner
@@ -43,7 +42,7 @@ class SubagentExecutor:
         environment_adapter: EnvironmentAdapter | None = None,
         tool_trace: ToolTraceConfig = ToolTraceConfig(),
         progress_enabled: bool = False,
-        task_state_config: TaskStateConfig = TaskStateConfig(),
+        working_memory_enabled: bool = False,
     ) -> None:
         self.run_agent = run_agent
         self.provider = provider
@@ -63,7 +62,7 @@ class SubagentExecutor:
         self.environment_adapter = environment_adapter
         self.tool_trace = tool_trace
         self.progress_enabled = progress_enabled
-        self.task_state_config = task_state_config
+        self.working_memory_enabled = working_memory_enabled
 
     def __call__(self, prompt: str, parent_tool_call_id: str) -> str:
         child_messages = [
@@ -107,7 +106,7 @@ class SubagentExecutor:
                 memory_enabled=self.memory_enabled,
                 memory_extraction_enabled=False,
                 is_main_agent=False,
-                **({"task_state_config": self.task_state_config} if self.task_state_config.enabled else {}),
+                **({"working_memory_enabled": True} if self.working_memory_enabled else {}),
                 **({"tool_trace": self.tool_trace} if self.tool_trace.enabled else {}),
                 **({"progress_enabled": True} if self.progress_enabled else {}),
                 **({"environment_adapter": self.environment_adapter}
