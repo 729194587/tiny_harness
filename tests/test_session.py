@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from tiny_harness.agent.messages import ModelResponse
 from tiny_harness.agent.session import AgentSession
+from tiny_harness.agent.turn import TOOL_USE_EFFICIENCY_GUIDANCE
 
 
 class FakeProvider:
@@ -70,6 +71,7 @@ class AgentSessionTest(unittest.TestCase):
             [(item["role"], item.get("content")) for item in second_request],
             [
                 ("system", "system"),
+                ("system", TOOL_USE_EFFICIENCY_GUIDANCE),
                 ("user", "FIRST_TASK"),
                 ("assistant", "FIRST_ANSWER"),
                 ("user", "SECOND_TASK"),
@@ -84,6 +86,10 @@ class AgentSessionTest(unittest.TestCase):
             )
         )
         self.assertEqual(session.messages[-1]["content"], "SECOND_ANSWER")
+        self.assertNotIn(
+            {"role": "system", "content": TOOL_USE_EFFICIENCY_GUIDANCE},
+            session.messages,
+        )
 
     def test_session_freezes_skill_catalog_and_next_session_refreshes_it(self) -> None:
         provider = FakeProvider(

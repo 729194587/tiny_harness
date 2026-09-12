@@ -23,6 +23,7 @@ from evals.swe_bench_lite.docker_workspace import DockerTaskEnvironment
 from evals.swe_bench_lite.evaluator import run_official_evaluation
 from evals.swe_bench_lite.pipeline import rollout_task, run_selected_smoke
 from tiny_harness.agent.messages import ModelResponse, ToolCall
+from tiny_harness.agent.turn import TOOL_USE_EFFICIENCY_GUIDANCE
 from tiny_harness.environments import CodingEnvironmentAdapter
 from tiny_harness.runtime.tool_trace import ToolTraceConfig
 
@@ -194,6 +195,10 @@ class SweDataBoundaryTest(unittest.TestCase):
         self.assertEqual(next(message["content"] for message in requests[1]
                               if message.get("role") == "tool"), tool_output)
         self.assertEqual(result.final_answer, "done")
+        for request in requests:
+            self.assertEqual(request.count(
+                {"role": "system", "content": TOOL_USE_EFFICIENCY_GUIDANCE}), 1)
+            self.assertIn("Use relative paths with all tools", request[0]["content"])
 
 
 class SweCliContextBudgetTest(unittest.TestCase):

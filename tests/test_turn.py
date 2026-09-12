@@ -6,7 +6,9 @@ from types import SimpleNamespace
 
 from tiny_harness.agent.context import create_run_context
 from tiny_harness.agent.messages import ModelResponse, ToolCall
-from tiny_harness.agent.turn import call_model, model_request_inputs
+from tiny_harness.agent.turn import (
+    TOOL_USE_EFFICIENCY_GUIDANCE, call_model, model_request_inputs,
+)
 from tiny_harness.runtime.context import CompactionConfig, validate_active_request
 from tiny_harness.agent.session import AgentSession
 from tiny_harness.runtime.recovery import RecoveryPolicy
@@ -211,6 +213,29 @@ class CallModelTest(unittest.TestCase):
         self.assertEqual(final_tools, [])
         self.assertEqual(messages[0]["content"], "stable")
         self.assertEqual(len(messages), 2)
+
+    def test_efficiency_guidance_is_request_only_and_requires_available_tools(self):
+        messages = [
+            {"role": "system", "content": "task guidance"},
+            {"role": "user", "content": "task"},
+        ]
+        original = copy.deepcopy(messages)
+        guidance = {"role": "system", "content": TOOL_USE_EFFICIENCY_GUIDANCE}
+        for is_main_agent in (True, False):
+            for has_tools, finalization in ((True, False), (False, False), (True, True)):
+                with self.subTest(main=is_main_agent, tools=has_tools, final=finalization):
+                    tools = [{"type": "function", "function": {"name": "read_file"}}] if has_tools else []
+                    context = self.context(FakeProvider([]), tools)
+                    context.is_main_agent = is_main_agent
+                    for _ in range(2):
+                        request, schemas = model_request_inputs(
+                            messages, context, finalization=finalization,
+                        )
+                        self.assertEqual(request.count(guidance), int(has_tools and not finalization))
+                        self.assertEqual(schemas, [] if finalization else tools)
+                        self.assertEqual(messages, original)
+                        self.assertEqual(request[0], original[0])
+                        self.assertEqual(request[-1], original[-1])
 
     def test_main_turns_send_auto_and_finalization_sends_none(self) -> None:
         provider = ToolChoiceProvider(

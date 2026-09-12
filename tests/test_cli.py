@@ -14,6 +14,8 @@ from tiny_harness.__main__ import (
     main,
 )
 from tiny_harness.agent.context import DEFAULT_SUBAGENT_MAX_TURNS
+from tiny_harness.agent.messages import ModelResponse
+from tiny_harness.agent.turn import TOOL_USE_EFFICIENCY_GUIDANCE
 from tiny_harness.runtime.events import CompositeEventLogger, JsonlEventLogger
 from tiny_harness.runtime.console import ConsoleEventLogger
 from tiny_harness.runtime.recovery import RecoveryPolicy
@@ -26,6 +28,28 @@ class CliTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
+
+    def test_cli_provider_request_includes_shared_efficiency_guidance(self):
+        requests = []
+
+        class Provider:
+            def complete(self, messages, tools):
+                requests.append(messages)
+                return ModelResponse("done", None, [], "stop")
+
+        stdout = io.StringIO()
+        with patch("tiny_harness.__main__.ChatCompletionsProvider", return_value=Provider()), \
+                patch("pathlib.Path.home", return_value=self.workspace), \
+                patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+            exit_code = main(["inspect", "--workspace", str(self.workspace)])
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(stdout.getvalue().startswith("done\n"))
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0].count(
+            {"role": "system", "content": TOOL_USE_EFFICIENCY_GUIDANCE}), 1)
+        self.assertIn("Prefer targeted investigation", requests[0][0]["content"])
 
     @patch("tiny_harness.__main__.AgentSession")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")

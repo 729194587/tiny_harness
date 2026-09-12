@@ -14,6 +14,17 @@ if TYPE_CHECKING:
     from tiny_harness.agent.context import AgentRunContext
 
 
+TOOL_USE_EFFICIENCY_GUIDANCE = (
+    "Tool-use efficiency: When multiple read-only investigation actions are "
+    "independent, their arguments are already known, and no action needs another "
+    "call's result to determine its arguments, prefer issuing multiple tool_calls "
+    "in the same assistant response. Analyze the results together after all calls "
+    "return. If a later action depends on an earlier result, use separate turns. "
+    "Do not expand the investigation scope or add low-value calls just to form a "
+    "batch. Choose the tools and number of calls according to the task."
+)
+
+
 FINALIZATION_INSTRUCTION = (
     "The execution turn budget is exhausted.\n"
     "No further tool use is available.\n"
@@ -48,6 +59,12 @@ def model_request_inputs(
         insert_at < len(request_messages)
         and request_messages[insert_at].get("role") == "system"
     ):
+        insert_at += 1
+    if not finalization and context.tools:
+        request_messages.insert(
+            insert_at,
+            {"role": "system", "content": TOOL_USE_EFFICIENCY_GUIDANCE},
+        )
         insert_at += 1
     if context.is_main_agent:
         request_messages.insert(

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from tiny_harness.agent.loop import run_agent as agent_loop
 from tiny_harness.agent.messages import ModelResponse, ToolCall
+from tiny_harness.agent.turn import TOOL_USE_EFFICIENCY_GUIDANCE
 from tiny_harness.models.base import ModelErrorKind, ModelProviderError
 from tiny_harness.runtime.events import EventLogError
 from tiny_harness.runtime.hooks import HookBlock, ToolHooks
@@ -164,10 +165,14 @@ class SubagentTest(unittest.TestCase):
         ]
         self.assertEqual(
             [message["role"] for message in child_messages],
-            ["system", "user"],
+            ["system", "system", "user"],
         )
         self.assertEqual(
             child_messages[1],
+            {"role": "system", "content": TOOL_USE_EFFICIENCY_GUIDANCE},
+        )
+        self.assertEqual(
+            child_messages[2],
             {"role": "user", "content": "DELEGATED_PROMPT"},
         )
         self.assertIn(
