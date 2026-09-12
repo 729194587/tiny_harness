@@ -118,6 +118,7 @@ def call_model(
                 request_messages,
                 request_tools,
                 purpose="main",
+                token_meter=context.token_meter,
                 turn=context.current_turn,
                 state=recovery_state,
                 context_recovery_available=(

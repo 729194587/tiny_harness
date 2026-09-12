@@ -15,6 +15,8 @@ from tiny_harness.models.base import (
     complete_with_tool_choice,
 )
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger, EventType
+from tiny_harness.context.attribution import request_attribution
+from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter
 
 TRANSIENT_ERROR_KINDS = frozenset(
     {
@@ -121,11 +123,18 @@ class RecoveryExecutor:
         request_metadata: Mapping[str, Any] | None = None,
         finalization: bool = False,
         tool_choice: ToolChoice | None = None,
+        token_meter: TokenMeter = DEFAULT_TOKEN_METER,
     ) -> ModelResponse:
         """Return a response or raise after bounded transient retries."""
 
         while True:
             state.attempt += 1
+            attribution = request_attribution(messages, tools, token_meter)
+            context_tokens = (request_metadata or {}).get("context_tokens")
+            if isinstance(context_tokens, int):
+                attribution["calibration_adjustment_tokens"] = (
+                    context_tokens - attribution["estimated_tokens"]
+                )
             self.event_logger.emit(
                 EventType.MODEL_REQUESTED,
                 {
@@ -134,6 +143,7 @@ class RecoveryExecutor:
                     "attempt": state.attempt,
                     **({"finalization": True} if finalization else {}),
                     **dict(request_metadata or {}),
+                    "context_attribution": attribution,
                 },
             )
             try:

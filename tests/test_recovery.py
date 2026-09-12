@@ -82,7 +82,7 @@ class RecoveryExecutorTest(unittest.TestCase):
             if event["event_type"] == "model_requested"
         ]
         self.assertEqual(
-            requested,
+            [{k: v for k, v in data.items() if k != "context_attribution"} for data in requested],
             [
                 {"purpose": "main", "turn": 3, "attempt": 1},
                 {"purpose": "main", "turn": 3, "attempt": 2},
