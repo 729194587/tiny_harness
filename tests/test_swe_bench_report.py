@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from evals.swe_bench_lite.__main__ import main
 from evals.swe_bench_lite.report import analyze_run, compare_runs
+from tiny_harness.context.attribution import request_attribution
 
 
 class ReportTest(unittest.TestCase):
@@ -82,6 +83,31 @@ class ReportTest(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(main(["compare", str(a), str(b)]), 0)
             provider.assert_not_called()
+
+    def test_assistant_breakdown_sum_peak_and_legacy_events(self):
+        details = [request_attribution([{"role": "assistant", "reasoning_content": "SECRET" * size,
+                                        "content": "visible" * (30 - size),
+                                        "tool_calls": [{"id": "a", "type": "function", "function": {
+                                            "name": "read_file", "arguments": "{}"}}]}], [])
+                   for size in (20, 2)]
+        legacy = {"categories": {"assistant_history": {"estimated_tokens": 10}}}
+        root = self.write("breakdown", [("model_requested", {"turn": i, "context_attribution": d})
+                                         for i, d in enumerate([*details, legacy], 1)])
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(main(["report", str(root)]), 0)
+        report = json.loads(output.getvalue())
+        summary = report["context_attribution_summary"]
+        for name in ("reasoning_content", "visible_content", "tool_calls", "envelope_and_other"):
+            values = [d["assistant_history_breakdown"][name]["estimated_tokens"] for d in details]
+            self.assertEqual(summary["assistant_history_breakdown"][name],
+                             {"sum_estimated_tokens": sum(values), "peak_estimated_tokens": max(values)})
+        values = [d["categories"]["assistant_history"]["estimated_tokens"] for d in details] + [10]
+        self.assertEqual(summary["categories"]["assistant_history"],
+                         {"sum_estimated_tokens": sum(values), "peak_estimated_tokens": max(values)})
+        self.assertEqual(report["peak_request_context_tokens"], max(d["estimated_tokens"] for d in details))
+        self.assertNotIn("SECRET", output.getvalue())
+        old = self.write("legacy", [("model_requested", {"context_attribution": legacy})])
+        self.assertEqual(analyze_run(old)["context_attribution_summary"]["assistant_history_breakdown"], {})
 
     def test_missing_and_corrupt_artifacts_are_explicit_errors(self):
         with self.assertRaises(ValueError):

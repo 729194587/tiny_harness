@@ -22,7 +22,8 @@ def analyze_run(run_dir: Path) -> dict:
     request_contexts = []
     pre_prune_contexts = []
     prunes = []
-    attribution = {"categories": {}, "tool_results_by_name": {}}
+    attribution = {"categories": {}, "tool_results_by_name": {},
+                   "assistant_history_breakdown": {}}
     attributed_requests = responses = 0
     first_writes = []
     mutations = []

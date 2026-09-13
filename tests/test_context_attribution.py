@@ -9,7 +9,7 @@ from tiny_harness.agent.context import create_run_context
 from tiny_harness.agent.messages import ModelResponse
 from tiny_harness.agent.turn import call_model, model_request_inputs
 from tiny_harness.context.attribution import request_attribution
-from tiny_harness.context.token_meter import CalibratedTokenMeter
+from tiny_harness.context.token_meter import CalibratedTokenMeter, DEFAULT_TOKEN_METER
 from tiny_harness.models.base import ModelErrorKind, ModelProviderError
 from tiny_harness.runtime.events import EventType
 from tiny_harness.runtime.recovery import RecoveryExecutor, RecoveryPolicy, RecoveryState
@@ -22,6 +22,52 @@ def batch(name, content):
 
 
 class AttributionTest(unittest.TestCase):
+    def test_assistant_breakdown_is_additive_safe_and_read_only(self):
+        calls = batch("read_file", "unused")[0]["tool_calls"]
+        calls = calls + [{"id": "second", "type": "function",
+                          "function": {"name": "bash", "arguments": '{"command":"SECRET"}'}}]
+        cases = [
+            {"reasoning_content": "SECRET中文" * 100, "content": "visible" * 30,
+             "tool_calls": calls},
+            {"reasoning_content": "SECRET" * 100},
+            {"content": "visible"},
+            {"reasoning_content": "SECRET", "content": None, "tool_calls": calls},
+            {"content": "", "tool_calls": calls},
+            {"content": None},
+        ]
+        meter = DEFAULT_TOKEN_METER
+        for fields in cases:
+            with self.subTest(fields=list(fields)):
+                messages = [{"role": "assistant", **fields}]
+                original = copy.deepcopy(messages)
+                result = request_attribution(messages, [], meter)
+                breakdown = result["assistant_history_breakdown"]
+                aggregate = result["categories"]["assistant_history"]["estimated_tokens"]
+                self.assertEqual(aggregate, meter.estimate(messages, []) - meter.estimate([], []))
+                self.assertEqual(sum(b["estimated_tokens"] for b in breakdown.values()), aggregate)
+                self.assertEqual(result["estimated_tokens"], aggregate + result["envelope_and_rounding_tokens"])
+                for field, name in (("reasoning_content", "reasoning_content"),
+                                    ("content", "visible_content"), ("tool_calls", "tool_calls")):
+                    value = breakdown[name]["estimated_tokens"]
+                    if fields.get(field):
+                        self.assertGreater(value, 0)
+                    else:
+                        self.assertEqual(value, 0)
+                if fields.get("tool_calls"):
+                    payload_only = {"role": "assistant", **fields}
+                    payload_only.pop("reasoning_content", None)
+                    if payload_only.get("content"):
+                        payload_only.pop("content")
+                    without_calls = {k: v for k, v in payload_only.items() if k != "tool_calls"}
+                    self.assertEqual(breakdown["tool_calls"]["estimated_tokens"],
+                                     meter.estimate([payload_only], []) - meter.estimate([without_calls], []))
+                self.assertEqual(messages, original)
+                self.assertNotIn("SECRET", json.dumps(result))
+        combined = request_attribution([{"role": "assistant", **f} for f in cases], [])
+        self.assertEqual(sum(b["estimated_tokens"] for b in combined["assistant_history_breakdown"].values()),
+                         combined["categories"]["assistant_history"]["estimated_tokens"])
+        self.assertEqual(request_attribution([], [])["assistant_history_breakdown"]["reasoning_content"]["estimated_tokens"], 0)
+
     def test_categories_totals_and_no_mutation(self):
         messages = [{"role": "system", "content": "SECRET"},
                     {"role": "user", "content": "SECRET"}]
@@ -57,6 +103,7 @@ class AttributionTest(unittest.TestCase):
                 context = create_run_context(provider, Path(directory), event_logger=logger,
                                              working_memory_enabled=True)
                 messages = [{"role": "user", "content": "task"}] + batch("read_file", "x" * 50000)
+                messages[1]["reasoning_content"] = "SECRET reasoning replay"
                 original = copy.deepcopy(messages)
                 expected = copy.deepcopy(model_request_inputs(messages, context, finalization=finalization))
                 call_model(messages, context, finalization=finalization)
@@ -67,6 +114,9 @@ class AttributionTest(unittest.TestCase):
                 expected_attribution = request_attribution(*expected)
                 expected_attribution["calibration_adjustment_tokens"] = 0
                 self.assertEqual(data["context_attribution"], expected_attribution)
+                self.assertGreater(data["context_attribution"]["assistant_history_breakdown"]
+                                   ["reasoning_content"]["estimated_tokens"], 0)
+                self.assertNotIn("SECRET", json.dumps(data))
 
     def test_each_physical_retry_is_measured(self):
         provider = Mock()

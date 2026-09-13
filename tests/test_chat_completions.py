@@ -71,7 +71,7 @@ class ChatCompletionsProviderTest(unittest.TestCase):
             [{"model": "test-model", "messages": messages, "tools": tools}],
         )
 
-    def test_disables_thinking_for_deepseek_only(self) -> None:
+    def test_preserves_provider_defaults_and_reasoning_history(self) -> None:
         api_response = SimpleNamespace(
             choices=[
                 SimpleNamespace(
@@ -82,7 +82,12 @@ class ChatCompletionsProviderTest(unittest.TestCase):
         )
         deepseek_client, deepseek_completions = fake_client(api_response)
         other_client, other_completions = fake_client(api_response)
-        messages = [{"role": "user", "content": "hello"}]
+        messages = [{"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": None,
+                     "reasoning_content": "Inspect the file first.",
+                     "tool_calls": [{"id": "call-1", "type": "function",
+                                     "function": {"name": "read_file", "arguments": "{}"}}]},
+                    {"role": "tool", "tool_call_id": "call-1", "content": "file"}]
 
         ChatCompletionsProvider(
             "secret",
@@ -97,10 +102,8 @@ class ChatCompletionsProviderTest(unittest.TestCase):
             client=other_client,
         ).complete(messages, [])
 
-        self.assertEqual(
-            deepseek_completions.calls[0]["extra_body"],
-            {"thinking": {"type": "disabled"}},
-        )
+        self.assertNotIn("extra_body", deepseek_completions.calls[0])
+        self.assertEqual(deepseek_completions.calls[0]["messages"], messages)
         self.assertNotIn("extra_body", other_completions.calls[0])
 
     def test_serializes_explicit_tool_choice(self) -> None:

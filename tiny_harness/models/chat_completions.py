@@ -2,7 +2,6 @@
 
 import math
 from typing import Any
-from urllib.parse import urlparse
 
 from openai import OpenAI
 
@@ -22,10 +21,6 @@ _CONTEXT_ERROR_MARKERS = (
     "too many tokens",
 )
 _SERVER_STATUS_CODES = frozenset({500, 502, 503, 504, 529})
-
-
-def _is_deepseek_base_url(base_url: str) -> bool:
-    return urlparse(base_url).hostname == "api.deepseek.com"
 
 
 def _status_code(error: Exception) -> int | None:
@@ -109,7 +104,6 @@ class ChatCompletionsProvider(ToolChoiceModelProvider):
         client: Any | None = None,
     ) -> None:
         self.model = model
-        self._disable_thinking = _is_deepseek_base_url(base_url)
         self._client = client or OpenAI(
             api_key=api_key,
             base_url=base_url,
@@ -129,8 +123,6 @@ class ChatCompletionsProvider(ToolChoiceModelProvider):
             "model": self.model,
             "messages": messages,
         }
-        if self._disable_thinking:
-            request["extra_body"] = {"thinking": {"type": "disabled"}}
         if tools or tool_choice == "none":
             request["tools"] = tools
         if tool_choice is not None:
