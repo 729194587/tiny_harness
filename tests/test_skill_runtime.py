@@ -4,8 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tiny_harness.agent.context import create_run_context, initialize_run_state
+from tiny_harness.agent.environment import ENVIRONMENT_CONTEXT_MARKER
 from tiny_harness.agent.loop import run_agent
 from tiny_harness.agent.messages import ModelResponse, ToolCall
+from tiny_harness.agent.turn import model_request_inputs
+from tiny_harness.context.attribution import request_attribution
+from tiny_harness.environments import CodingEnvironmentAdapter
 from tiny_harness.runtime.context import context_token_count
 from tiny_harness.runtime.hooks import ToolHooks
 from tiny_harness.runtime.permissions import PermissionDecision
@@ -127,7 +132,7 @@ class SkillRuntimeTest(unittest.TestCase):
             if message.get("name") == "tinyharness_skill_catalog"
         ]
         self.assertEqual(len(catalog_messages), 1)
-        self.assertEqual(catalog_messages[0]["role"], "system")
+        self.assertEqual(catalog_messages[0]["role"], "user")
         self.assertIn("Review code carefully", catalog_messages[0]["content"])
         self.assertIn("untrusted Skill metadata", catalog_messages[0]["content"])
         self.assertNotIn("Workspace Skills", catalog_messages[0]["content"])
@@ -137,6 +142,10 @@ class SkillRuntimeTest(unittest.TestCase):
         )
 
         second_request = provider.calls[1]
+        self.assertEqual([
+            message for message in second_request["messages"]
+            if message.get("name") == "tinyharness_skill_catalog"
+        ], catalog_messages)
         tool_result = next(
             message
             for message in second_request["messages"]
@@ -163,6 +172,38 @@ class SkillRuntimeTest(unittest.TestCase):
             "PRIVATE_SKILL_BODY_SENTINEL",
             json.dumps(logger.events, ensure_ascii=False),
         )
+
+    def test_initialization_refreshes_catalog_after_task_and_environment(self) -> None:
+        self.write_skill()
+        context = create_run_context(
+            None, self.workspace, environment_adapter=CodingEnvironmentAdapter(),
+        )
+        messages = [
+            {"role": "system", "content": "BASE_SYSTEM"},
+            {"role": "system", "name": "tinyharness_skill_catalog", "content": "OLD"},
+            {"role": "user", "content": "current task"},
+        ]
+        for _ in range(2):
+            initialize_run_state(messages, context, "current task")
+            request, tools = model_request_inputs(messages, context, finalization=False)
+            catalogs = [m for m in request if m.get("name") == "tinyharness_skill_catalog"]
+            self.assertEqual(len(catalogs), 1)
+            catalog = catalogs[0]
+            self.assertEqual(catalog["role"], "user")
+            self.assertNotEqual(catalog["content"], "OLD")
+            task_index = next(i for i, m in enumerate(request) if m.get("content") == "current task")
+            environment_index = next(i for i, m in enumerate(request)
+                                     if m.get("name") == ENVIRONMENT_CONTEXT_MARKER)
+            self.assertLess(task_index, environment_index)
+            self.assertEqual(request.index(catalog), environment_index + 1)
+            self.assertEqual(messages[-1], catalog)
+            categories = request_attribution(request, tools)["categories"]
+            self.assertEqual(categories["skill_projection"]["count"], 1)
+            self.assertEqual(categories["user_task_messages"]["count"], 1)
+
+        context.skill_catalog = discover_skills(self.workspace, sources=())
+        initialize_run_state(messages, context, "current task")
+        self.assertFalse(any(m.get("name") == "tinyharness_skill_catalog" for m in messages))
 
     def test_no_valid_skills_means_no_catalog_marker_or_tool_schema(self) -> None:
         provider = FakeProvider([ModelResponse("done", None, [], "stop")])
@@ -196,13 +237,16 @@ class SkillRuntimeTest(unittest.TestCase):
         )
         self.assertIn("available Skill", schema["description"])
         self.assertNotIn("workspace Skill", schema["description"])
-        self.assertIn("full guidance", schema["description"])
-        self.assertIn("exact catalog name", schema["description"])
-        self.assertIn("clearly matches the current task or workflow", schema["description"])
-        self.assertIn("Avoid speculative loading", schema["description"])
+        self.assertIn("Load the full instructions", schema["description"])
+        self.assertIn("exact Skill name from the session Skill catalog", schema["description"])
+        self.assertIn("before acting on a task that names or clearly matches that Skill", schema["description"])
+        self.assertNotIn("Avoid speculative loading", schema["description"])
         self.assertEqual(schema["parameters"], {
             "type": "object",
-            "properties": {"name": {"type": "string", "minLength": 1}},
+            "properties": {"name": {
+                "type": "string", "minLength": 1,
+                "description": "The exact Skill name from the available Skills catalog.",
+            }},
             "required": ["name"],
             "additionalProperties": False,
         })

@@ -747,13 +747,16 @@ class SubagentTest(unittest.TestCase):
             agent_loop(provider, self.workspace, [])
 
         self.assertEqual(
-            provider.calls[1]["messages"][-1]["content"],
+            provider.calls[1]["messages"][-2]["content"],
             "first child",
         )
         self.assertEqual(
-            provider.calls[2]["messages"][-1]["content"],
+            provider.calls[2]["messages"][-2]["content"],
             "second child",
         )
+        for request in provider.calls[1:3]:
+            self.assertEqual(request["messages"][-1]["name"], "tinyharness_skill_catalog")
+            self.assertEqual(request["messages"][-1]["role"], "user")
         self.assertNotIn(
             "first child",
             json.dumps(provider.calls[2]["messages"]),
