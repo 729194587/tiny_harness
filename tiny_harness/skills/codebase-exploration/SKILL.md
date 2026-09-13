@@ -31,8 +31,11 @@ Prefer repository-aware search tools before shell commands.
 Use:
 
 1. `glob` to locate files by name, extension, or directory pattern.
-2. `grep` to locate symbols, imports, error strings, configuration keys, or references.
-3. `list_files` when the immediate contents of a known directory are useful.
+2. `grep` for quick location of exact symbols, error strings, or literal occurrences.
+3. `search_code` for literal search when nearby context is needed; it can avoid an extra search-to-read round trip.
+4. `list_files` when the immediate contents of a known directory are useful.
+
+Choose the tool that best answers the current question.
 
 Examples:
 
@@ -40,7 +43,7 @@ Examples:
 - `grep("MemoryRuntime", include="**/*.py")`
 - `grep("create_run_context", include="**/*.py")`
 
-Use `bash` for discovery only when the available search tools cannot provide the needed information.
+Use `bash` primarily for execution, tests, git, or queries repository tools cannot express.
 
 ## 3. Narrow before reading
 
@@ -57,7 +60,7 @@ Do not read every file that merely contains a common term.
 
 ## 4. Read the relevant path
 
-Use `read_file` to inspect the selected files.
+Once a relevant location is known, prefer `read_file` with `start_line`/`end_line` to read only the necessary range.
 
 While reading, identify:
 
@@ -81,11 +84,7 @@ Typical follow-ups include:
 - tests exercising the behavior;
 - event, hook, or permission paths that affect execution.
 
-Repeat:
-
-`grep → read_file`
-
-only while each step answers a concrete unanswered question.
+Continue with focused search or ranged reading only while each step answers a concrete unanswered question. If search context already provides enough evidence for the next action, stop exploring and act.
 
 Avoid recursively exploring unrelated neighboring modules.
 
@@ -134,4 +133,3 @@ If exploration leads to an implementation task:
 - expand the search again only if the implementation exposes a previously unknown dependency.
 
 Exploration should reduce uncertainty, not expand the scope of the task.
-

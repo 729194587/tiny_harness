@@ -85,7 +85,14 @@ class CodingEnvironmentAdapter:
         workspace = context.workspace.resolve()
         lines = [
             "Coding environment: initial repository snapshot; file contents have not been read.",
-            "Use glob/grep and file tools for focused inspection; git_status/git_diff require policy authorization.",
+            "Search and narrow before broad reading; each exploration should answer a concrete unresolved question. "
+            "Stop exploring when evidence is sufficient for the next action.",
+            "Choose the tool that fits the question: glob locates files by filename/directory pattern; "
+            "grep quickly locates exact symbols, error strings, or literal occurrences; "
+            "search_code performs literal search with nearby context, reducing extra search-to-read round trips. "
+            "Once a relevant location is known, prefer read_file with start_line/end_line for the necessary range. "
+            "Use bash primarily for execution, tests, git, or queries repository tools cannot express. "
+            "git_status/git_diff require policy authorization.",
             ("run_tests is configured; it runs the caller-provided fixed test suite."
              if context.test_runner is not None else
              "run_tests is not configured. Test commands must use the authorized shell environment; none are inferred."),

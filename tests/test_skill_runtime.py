@@ -196,6 +196,16 @@ class SkillRuntimeTest(unittest.TestCase):
         )
         self.assertIn("available Skill", schema["description"])
         self.assertNotIn("workspace Skill", schema["description"])
+        self.assertIn("full guidance", schema["description"])
+        self.assertIn("exact catalog name", schema["description"])
+        self.assertIn("clearly matches the current task or workflow", schema["description"])
+        self.assertIn("Avoid speculative loading", schema["description"])
+        self.assertEqual(schema["parameters"], {
+            "type": "object",
+            "properties": {"name": {"type": "string", "minLength": 1}},
+            "required": ["name"],
+            "additionalProperties": False,
+        })
 
     def test_permission_denial_prevents_skill_body_loading(self) -> None:
         self.write_skill()

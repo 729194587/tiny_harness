@@ -37,7 +37,11 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
     return (
         ToolDefinition(
             name="load_skill",
-            description="Load one available Skill by its exact catalog name.",
+            description=(
+                "Load the full guidance of one available Skill by its exact catalog "
+                "name when it clearly matches the current task or workflow. "
+                "Avoid speculative loading."
+            ),
             parameters={
                 "type": "object",
                 "properties": {

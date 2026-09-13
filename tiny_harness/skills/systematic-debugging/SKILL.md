@@ -26,12 +26,13 @@ Narrow the search before reading large parts of the repository.
 
 Prefer:
 
-1. `glob` to locate likely files.
-2. `grep` to locate symbols, error strings, imports, callers, or tests.
-3. `read_file` to inspect the most relevant code.
-4. `bash` only when repository-aware tools are insufficient or an external command is genuinely needed.
+1. `glob` to locate files by filename or directory pattern.
+2. `grep` for quick location of exact symbols, error strings, or literal occurrences.
+3. `search_code` for literal search when nearby context is needed; it can avoid an extra search-to-read round trip.
+4. Ranged `read_file` with `start_line`/`end_line` to read only the necessary range once a relevant location is known.
+5. `bash` primarily for execution, tests, git, or queries repository tools cannot express.
 
-Follow dependencies only as far as necessary to explain the failure.
+Choose the tool that best answers the current question. Each exploration should answer a concrete unresolved question. Follow dependencies only as far as necessary to explain the failure, and stop confirming once evidence supports the next action.
 
 ## 3. Gather evidence
 

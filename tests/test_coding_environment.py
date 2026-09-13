@@ -69,6 +69,24 @@ class CodingEnvironmentTest(unittest.TestCase):
         self.assertLessEqual(len(text), MAX_CONTEXT_CHARS)
         self.assertIn("truncated", text)
 
+    def test_context_explains_tool_choices_and_exploration_boundaries(self):
+        text = self.context().environment_context
+        for guidance in (
+            "Search and narrow before broad reading",
+            "each exploration should answer a concrete unresolved question",
+            "Stop exploring when evidence is sufficient for the next action",
+            "Choose the tool that fits the question",
+            "glob locates files by filename/directory pattern",
+            "grep quickly locates exact symbols, error strings, or literal occurrences",
+            "search_code performs literal search with nearby context",
+            "reducing extra search-to-read round trips",
+            "prefer read_file with start_line/end_line for the necessary range",
+            "bash primarily for execution, tests, git, or queries repository tools cannot express",
+            "git_status/git_diff require policy authorization",
+        ):
+            with self.subTest(guidance=guidance):
+                self.assertIn(guidance, text)
+
     def test_outside_symlink_is_omitted(self):
         with tempfile.TemporaryDirectory() as outside:
             try:
