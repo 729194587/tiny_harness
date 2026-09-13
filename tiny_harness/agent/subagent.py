@@ -11,6 +11,7 @@ from tiny_harness.runtime.hooks import ToolHooks
 from tiny_harness.runtime.permissions import PermissionPolicy, PermissionPrompt
 from tiny_harness.runtime.tool_trace import ToolTraceConfig
 from tiny_harness.runtime.recovery import RecoveryPolicy
+from tiny_harness.runtime.context import CompactionConfig
 from tiny_harness.runtime.skills import SkillCatalog
 from tiny_harness.runtime.shell_runner import DEFAULT_SHELL_RUNNER, ShellRunner
 from tiny_harness.runtime.test_runner import TestRunner
@@ -32,6 +33,9 @@ class SubagentExecutor:
         permission_prompt: PermissionPrompt | None,
         event_logger: EventLogger,
         max_context_tokens: int | None,
+        working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens,
+        working_context_target_tokens: int = CompactionConfig.working_context_target_tokens,
+        keep_recent_tool_batches: int = CompactionConfig.keep_recent_tool_batches,
         token_meter: TokenMeter = DEFAULT_TOKEN_METER,
         tool_hooks: ToolHooks | None,
         recovery_policy: RecoveryPolicy,
@@ -52,6 +56,9 @@ class SubagentExecutor:
         self.permission_prompt = permission_prompt
         self.event_logger = event_logger
         self.max_context_tokens = max_context_tokens
+        self.working_context_trigger_tokens = working_context_trigger_tokens
+        self.working_context_target_tokens = working_context_target_tokens
+        self.keep_recent_tool_batches = keep_recent_tool_batches
         self.token_meter = token_meter
         self.tool_hooks = tool_hooks
         self.recovery_policy = recovery_policy
@@ -95,6 +102,9 @@ class SubagentExecutor:
                 permission_prompt=self.permission_prompt,
                 event_logger=child_logger,
                 max_context_tokens=self.max_context_tokens,
+                working_context_trigger_tokens=self.working_context_trigger_tokens,
+                working_context_target_tokens=self.working_context_target_tokens,
+                keep_recent_tool_batches=self.keep_recent_tool_batches,
                 token_meter=self.token_meter,
                 tool_hooks=self.tool_hooks,
                 subagent_max_turns=self.max_turns,

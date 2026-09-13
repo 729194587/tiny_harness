@@ -95,7 +95,8 @@ class EnvironmentTest(unittest.TestCase):
     def test_initialization_replaces_stale_context_and_budget_is_enforced(self):
         context = create_run_context(Provider(), self.workspace,
                                      environment_adapter=Adapter(text="large context " * 10000),
-                                     max_context_tokens=1000)
+                                     max_context_tokens=1000,
+                                     working_context_trigger_tokens=999, working_context_target_tokens=998)
         messages = [{"role": "user", "content": "task"}]
         initialize_run_state(messages, context, "task")
         initialize_run_state(messages, context, "task")

@@ -92,11 +92,34 @@ def model_request_inputs(
     return request_messages, ([] if finalization else context.tools)
 
 
+def prepare_model_request_inputs(
+    messages: list[dict[str, Any]],
+    context: AgentRunContext,
+    *,
+    finalization: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Apply working pressure once, after all request-only projections."""
+
+    request_messages, request_tools = model_request_inputs(
+        messages, context, finalization=finalization,
+    )
+    if context.compactor is not None:
+        context.compactor.prune_working_context(
+            messages, request_messages,
+            lambda candidate: context.token_meter.estimate_request(
+                messages, candidate, request_tools,
+            ),
+            turn=context.current_turn,
+        )
+    return request_messages, request_tools
+
+
 def call_model(
     messages: list[dict[str, Any]],
     context: AgentRunContext,
     *,
     finalization: bool = False,
+    prepared_request: tuple[list[dict[str, Any]], list[dict[str, Any]]] | None = None,
 ) -> ModelResponse:
     """准备上下文、执行有界恢复并返回协议合法的模型响应。
 
@@ -104,10 +127,9 @@ def call_model(
     才能提交 assistant message 或执行工具。
     """
 
-    request_messages, request_tools = model_request_inputs(
-        messages,
-        context,
-        finalization=finalization,
+    request_messages, request_tools = (
+        prepared_request if prepared_request is not None
+        else prepare_model_request_inputs(messages, context, finalization=finalization)
     )
 
     recovery_state = RecoveryState()

@@ -13,10 +13,10 @@ from tiny_harness.agent.context import (
 from tiny_harness.agent.messages import ModelResponse, assistant_message_from_response
 from tiny_harness.agent.environment import EnvironmentAdapter
 from tiny_harness.agent.tool_batch import execute_tool_batch
-from tiny_harness.agent.turn import call_model, model_request_inputs
+from tiny_harness.agent.turn import call_model, prepare_model_request_inputs
 from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter
 from tiny_harness.models.base import ModelProvider
-from tiny_harness.runtime.context import prepare_context
+from tiny_harness.runtime.context import CompactionConfig, prepare_context
 from tiny_harness.runtime.events import (
     NULL_EVENT_LOGGER,
     EventLogError,
@@ -64,7 +64,7 @@ def agent_loop(
                 # 只有四层处理和最终验证全部成功后，才提交canonical history。
                 messages[:] = prepared.messages
 
-            request_messages, request_tools = model_request_inputs(
+            request_messages, request_tools = prepare_model_request_inputs(
                 messages,
                 context,
                 finalization=finalization,
@@ -92,6 +92,7 @@ def agent_loop(
                 messages,
                 context,
                 finalization=finalization,
+                prepared_request=(request_messages, request_tools),
             )
             if finalization and response.tool_calls:
                 response = ModelResponse(
@@ -155,6 +156,9 @@ def run_agent(
     permission_prompt: PermissionPrompt | None = None,
     event_logger: EventLogger = NULL_EVENT_LOGGER,
     max_context_tokens: int | None = None,
+    working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens,
+    working_context_target_tokens: int = CompactionConfig.working_context_target_tokens,
+    keep_recent_tool_batches: int = CompactionConfig.keep_recent_tool_batches,
     token_meter: TokenMeter = DEFAULT_TOKEN_METER,
     tool_hooks: ToolHooks | None = None,
     subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS,
@@ -181,6 +185,9 @@ def run_agent(
         permission_prompt=permission_prompt,
         event_logger=event_logger,
         max_context_tokens=max_context_tokens,
+        working_context_trigger_tokens=working_context_trigger_tokens,
+        working_context_target_tokens=working_context_target_tokens,
+        keep_recent_tool_batches=keep_recent_tool_batches,
         token_meter=token_meter,
         tool_hooks=tool_hooks,
         subagent_max_turns=subagent_max_turns,

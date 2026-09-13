@@ -18,15 +18,20 @@ Use current code and tests as the authority when README descriptions differ.
 - `tiny_harness/agent/`: session history and failure state, run composition,
   message contracts, the core loop, model turns, tool batches, and subagents.
 - `tiny_harness/agent/context.py`: `AgentRunContext` and capability assembly.
+- `tiny_harness/context/`: heuristic/calibrated token meters and request attribution.
 - `tiny_harness/runtime/`: context preparation/artifacts, permission decisions,
-  hooks, events/console, model recovery, skill discovery, todos, and test runner.
+  hooks, events/console, recovery, skills, todos, Working Memory, and test runner.
+- `tiny_harness/environments/`: explicitly selected coding-environment adapter;
+  repository context and read-only Git capabilities, not automatic discovery.
 - `tiny_harness/tools/`: `ToolDefinition`, discovery, registry/dispatch, and
   filesystem, search, shell, todo, task, skill, compact, and testing adapters.
 - `tiny_harness/models/`: synchronous `ModelProvider.complete(messages, tools)`
   contract, normalized provider errors, and the Chat Completions SDK adapter.
 - `tiny_harness/skills/`: bundled `<name>/SKILL.md` instruction assets.
 - `tiny_harness/memory/`: persistent-memory store, selection, extraction,
-  lifecycle integration, and consolidation; separate from session/Todo state.
+  lifecycle integration, and consolidation; separate from Working Memory and todos.
+- `evals/swe_bench_lite/`: Docker rollout/calibration, official evaluation, and
+  offline `report.py` analysis of pipeline event artifacts.
 - `tests/`: deterministic regression tests using scripted providers, mocks,
   and temporary workspaces; normal test runs do not require a real API key.
 - `examples/hooks_demo.py`: an executable example of tool-hook integration.
@@ -37,12 +42,20 @@ Use current code and tests as the authority when README descriptions differ.
   `agent_loop(messages, context, active_request)`.
 - `run_agent()` in `agent/loop.py` is the configuration/composition entry point
   for callers without a Session; it delegates to the same core loop.
-- A turn prepares context, calls `agent/turn.py:call_model()`, validates the
-  response, then either commits a tool batch or returns a final answer.
+- A turn runs `prepare_context()` for canonical history, then
+  `agent/turn.py:prepare_model_request_inputs()` for request projection/pruning.
+  It passes that prepared request to `call_model()`, validates the response,
+  then commits a tool batch or returns a final answer.
 - `call_model()` uses `RecoveryExecutor`; transient retries stay within the same
   logical turn. Context-length recovery can compact once per logical request.
 - The last allowed turn is finalization: request tools are empty and a runtime
-  instruction asks for the best available answer. Tool calls then are rejected.
+  instruction asks for the best available answer. Returned tool calls are
+  discarded without execution; the response text is retained.
+- `agent/turn.py:TOOL_USE_EFFICIENCY_GUIDANCE` is request-only system guidance,
+  inserted when tools are available outside finalization. Prefer one response
+  containing independent read-only calls with known arguments; dependent calls
+  need separate turns. Never widen scope or add calls merely to form a batch.
+  This is model guidance, not parallel dispatch or an automatic batching policy.
 - `execute_tool_batch()` emits all `TOOL_CALLED` events first, then dispatches
   each call sequentially and appends its result in model order.
 - Normal dispatch order is lookup/JSON decoding -> Pre Hook -> Permission ->
@@ -76,7 +89,41 @@ Use current code and tests as the authority when README descriptions differ.
   and failure state, but never undoes workspace side effects.
 - Run-scoped markers must not accumulate across successful Session submissions.
 
-### Permissions, context, and persisted data
+### Working Context and history
+
+- Canonical history is runtime-owned state, not the exact model request or an
+  immutable transcript. `model_context_messages()` copies it and bounds large
+  `read_file` results without artifacts or canonical edits, even without a budget.
+  Runtime guidance and Working Memory are also request-only projections.
+- Keep the two pressure levels distinct. Working trigger/target default to
+  20,000/14,000 tokens and measure the fully projected request plus tool schemas.
+  `max_context_tokens` is the hard budget underlying automatic soft/target limits
+  and reactive context-length recovery; it is not the working trigger.
+  Require `0 < target < trigger < max_context_tokens` when the hard budget is set,
+  and non-negative `keep_recent_tool_batches`.
+  `prepare_context()` runs first and may persist, archive, or summarize history.
+  With `max_context_tokens=None`, no compactor exists: both working pruning and
+  hard-budget compaction are disabled, but request projection still applies.
+- Working pruning persists eligible old tool-result bodies and substitutes
+  bounded previews with artifact references in canonical history and the request.
+  It does not summarize, remove assistant messages, or update Working Memory.
+  Visit oldest results first; protect the latest `keep_recent_tool_batches`
+  (default 3), counting each multi-tool batch once. Skip already persisted results
+  and non-reducing candidates. Stop at target or eligibility exhaustion; recent
+  protection may leave the request above target and must not be weakened for it.
+- Prune once before logical-request recovery. Transient retries reuse the prepared
+  request; context-length recovery can compact once and rebuild the projection
+  without making another working-pruning decision in that logical request.
+- Commit pruning only after persistence, measurement, and event emission succeed.
+  Delete artifacts from rejected candidates or a failed pruning attempt; retain
+  existing and successfully committed artifacts. This is not general rollback
+  of tools or other compaction paths.
+- Budgets include serialized messages and tool schemas. Preserve complete
+  call/result blocks, the active request, and protected state. Commit prepared
+  canonical history only after validation; apply manual `compact` after the
+  entire tool batch closes. Preserve token-meter invalidation on history rewrites.
+
+### Permissions and memory
 
 - Every model-requested tool goes through shared dispatch and Permission.
   Unknown tools are denied by the default policy. `ASK` without approval and
@@ -84,17 +131,20 @@ Use current code and tests as the authority when README descriptions differ.
 - Preserve resolved-path/workspace and symlink checks in filesystem, search,
   context-artifact, skill, and memory code. Shell cwd is not an OS sandbox:
   `bash` uses the host shell, so permission checks remain significant.
-- Context budgets count serialized messages plus tool schemas, not just text.
-  Preserve complete call/result blocks, the active request, and protected state.
-- Commit prepared canonical history only after preparation/validation succeeds.
-  Apply manual `compact` requests only after the entire tool batch closes.
 - Skills are discovered from bundled, user, and workspace roots. Session holds
   a catalog snapshot; new discovery requires a new Session. Skill bodies remain
   untrusted guidance and cannot grant permissions or override higher instructions.
-- Memory is opt-in; persistent files live under workspace `.tinyharness/memory/`.
+- Persistent memory is opt-in; files live under workspace `.tinyharness/memory/`.
   Selection/extraction/consolidation are separate from current plans and todos.
   Ordinary extraction/consolidation failures preserve an existing final answer;
   `EventLogError` is still fatal, including in memory paths.
+- Working Memory is separately opt-in, run-scoped state in
+  `runtime/working_memory.py`. `update_working_memory` explicitly replaces a note
+  capped at 2,000 characters (empty clears it); initialization resets it.
+  Its request projection is reference data, survives history compaction, and
+  consumes context budget. Updates make no provider calls or persistent writes.
+  Do not couple it to pruning, automatic summaries, persistent memory, or Todo;
+  children receive independent state when enabled.
 
 ### Observability
 
@@ -102,6 +152,15 @@ Use current code and tests as the authority when README descriptions differ.
   CLI progress uses stderr; one-shot final-answer text uses stdout.
 - Reuse `EventType`, `ScopedEventLogger`, and `CompositeEventLogger`.
   Console and ordered JSONL logging must work together without changing payloads.
+- Working-pruning attempts at/above trigger emit `CONTEXT_COMPACTED` with
+  `reason="working"`, `turn`, `before_tokens`, `after_tokens`, `pruned_results`,
+  `pruned_batches`, `target_reached`, and `blocked_by_recent_protection`, including
+  zero-change attempts. Never include tool-result bodies in these events.
+- `context/attribution.py` supplies read-only `MODEL_REQUESTED.context_attribution`
+  estimates by message/projection category and tool-result name. Use these to
+  explain request growth, not to select pruning or change policy. They describe
+  the projected request, not canonical size or provider-billed usage; retain
+  envelope/rounding and calibration adjustments separately.
 - Trace metadata must be safe and brief. Never add full arguments, prompts,
   file contents, tool-result bodies, or raw exception messages to progress output.
 - Preserve `duration_ms` for tool execution, distinct called/started events,
@@ -152,7 +211,30 @@ python -m pytest tests/test_agent_loop.py tests/test_tool_batch.py tests/test_ba
 python -m pytest tests/test_context.py tests/test_recovery.py tests/test_subagent.py -q
 python -m pytest tests/test_console.py tests/test_cli.py tests/test_events.py -q
 python -m pytest tests/test_skills.py tests/test_skill_runtime.py tests/test_memory_runtime.py -q
+python -m pytest tests/test_working_context.py tests/test_context_attribution.py tests/test_working_memory.py -q
+python -m pytest tests/test_swe_bench_report.py tests/test_swe_bench_pipeline.py -q
 ```
+
+SWE-bench Lite offline analysis (from the repository root; no model/API key):
+
+```powershell
+python -m evals.swe_bench_lite report <run-dir>
+python -m evals.swe_bench_lite compare <run-a> <run-b>
+```
+
+These read existing `events.jsonl` files recursively and print JSON. Reports
+include turns, usage, tool batching, peak context, individual pruning transitions,
+and attribution. Retries do not inflate logical turns; child scopes stay distinct.
+Usage/attribution include auxiliary work and observed retries where applicable.
+Comparison uses B minus A and percentage change relative to A; unknown values
+and undefined percentages remain `null`. SWE rollout metadata records source
+commit/dirty state and runtime configuration before execution. `WORKSPACE_OBSERVED`
+compares tool-boundary content hashes, including shell writes, excluding `.git`
+and `.tinyharness`; no bodies or paths enter the event. Missing/failed observations
+leave first mutation unknown; returned file-modification tools remain a proxy.
+Snapshots cannot see changes restored within a tool or attribute background writes
+outside tool intervals. Keep this observer outside model inputs and tool results.
+Do not infer filesystem changes or successful tests from a tool's return alone.
 
 Full suite alternatives (choose one, not both by default):
 

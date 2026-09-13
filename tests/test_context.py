@@ -885,6 +885,7 @@ class ContextAgentLoopTest(unittest.TestCase):
             messages,
             max_turns=1,
             max_context_tokens=1_750,
+            working_context_trigger_tokens=1_749, working_context_target_tokens=1_748,
             event_logger=logger,
         )
 
@@ -926,6 +927,7 @@ class ContextAgentLoopTest(unittest.TestCase):
                 messages,
                 max_turns=1,
                 max_context_tokens=1_500,
+                working_context_trigger_tokens=1_499, working_context_target_tokens=1_498,
                 skill_catalog=discover_skills(self.workspace, sources=()),
             )
 
@@ -953,6 +955,7 @@ class ContextAgentLoopTest(unittest.TestCase):
             messages,
             max_turns=1,
             max_context_tokens=1_750,
+            working_context_trigger_tokens=1_749, working_context_target_tokens=1_748,
             event_logger=logger,
             recovery_policy=RecoveryPolicy(
                 max_retries=1,

@@ -14,6 +14,7 @@ from tiny_harness.models.chat_completions import ChatCompletionsProvider
 from tiny_harness.runtime.events import CompositeEventLogger, EventLogError, JsonlEventLogger
 from tiny_harness.runtime.console import ConsoleEventLogger, short, trace_summary
 from tiny_harness.runtime.recovery import RecoveryPolicy
+from tiny_harness.runtime.context import CompactionConfig
 
 DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
@@ -87,6 +88,7 @@ def _parser() -> argparse.ArgumentParser:
         const=None,
         help="关闭上下文预算与压缩",
     )
+    add_working_context_arguments(parser)
     parser.add_argument(
         "--subagent-max-turns",
         type=_positive_int,
@@ -109,6 +111,26 @@ def _parser() -> argparse.ArgumentParser:
         help="启用当前任务的短期 Working Memory（默认关闭，无额外模型调用）",
     )
     return parser
+
+
+def add_working_context_arguments(parser: argparse.ArgumentParser) -> None:
+    """Keep CLI and SWE working-context flags and defaults identical."""
+
+    parser.add_argument(
+        "--working-context-trigger-tokens", type=_positive_int,
+        default=CompactionConfig.working_context_trigger_tokens,
+        help="Working Context 裁剪触发 token 数（默认：20000）",
+    )
+    parser.add_argument(
+        "--working-context-target-tokens", type=_positive_int,
+        default=CompactionConfig.working_context_target_tokens,
+        help="Working Context 裁剪目标 token 数（默认：14000）",
+    )
+    parser.add_argument(
+        "--keep-recent-tool-batches", type=_non_negative_int,
+        default=CompactionConfig.keep_recent_tool_batches,
+        help="保护最近的工具调用批次数（默认：3）",
+    )
 
 
 def _ask_permission(tool_name: str, arguments: Mapping[str, Any]) -> bool:
@@ -268,6 +290,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         event_logger_factory=event_logger_factory,
         max_context_tokens=args.max_context_tokens,
         subagent_max_turns=args.subagent_max_turns,
+        working_context_trigger_tokens=args.working_context_trigger_tokens,
+        working_context_target_tokens=args.working_context_target_tokens,
+        keep_recent_tool_batches=args.keep_recent_tool_batches,
         recovery_policy=RecoveryPolicy(max_retries=args.max_model_retries),
         memory_enabled=args.memory,
         working_memory_enabled=args.working_memory,

@@ -202,7 +202,8 @@ class WorkingMemoryTest(unittest.TestCase):
         for mode in ("automatic", "manual", "reactive"):
             with self.subTest(mode=mode):
                 provider = Provider([answer("summary"), answer()])
-                context = self.context(provider, max_context_tokens=12000)
+                context = self.context(provider, max_context_tokens=12000,
+                                       working_context_trigger_tokens=11999, working_context_target_tokens=11998)
                 messages = [{"role": "system", "content": "system"},
                             {"role": "user", "content": "old " * 18000},
                             {"role": "assistant", "content": "old answer"},
@@ -225,7 +226,8 @@ class WorkingMemoryTest(unittest.TestCase):
                 self.assertEqual(state(provider.calls[-1][0]), {"note": "retained state"})
 
     def test_projection_budget_is_reserved_without_history_injection(self):
-        context = self.context(max_context_tokens=5000)
+        context = self.context(max_context_tokens=5000,
+                               working_context_trigger_tokens=4999, working_context_target_tokens=4998)
         messages = [{"role": "user", "content": "goal"}]
         initialize_run_state(messages, context, "goal")
         baseline = context.compactor.token_meter.estimate(messages, context.tools)

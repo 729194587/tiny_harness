@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from tiny_harness.agent.messages import ToolCall, validate_tool_call_batch
 from tiny_harness.runtime.events import EventType
+from tiny_harness.runtime.context import retain_tool_result
 from tiny_harness.tools.registry import dispatch, emit_tool_called
 
 if TYPE_CHECKING:
@@ -114,7 +115,10 @@ def execute_tool_batch(
             {
                 "role": "tool",
                 "tool_call_id": result.tool_call_id,
-                "content": result.content,
+                "content": retain_tool_result(
+                    context.workspace, call, result.content,
+                    turn=context.current_turn, event_logger=context.event_logger,
+                ),
             }
         )
 

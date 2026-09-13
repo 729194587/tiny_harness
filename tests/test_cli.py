@@ -93,6 +93,9 @@ class CliTest(unittest.TestCase):
             session_class.call_args.kwargs["max_context_tokens"],
             DEFAULT_MAX_CONTEXT_TOKENS,
         )
+        self.assertEqual(session_class.call_args.kwargs["working_context_trigger_tokens"], 20_000)
+        self.assertEqual(session_class.call_args.kwargs["working_context_target_tokens"], 14_000)
+        self.assertEqual(session_class.call_args.kwargs["keep_recent_tool_batches"], 3)
         self.assertEqual(
             session_class.call_args.kwargs["subagent_max_turns"],
             DEFAULT_SUBAGENT_MAX_TURNS,
@@ -106,6 +109,23 @@ class CliTest(unittest.TestCase):
             session_class.call_args.kwargs["working_memory_enabled"], False
         )
         session_class.return_value.submit.assert_called_once_with("create a file")
+
+    def test_working_context_configuration_is_forwarded(self):
+        with (
+            patch.dict(os.environ, {"TINYHARNESS_API_KEY": "test-key"}),
+            patch("tiny_harness.__main__.ChatCompletionsProvider"),
+            patch("tiny_harness.__main__.AgentSession") as session,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(main([
+                "task", "--workspace", str(self.workspace),
+                "--working-context-trigger-tokens", "18000",
+                "--working-context-target-tokens", "12000",
+                "--keep-recent-tool-batches", "2",
+            ]), 0)
+        self.assertEqual(session.call_args.kwargs["working_context_trigger_tokens"], 18_000)
+        self.assertEqual(session.call_args.kwargs["working_context_target_tokens"], 12_000)
+        self.assertEqual(session.call_args.kwargs["keep_recent_tool_batches"], 2)
 
     @patch("tiny_harness.__main__.AgentSession")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")

@@ -15,6 +15,7 @@ from tiny_harness.agent.environment import EnvironmentAdapter
 from tiny_harness.environments import CodingEnvironmentAdapter
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import JsonlEventLogger
+from tiny_harness.runtime.context import CompactionConfig
 from tiny_harness.runtime.permissions import PermissionDecision
 from tiny_harness.runtime.tool_trace import ToolTraceConfig
 
@@ -22,6 +23,7 @@ from .calibration import CalibrationResult, calibrate_task
 from .data import SweEvaluationBundle, SweTask, load_agent_tasks, load_evaluation_bundles
 from .docker_workspace import DockerTaskEnvironment
 from .evaluator import new_run_id
+from .observability import WorkspaceMutationLogger, source_metadata
 
 DEFAULT_SELECTED_TASKS = Path(__file__).with_name("selected_tasks.jsonl")
 DEFAULT_RESULTS_ROOT = Path(__file__).resolve().parents[1] / "results"
@@ -55,6 +57,9 @@ def _experiment_config(
     working_memory_enabled: bool,
     progress_enabled: bool,
     environment_adapter: EnvironmentAdapter | None,
+    working_context_trigger_tokens: int,
+    working_context_target_tokens: int,
+    keep_recent_tool_batches: int,
 ) -> dict[str, Any]:
     """Use identical configuration fields in task and run metadata."""
     adapter_type = type(environment_adapter)
@@ -62,7 +67,12 @@ def _experiment_config(
         "max_turns": max_turns,
         "subagent_max_turns": subagent_max_turns,
         "max_context_tokens": max_context_tokens,
+        "working_context_trigger_tokens": working_context_trigger_tokens,
+        "working_context_target_tokens": working_context_target_tokens,
+        "keep_recent_tool_batches": keep_recent_tool_batches,
         "working_memory_enabled": working_memory_enabled,
+        "memory_enabled": False,
+        "workspace_mutation_observation_enabled": True,
         "progress_enabled": progress_enabled,
         "environment_adapter": (
             f"{adapter_type.__module__}.{adapter_type.__qualname__}"
@@ -81,6 +91,9 @@ def rollout_task(
     max_turns: int = 20,
     subagent_max_turns: int = 10,
     max_context_tokens: int | None = DEFAULT_MAX_CONTEXT_TOKENS,
+    working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens,
+    working_context_target_tokens: int = CompactionConfig.working_context_target_tokens,
+    keep_recent_tool_batches: int = CompactionConfig.keep_recent_tool_batches,
     environment_factory: Callable[..., DockerTaskEnvironment] = DockerTaskEnvironment,
     agent_entrypoint: Callable[..., str] = run_agent,
     environment_adapter: EnvironmentAdapter | None = None,
@@ -89,6 +102,7 @@ def rollout_task(
 ) -> RolloutResult:
     """Run an agent using only SweTask; evaluator bundles cannot enter this API."""
 
+    provenance = source_metadata()
     output_dir.mkdir(parents=True, exist_ok=True)
     events_path = output_dir / "events.jsonl"
     final_path = output_dir / "final_answer.txt"
@@ -100,7 +114,13 @@ def rollout_task(
     experiment_config = _experiment_config(
         max_turns, subagent_max_turns, max_context_tokens,
         working_memory_enabled, progress_enabled, environment_adapter,
+        working_context_trigger_tokens, working_context_target_tokens, keep_recent_tool_batches,
     )
+    experiment_config.update(provenance)
+    (output_dir / "metadata.json").write_text(json.dumps({
+        **experiment_config, "instance_id": task.instance_id, "status": "RUNNING",
+        "model_name_or_path": model_name_or_path, "started_at": started_at,
+    }, indent=2) + "\n", encoding="utf-8")
     try:
         with environment_factory(task, network_mode="none") as environment:
             if environment.workspace is None or environment.shell_runner is None:
@@ -115,8 +135,11 @@ def rollout_task(
                 max_turns=max_turns,
                 subagent_max_turns=subagent_max_turns,
                 max_context_tokens=max_context_tokens,
+                working_context_trigger_tokens=working_context_trigger_tokens,
+                working_context_target_tokens=working_context_target_tokens,
+                keep_recent_tool_batches=keep_recent_tool_batches,
                 permission_policy=ContainerPermissionPolicy(),
-                event_logger=JsonlEventLogger(events_path),
+                event_logger=WorkspaceMutationLogger(JsonlEventLogger(events_path), environment.workspace),
                 tool_trace=ToolTraceConfig(enabled=True, result_preview_chars=200),
                 shell_runner=environment.shell_runner,
                 memory_enabled=False,
@@ -199,6 +222,9 @@ def run_selected_smoke(
     max_turns: int = 20,
     subagent_max_turns: int = 10,
     max_context_tokens: int | None = DEFAULT_MAX_CONTEXT_TOKENS,
+    working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens,
+    working_context_target_tokens: int = CompactionConfig.working_context_target_tokens,
+    keep_recent_tool_batches: int = CompactionConfig.keep_recent_tool_batches,
     calibrator: Callable[..., CalibrationResult] = calibrate_task,
     rollout: Callable[..., RolloutResult] = rollout_task,
     environment_adapter: EnvironmentAdapter | None = None,
@@ -211,9 +237,15 @@ def run_selected_smoke(
     experiment_config = _experiment_config(
         max_turns, subagent_max_turns, max_context_tokens,
         working_memory_enabled, progress_enabled, environment_adapter,
+        working_context_trigger_tokens, working_context_target_tokens, keep_recent_tool_batches,
     )
+    experiment_config.update(source_metadata())
+    experiment_config["model_name_or_path"] = model_name_or_path
     run_dir = (results_root / active_run_id).resolve()
     run_dir.mkdir(parents=True, exist_ok=False)
+    (run_dir / "metadata.json").write_text(json.dumps({
+        **experiment_config, "run_id": active_run_id, "status": "RUNNING",
+    }, indent=2) + "\n", encoding="utf-8")
     tasks = select_instances(load_agent_tasks(selected_path), instance_id)
     bundles = {
         item.instance_id: item
@@ -253,6 +285,9 @@ def run_selected_smoke(
                 subagent_max_turns=subagent_max_turns,
                 max_context_tokens=max_context_tokens,
                 progress_enabled=progress_enabled,
+                working_context_trigger_tokens=working_context_trigger_tokens,
+                working_context_target_tokens=working_context_target_tokens,
+                keep_recent_tool_batches=keep_recent_tool_batches,
                 working_memory_enabled=working_memory_enabled,
                 **({"environment_adapter": environment_adapter}
                    if environment_adapter is not None else {}),
@@ -279,7 +314,8 @@ def run_selected_smoke(
         task_metadata_path = task_dir / "metadata.json"
         task_metadata = json.loads(task_metadata_path.read_text(encoding="utf-8"))
         task_metadata["calibration"] = asdict(calibration)
-        task_metadata.update(experiment_config)
+        for name, value in experiment_config.items():
+            task_metadata.setdefault(name, value)
         task_metadata_path.write_text(
             json.dumps(task_metadata, indent=2) + "\n", encoding="utf-8"
         )

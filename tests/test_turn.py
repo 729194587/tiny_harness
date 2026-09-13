@@ -126,7 +126,7 @@ class CallModelTest(unittest.TestCase):
             self.assertEqual(results[4]["content"], large)
             self.assertEqual(messages, original)
 
-    def test_session_preserves_full_read_result_across_submissions(self):
+    def test_session_preserves_full_read_artifact_across_submissions(self):
         content = "start\n" + "x" * 100_000 + "\nend"
         (self.workspace / "large.txt").write_text(content, encoding="utf-8")
         provider = FakeProvider([
@@ -140,7 +140,10 @@ class CallModelTest(unittest.TestCase):
         self.assertEqual(session.submit("read the file"), "done")
         self.assertEqual(session.submit("continue"), "done again")
         results = [item for item in session.messages if item["role"] == "tool"]
-        self.assertEqual(results[0]["content"], content)
+        self.assertTrue(results[0]["content"].startswith("<persisted-tool-result>\n"))
+        artifacts = list(self.workspace.glob(".tinyharness/context/tool-results/*.txt"))
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0].read_text(encoding="utf-8"), content)
         for call in provider.calls[1:]:
             result = next(item for item in call["messages"] if item["role"] == "tool")
             self.assertLess(len(result["content"]), 3_000)

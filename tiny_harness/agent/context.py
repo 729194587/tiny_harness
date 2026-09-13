@@ -13,7 +13,7 @@ from tiny_harness.agent.subagent import SubagentExecutor
 from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter, CalibratedTokenMeter
 from tiny_harness.memory import MemoryRuntime, create_memory_runtime
 from tiny_harness.models.base import ModelProvider
-from tiny_harness.runtime.context import CompactionRequest, ContextCompactor
+from tiny_harness.runtime.context import CompactionConfig, CompactionRequest, ContextCompactor
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger, CompositeEventLogger
 from tiny_harness.runtime.progress import ProgressTracker
 from tiny_harness.runtime.hooks import FinalAnswerHook, ToolHooks
@@ -85,6 +85,7 @@ class AgentRunContext:
     tool_trace: ToolTraceConfig = ToolTraceConfig()
     progress_tracker: ProgressTracker | None = None
     working_memory: WorkingMemory | None = None
+    compaction_config: CompactionConfig = CompactionConfig()
 
     @property
     def tools(self) -> list[dict[str, Any]]:
@@ -99,6 +100,9 @@ def run_started_data(context: AgentRunContext) -> dict[str, Any]:
     data: dict[str, Any] = {
         "max_turns": context.max_turns,
         "max_model_retries": context.recovery_policy.max_retries,
+        "working_context_trigger_tokens": context.compaction_config.working_context_trigger_tokens,
+        "working_context_target_tokens": context.compaction_config.working_context_target_tokens,
+        "keep_recent_tool_batches": context.compaction_config.keep_recent_tool_batches,
     }
     if context.allow_subagent:
         data["subagent_max_turns"] = context.subagent_max_turns
@@ -184,6 +188,7 @@ def _compactor(
     token_meter: TokenMeter,
     complete_for: ModelCompletion,
     event_logger: EventLogger,
+    config: CompactionConfig,
 ) -> ContextCompactor | None:
     if max_context_tokens is None:
         return None
@@ -194,6 +199,7 @@ def _compactor(
         max_context_tokens,
         token_meter=token_meter,
         event_logger=event_logger,
+        config=config,
         summary_complete=lambda messages, schemas: complete_for(
             "summary", messages, schemas
         ),
@@ -221,6 +227,7 @@ def _subagent_runner(
     tool_trace: ToolTraceConfig,
     progress_enabled: bool,
     working_memory_enabled: bool,
+    compaction_config: CompactionConfig,
 ) -> SubagentRunner | None:
     if not enabled:
         return None
@@ -249,6 +256,9 @@ def _subagent_runner(
         tool_trace=tool_trace,
         progress_enabled=progress_enabled,
         working_memory_enabled=working_memory_enabled,
+        working_context_trigger_tokens=compaction_config.working_context_trigger_tokens,
+        working_context_target_tokens=compaction_config.working_context_target_tokens,
+        keep_recent_tool_batches=compaction_config.keep_recent_tool_batches,
     )
 
 
@@ -261,6 +271,9 @@ def create_run_context(
     permission_prompt: PermissionPrompt | None = None,
     event_logger: EventLogger = NULL_EVENT_LOGGER,
     max_context_tokens: int | None = None,
+    working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens,
+    working_context_target_tokens: int = CompactionConfig.working_context_target_tokens,
+    keep_recent_tool_batches: int = CompactionConfig.keep_recent_tool_batches,
     token_meter: TokenMeter = DEFAULT_TOKEN_METER,
     tool_hooks: ToolHooks | None = None,
     subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS,
@@ -284,6 +297,13 @@ def create_run_context(
         max_context_tokens=max_context_tokens,
         subagent_max_turns=subagent_max_turns,
     )
+    compaction_config = CompactionConfig(
+        working_context_trigger_tokens=working_context_trigger_tokens,
+        working_context_target_tokens=working_context_target_tokens,
+        keep_recent_tool_batches=keep_recent_tool_batches,
+    )
+    if max_context_tokens is not None and working_context_trigger_tokens >= max_context_tokens:
+        raise ValueError("working context requires target < trigger < max_context_tokens")
 
     if (
         skill_catalog is not None
@@ -322,6 +342,7 @@ def create_run_context(
     )
 
     subagent = _subagent_runner(
+        compaction_config=compaction_config,
         enabled=allow_subagent,
         provider=provider,
         workspace=workspace,
@@ -343,6 +364,7 @@ def create_run_context(
         shell_runner=shell_runner,
     )
     context = AgentRunContext(
+        compaction_config=compaction_config,
         provider=provider,
         workspace=workspace,
         tool_registry=ToolRegistry(),
@@ -390,6 +412,7 @@ def create_run_context(
         token_meter,
         complete_for,
         event_logger,
+        compaction_config,
     )
     if context.compactor is not None and context.working_memory is not None:
         context.compactor.token_meter = WorkingMemoryTokenMeter(token_meter, context.working_memory)

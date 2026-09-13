@@ -13,6 +13,7 @@ from tiny_harness.__main__ import (
     DEFAULT_BASE_URL,
     DEFAULT_MAX_CONTEXT_TOKENS,
     DEFAULT_MODEL,
+    add_working_context_arguments,
 )
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
 from tiny_harness.environments import CodingEnvironmentAdapter
@@ -31,6 +32,11 @@ from .pipeline import (
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m evals.swe_bench_lite")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    report = subparsers.add_parser("report", help="Analyze existing run artifacts offline")
+    report.add_argument("run_dir", type=Path)
+    compare = subparsers.add_parser("compare", help="Compare existing runs offline")
+    compare.add_argument("run_a", type=Path)
+    compare.add_argument("run_b", type=Path)
     for name in ("calibrate", "run"):
         command = subparsers.add_parser(name)
         selection = command.add_mutually_exclusive_group()
@@ -48,6 +54,7 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--results-root", type=Path, default=DEFAULT_RESULTS_ROOT)
         command.add_argument("--run-id")
     run = subparsers.choices["run"]
+    add_working_context_arguments(run)
     run.add_argument("--max-turns", type=int, default=20)
     run.add_argument("--subagent-max-turns", type=int, default=10)
     run.add_argument(
@@ -85,6 +92,13 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command in {"report", "compare"}:
+        from .report import analyze_run, compare_runs
+
+        result = (analyze_run(args.run_dir) if args.command == "report"
+                  else compare_runs(args.run_a, args.run_b))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
     if args.command == "evaluate":
         result = run_official_evaluation(
             args.predictions,
@@ -198,6 +212,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_turns=args.max_turns,
         subagent_max_turns=args.subagent_max_turns,
         max_context_tokens=args.max_context_tokens,
+        working_context_trigger_tokens=args.working_context_trigger_tokens,
+        working_context_target_tokens=args.working_context_target_tokens,
+        keep_recent_tool_batches=args.keep_recent_tool_batches,
         progress_enabled=args.progress,
         working_memory_enabled=args.working_memory,
         environment_adapter=CodingEnvironmentAdapter() if args.coding_environment else None,

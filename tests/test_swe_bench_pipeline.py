@@ -295,6 +295,24 @@ class SweWorkingMemoryTest(unittest.TestCase):
 
 
 class SweExperimentMetadataTest(unittest.TestCase):
+    def test_cli_forwards_working_context_defaults_and_overrides(self):
+        for flags, expected in [
+            ([], (20_000, 14_000, 3)),
+            (["--working-context-trigger-tokens", "18000",
+              "--working-context-target-tokens", "12000",
+              "--keep-recent-tool-batches", "2"], (18_000, 12_000, 2)),
+        ]:
+            with (
+                self.subTest(flags=flags),
+                patch.dict(os.environ, {"TINYHARNESS_API_KEY": "test-key"}),
+                patch("evals.swe_bench_lite.__main__.ChatCompletionsProvider"),
+                patch("evals.swe_bench_lite.__main__.run_selected_smoke", return_value=Path("run")) as run,
+            ):
+                self.assertEqual(main(["run"] + flags), 0)
+            self.assertEqual(tuple(run.call_args.kwargs[name] for name in (
+                "working_context_trigger_tokens", "working_context_target_tokens", "keep_recent_tool_batches",
+            )), expected)
+
     def test_task_and_run_configuration_match_for_all_outcomes(self):
         from functools import partial
         from evals.swe_bench_lite.calibration import CalibrationResult
@@ -306,12 +324,18 @@ class SweExperimentMetadataTest(unittest.TestCase):
                     options = ({
                         "max_turns": 7, "subagent_max_turns": 3, "max_context_tokens": None,
                         "working_memory_enabled": True, "progress_enabled": True,
+                        "working_context_trigger_tokens": 18000,
+                        "working_context_target_tokens": 12000,
+                        "keep_recent_tool_batches": 2,
                         "environment_adapter": adapter,
                     } if enabled else {})
                     expected = {
                         "max_turns": 7 if enabled else 20,
                         "subagent_max_turns": 3 if enabled else 10,
                         "max_context_tokens": None if enabled else 125000,
+                        "working_context_trigger_tokens": 18000 if enabled else 20000,
+                        "working_context_target_tokens": 12000 if enabled else 14000,
+                        "keep_recent_tool_batches": 2 if enabled else 3,
                         "working_memory_enabled": enabled,
                         "progress_enabled": enabled,
                         "environment_adapter": (
@@ -325,7 +349,10 @@ class SweExperimentMetadataTest(unittest.TestCase):
                         True, True, True, True,
                     )
 
+                    observed = []
+
                     def agent(*args, **kwargs):
+                        observed.append(kwargs)
                         if outcome == "FAILED":
                             raise RuntimeError("failed")
                         return "done"
@@ -344,6 +371,10 @@ class SweExperimentMetadataTest(unittest.TestCase):
                     task_metadata = json.loads((run_dir / "tasks" / task().instance_id / "metadata.json").read_text())
                     self.assertEqual(task_metadata["status"], outcome)
                     self.assertEqual(run_metadata["tasks"][0]["status"], outcome)
+                    for agent_options in observed:
+                        for name in ("working_context_trigger_tokens", "working_context_target_tokens",
+                                     "keep_recent_tool_batches"):
+                            self.assertEqual(agent_options[name], expected[name])
                     for metadata in (run_metadata, task_metadata, run_metadata["tasks"][0]):
                         self.assertEqual({key: metadata[key] for key in expected}, expected)
 
@@ -453,7 +484,7 @@ class SweAdapterIntegrationTest(unittest.TestCase):
         self.assertIn("? new.py", next(m["content"] for m in requests[1]["messages"]
                                        if m.get("role") == "tool"))
         git_events = [e["event_type"] for e in events if e["data"].get("tool_call_id") == "git-1"]
-        self.assertEqual(git_events, ["tool_called", "tool_started", "tool_result"])
+        self.assertEqual(git_events, ["tool_called", "tool_started", "tool_result", "workspace_observed"])
 
 
 class CalibrationTest(unittest.TestCase):
