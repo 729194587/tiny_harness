@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterator
 
 from tiny_harness.tools.definition import ToolDefinition
+from tiny_harness.tools.filesystem import _resolve_path
 
 if TYPE_CHECKING:
     from tiny_harness.agent.context import AgentRunContext
@@ -18,17 +20,8 @@ MAX_SEARCH_FILE_BYTES = 2 * 1024 * 1024
 MAX_MATCH_LINE_CHARS = 500
 
 
-def _resolve_path(workspace: Path, path: str) -> Path:
-    """Resolve *path* and reject targets outside *workspace*."""
-
-    workspace = workspace.resolve()
-    candidate = Path(path)
-    if not candidate.is_absolute():
-        candidate = workspace / candidate
-    candidate = candidate.resolve()
-    if not candidate.is_relative_to(workspace):
-        raise ValueError(f"Path escapes workspace: {path}")
-    return candidate
+MAX_CONTEXT_LINES = 10
+MAX_SEARCH_OUTPUT_CHARS = 50_000
 
 
 def _validate_pattern(pattern: str) -> None:
@@ -185,11 +178,112 @@ def grep_text(
     return "\n".join(matches)
 
 
+def search_code(
+    workspace: Path,
+    query: str,
+    path: str | None = None,
+    max_results: int = 20,
+    context_lines: int = 2,
+) -> str:
+    """Return bounded literal, case-sensitive line matches with context."""
+    if not isinstance(query, str):
+        raise TypeError("query must be a string")
+    if not query or "\n" in query or "\r" in query:
+        raise ValueError("query must be a nonempty single-line string")
+    _validate_max_results(max_results)
+    if isinstance(context_lines, bool) or not isinstance(context_lines, int):
+        raise TypeError("context_lines must be an integer")
+    if not 0 <= context_lines <= MAX_CONTEXT_LINES:
+        raise ValueError(f"context_lines must be between 0 and {MAX_CONTEXT_LINES}")
+    workspace = workspace.resolve()
+    root = _resolve_path(workspace, "." if path is None else path)
+    if not root.exists():
+        raise ValueError(f"Search path does not exist: {path}")
+
+    def candidates() -> Iterator[Path]:
+        if root.is_file():
+            yield root
+        elif root.is_dir():
+            for directory, dirs, files in os.walk(root, followlinks=False):
+                dirs[:] = sorted(
+                    name for name in dirs
+                    if name != ".git" and not (Path(directory) / name).is_symlink()
+                )
+                for name in sorted(files):
+                    yield Path(directory) / name
+
+    blocks: list[str] = []
+    count = 0
+    size = 0
+    for candidate in candidates():
+        try:
+            resolved = _resolve_path(workspace, str(candidate))
+            if not resolved.is_file():
+                continue
+            if any(
+                ".git" in item.relative_to(workspace).parts
+                for item in (candidate, resolved)
+            ):
+                continue
+            with resolved.open("rb") as stream:
+                data = stream.read(MAX_SEARCH_FILE_BYTES + 1)
+            if len(data) > MAX_SEARCH_FILE_BYTES or b"\x00" in data:
+                continue
+            lines = data.decode("utf-8").splitlines()
+        except (OSError, UnicodeDecodeError, ValueError, RuntimeError):
+            continue
+        relative = candidate.relative_to(workspace).as_posix()
+        for index, line in enumerate(lines):
+            if query not in line:
+                continue
+            if count == max_results:
+                return "\n--\n".join(blocks) + f"\n... truncated after {count} results"
+            rows = []
+            for offset in range(max(0, index - context_lines),
+                                min(len(lines), index + context_lines + 1)):
+                text = lines[offset]
+                if len(text) > MAX_MATCH_LINE_CHARS:
+                    text = text[:MAX_MATCH_LINE_CHARS] + "..."
+                separator = ":" if offset == index else "-"
+                rows.append(f"{relative}{separator}{offset + 1}{separator}{text}")
+            block = "\n".join(rows)
+            # Reserve space for separators and a truncation notice; never cut a block.
+            if size + len(block) + 4 > MAX_SEARCH_OUTPUT_CHARS - 100:
+                return "\n--\n".join(blocks) + "\n... truncated at output character limit"
+            blocks.append(block)
+            size += len(block) + 4
+            count += 1
+    return "\n--\n".join(blocks) if blocks else "(no matches)"
+
+
 def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
     """Bind read-only search Tool definitions to this run's workspace."""
 
     workspace = context.workspace
     return (
+        ToolDefinition(
+            name="search_code",
+            description=(
+                "Search a workspace file or directory recursively for a case-sensitive "
+                "literal single-line substring. Returns path:line:match and path-line-context. "
+                "Skips .git, directory symlinks, binary/non-UTF-8/unreadable files and files "
+                "over 2 MiB. Lines truncate at 500 characters; output at 50,000 characters."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "minLength": 1},
+                    "path": {"type": ["string", "null"], "default": None},
+                    "max_results": {"type": "integer", "minimum": 1,
+                                    "maximum": MAX_RESULTS, "default": 20},
+                    "context_lines": {"type": "integer", "minimum": 0,
+                                      "maximum": MAX_CONTEXT_LINES, "default": 2},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+            execute=lambda call, arguments: search_code(workspace, **arguments),
+        ),
         ToolDefinition(
             name="glob",
             description=(

@@ -260,6 +260,7 @@ class DefaultPermissionPolicy:
             "run_tests",
             "glob",
             "grep",
+            "search_code",
         }
     )
 

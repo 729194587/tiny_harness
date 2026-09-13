@@ -26,10 +26,31 @@ def _resolve_path(workspace: Path, path: str) -> Path:
     return candidate
 
 
-def read_file(workspace: Path, path: str) -> str:
+def read_file(
+    workspace: Path, path: str,
+    start_line: int | None = None, end_line: int | None = None,
+) -> str:
     """Read a UTF-8 text file inside the workspace."""
 
-    return _resolve_path(workspace, path).read_text(encoding="utf-8")
+    for name, value in (("start_line", start_line), ("end_line", end_line)):
+        if value is not None:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{name} must be an integer or null")
+            if value < 1:
+                raise ValueError(f"{name} must be >= 1")
+    if start_line is not None and end_line is not None and start_line > end_line:
+        raise ValueError("start_line must be <= end_line")
+    file_path = _resolve_path(workspace, path)
+    if start_line is None and end_line is None:
+        return file_path.read_text(encoding="utf-8")
+    with file_path.open(encoding="utf-8") as stream:
+        lines = []
+        for number, line in enumerate(stream, 1):
+            if end_line is not None and number > end_line:
+                break
+            if number >= (start_line or 1):
+                lines.append(line)
+        return "".join(lines)
 
 
 def write_file(workspace: Path, path: str, content: str) -> str:
@@ -128,15 +149,19 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
     return (
         definition(
             "read_file",
-            "Read a UTF-8 text file inside the workspace.",
+            "Read UTF-8 text inside the workspace; optional 1-based, inclusive line range.",
             {
                 "type": "object",
-                "properties": {"path": {"type": "string"}},
+                "properties": {
+                    "path": {"type": "string"},
+                    "start_line": {"type": ["integer", "null"], "minimum": 1},
+                    "end_line": {"type": ["integer", "null"], "minimum": 1},
+                },
                 "required": ["path"],
                 "additionalProperties": False,
             },
             read_file,
-            ("path", "offset", "limit"),
+            ("path", "start_line", "end_line"),
         ),
         definition(
             "write_file",

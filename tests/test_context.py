@@ -884,8 +884,9 @@ class ContextAgentLoopTest(unittest.TestCase):
             self.workspace,
             messages,
             max_turns=1,
-            max_context_tokens=1_750,
-            working_context_trigger_tokens=1_749, working_context_target_tokens=1_748,
+            # Leave room for the expanded built-in tool schemas after compaction.
+            max_context_tokens=2_250,
+            working_context_trigger_tokens=2_249, working_context_target_tokens=2_248,
             event_logger=logger,
         )
 
@@ -954,8 +955,9 @@ class ContextAgentLoopTest(unittest.TestCase):
             self.workspace,
             messages,
             max_turns=1,
-            max_context_tokens=1_750,
-            working_context_trigger_tokens=1_749, working_context_target_tokens=1_748,
+            # Leave room for the expanded built-in tool schemas after compaction.
+            max_context_tokens=2_250,
+            working_context_trigger_tokens=2_249, working_context_target_tokens=2_248,
             event_logger=logger,
             recovery_policy=RecoveryPolicy(
                 max_retries=1,

@@ -192,6 +192,7 @@ class ToolDiscoveryTest(unittest.TestCase):
                 "write_file",
                 "edit_file",
                 "list_files",
+                "search_code",
                 "glob",
                 "grep",
                 "bash",
