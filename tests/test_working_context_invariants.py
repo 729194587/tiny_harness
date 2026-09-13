@@ -120,7 +120,9 @@ class WorkingContextInvariantTest(unittest.TestCase):
         self.provider.complete.side_effect = None
         self.provider.complete.return_value = ModelResponse("done", None, [], "stop")
         self.assertEqual(agent_loop(messages, self.context, "task"), "done")
-        self.assertTrue(protected.intersection(pruned_ids(messages)))
+        self.assertTrue(protected.intersection(
+            m["tool_call_id"] for m in messages if m.get("role") == "tool"
+            and m["content"].startswith("<persisted-tool-result>\n")))
         self.assertTrue(any(e["event_type"] == "context_compacted" and e["data"]["reason"] == "automatic"
                             for e in self.events()))
         self.assertLessEqual(context_token_count(messages, self.context.tools), self.context.compactor.soft_limit)
@@ -155,8 +157,12 @@ class WorkingContextInvariantTest(unittest.TestCase):
                     try:
                         return prune(canonical, request, *args, **kwargs)
                     finally:
-                        self.assertEqual(canonical, original["canonical"])
-                        self.assertEqual(request, original["request"])
+                        if kind == "event":
+                            self.assertEqual(canonical, original["canonical"])
+                            self.assertEqual(request, original["request"])
+                        else:
+                            self.assertEqual(canonical[4], original["canonical"][4])
+                            self.assertTrue(pruned_ids(request))
                 persist = self.context.compactor._persist_tool_result
                 written = 0
                 def fail_persist(*args, **kwargs):
@@ -174,10 +180,19 @@ class WorkingContextInvariantTest(unittest.TestCase):
                     target, name, failure = ((self.logger, "emit", fail_emit) if kind == "event" else
                                              (self.context.compactor, "_persist_tool_result", fail_persist))
                     with patch.object(target, name, side_effect=failure):
-                        with self.assertRaises((ContextArtifactError, EventLogError)):
-                            agent_loop(messages, self.context, "task")
-                self.assertEqual(self.artifacts(), [])
-                self.provider.complete.assert_not_called()
+                        if kind == "event":
+                            with self.assertRaises(EventLogError):
+                                agent_loop(messages, self.context, "task")
+                        else:
+                            self.provider.complete.side_effect = None
+                            self.provider.complete.return_value = ModelResponse("done", None, [], "stop")
+                            self.assertEqual(agent_loop(messages, self.context, "task"), "done")
+                if kind == "event":
+                    self.assertEqual(self.artifacts(), [])
+                    self.provider.complete.assert_not_called()
+                else:
+                    self.assertEqual(len(self.artifacts()), len(pruned_ids(messages)))
+                    self.provider.complete.assert_called_once()
 
     def test_configuration_relationships(self):
         for hard, trigger, target, recent in (

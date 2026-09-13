@@ -95,7 +95,7 @@ def analyze_run(run_dir: Path) -> dict:
                 elif kind == EventType.CONTEXT_COMPACTED and data.get("reason") == "working":
                     prunes.append({"scope": list(scope), "turn": data.get("turn"), **{
                         name: data.get(name) for name in (
-                            "before_tokens", "after_tokens", "pruned_results", "pruned_batches",
+                            "before_tokens", "after_tokens", "pruned_results", "pruned_batches", "strategy",
                             "target_reached", "blocked_by_recent_protection")},
                         "transition": f"{data.get('before_tokens')} -> {data.get('after_tokens')}"})
                     if isinstance(data.get("before_tokens"), (int, float)):

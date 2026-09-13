@@ -39,6 +39,7 @@ class ReportTest(unittest.TestCase):
             ("tool_called", {"turn": 1, "parent_tool_call_id": "child"}),
             ("tool_result", {"turn": 1, "tool_name": "edit_file", "outcome": "returned"}),
             ("context_compacted", {"reason": "working", "turn": 2,
+                                   "strategy": "historical_result_clearing",
                                    "before_tokens": 200, "after_tokens": 120}),
         ])
         report = analyze_run(root)
@@ -53,6 +54,8 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(report["peak_pre_prune_context_tokens"], 200)
         self.assertNotIn("peak_context", report)
         self.assertEqual(report["working_context_prune_events"], 1)
+        self.assertEqual(report["prunes"][0]["strategy"], "historical_result_clearing")
+        self.assertEqual(report["prunes"][0]["after_tokens"], 120)
         self.assertIsNone(report["first_workspace_mutation_turn"])
         self.assertEqual(report["first_returned_file_mutation_tool_turns"][0]["turn"], 1)
         self.assertEqual(report["context_attribution_summary"]["categories"]["tool_schemas"],

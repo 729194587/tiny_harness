@@ -1,5 +1,4 @@
 import copy
-import hashlib
 import tempfile
 import unittest
 from dataclasses import replace
@@ -40,7 +39,7 @@ def history(batch_count=8, **kwargs):
 
 def pruned_ids(messages):
     return [m["tool_call_id"] for m in messages if m.get("role") == "tool"
-            and m["content"].startswith("<persisted-tool-result>\n")]
+            and m["content"].startswith("[Historical tool result cleared.\n")]
 
 
 class WorkingContextTest(unittest.TestCase):
@@ -102,10 +101,10 @@ class WorkingContextTest(unittest.TestCase):
         for artifact in self.artifacts():
             self.assertEqual(artifact.read_text(encoding="utf-8"), "x" * 12_000)
         preview = next(m["content"] for m in messages if m.get("tool_call_id") == last)
-        self.assertIn("Content SHA-256: " + hashlib.sha256(("x" * 12_000).encode()).hexdigest(), preview)
-        self.assertIn("Full output: .tinyharness/context/tool-results/", preview)
-        self.assertIn("Head:", preview)
-        self.assertIn("Tail:", preview)
+        self.assertIn("full_output=.tinyharness/context/tool-results/", preview)
+        self.assertNotIn("Head:", preview)
+        self.assertNotIn("Tail:", preview)
+        self.assertLess(len(preview), 250)
 
     def test_multi_tool_batch_counts_once_and_exhaustion_can_exceed_target(self):
         messages = history(4, size=16_000, count=3)
@@ -174,10 +173,10 @@ class WorkingContextTest(unittest.TestCase):
             return persist(*args, **kwargs)
 
         with patch.object(self.context.compactor, "_persist_tool_result", side_effect=failing_persist):
-            with self.assertRaises(ContextArtifactError):
-                self.request(messages)
-        self.assertEqual(messages, original)
-        self.assertEqual(self.artifacts(), [])
+            self.request(messages)
+        self.assertEqual(messages[4], original[4])
+        self.assertTrue(pruned_ids(messages))
+        self.assertEqual(len(self.artifacts()), len(pruned_ids(messages)))
 
     def test_partial_artifact_write_is_cleaned(self):
         original_open = Path.open
@@ -203,10 +202,55 @@ class WorkingContextTest(unittest.TestCase):
         messages = history()
         original = copy.deepcopy(messages)
         with patch.object(Path, "open", open_file):
-            with self.assertRaises(ContextArtifactError):
-                self.request(messages)
+            self.request(messages)
         self.assertEqual(messages, original)
         self.assertEqual(self.artifacts(), [])
+
+    def test_persisted_preview_ages_without_artifact_of_artifact(self):
+        messages = history(4, size=40_000)
+        preview = self.context.compactor._persist_tool_result(
+            "0-0", messages[2]["content"], tool_name="bash",
+        )
+        messages[2]["content"] = preview
+        existing = self.artifacts()
+        with patch.object(self.context.compactor, "_persist_tool_result") as persist:
+            request, _ = self.request(messages)
+            persist.assert_not_called()
+        self.assertEqual(pruned_ids(request), ["0-0"])
+        self.assertIn("full_output=" + existing[0].relative_to(self.workspace).as_posix(),
+                      messages[2]["content"])
+        self.assertEqual(self.artifacts(), existing)
+        self.assertEqual(existing[0].read_text(encoding="utf-8"), "x" * 40_000)
+        with patch.object(self.context.compactor, "_persist_tool_result") as persist:
+            self.request(messages)
+            persist.assert_not_called()
+
+    def test_existing_locator_survives_transaction_failure(self):
+        messages = history()
+        messages[2]["content"] = self.context.compactor._persist_tool_result(
+            "0-0", messages[2]["content"], tool_name="bash",
+        )
+        existing = self.artifacts()
+        original = copy.deepcopy(messages)
+        request, _ = model_request_inputs(messages, self.context, finalization=False)
+        original_request = copy.deepcopy(request)
+        with patch.object(self.logger, "emit", side_effect=EventLogError("failed")):
+            with self.assertRaises(EventLogError):
+                self.context.compactor.prune_working_context(
+                    messages, request, lambda candidate: context_token_count(candidate, self.context.tools),
+                )
+        self.assertEqual(messages, original)
+        self.assertEqual(request, original_request)
+        self.assertEqual(self.artifacts(), existing)
+
+    def test_missing_persisted_locator_keeps_preview_without_repersisting(self):
+        messages = history(4, size=40_000)
+        messages[2]["content"] = "<persisted-tool-result>\nFull output: missing.txt\nHead:\nevidence"
+        original = copy.deepcopy(messages)
+        with patch.object(self.context.compactor, "_persist_tool_result") as persist:
+            self.request(messages)
+            persist.assert_not_called()
+        self.assertEqual(messages, original)
 
     def test_emit_failure_does_not_commit_pruned_canonical_history(self):
         for error_type in (EventLogError, RuntimeError):
@@ -239,6 +283,7 @@ class WorkingContextTest(unittest.TestCase):
                 self.request(history(count, size=16_000, count=3))
                 event = self.logger.emit.call_args.args[1]
                 self.assertEqual(event["turn"], 7)
+                self.assertEqual(event["strategy"], "historical_result_clearing")
                 self.assertEqual(event["pruned_results"], expected_results)
                 self.assertEqual(event["pruned_batches"], expected_batches)
                 self.assertFalse(event["target_reached"])

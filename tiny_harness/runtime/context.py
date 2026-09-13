@@ -680,7 +680,7 @@ class ContextCompactor(ContextArtifacts):
         measure_request: Callable[[list[dict[str, Any]]], int],
         *, turn: int | None = None,
     ) -> None:
-        """Prune oldest eligible results using the fully projected request size.
+        """Clear oldest eligible results using the fully projected request size.
 
         Only tool contents are committed, after persistence and event emission succeed. Full
         results remain in existing artifacts; assistant history is untouched.
@@ -707,21 +707,44 @@ class ContextCompactor(ContextArtifacts):
                     content = result.get("content")
                     if (
                         not isinstance(content, str)
-                        or content.startswith("<persisted-tool-result>\n")
-                        or len(str(projected.get("content", ""))) <= self.config.result_preview_chars
+                        or content.startswith("[Historical tool result cleared.\n")
                     ):
                         continue
                     name, arguments = self._tool_call_metadata(batch, result["tool_call_id"])
-                    replacement = self._persist_tool_result(
-                        result["tool_call_id"], content, tool_name=name, arguments=arguments, created_paths=created_paths,
-                    )
+                    new_paths: list[Path] = []
+                    try:
+                        preview = content
+                        if not content.startswith("<persisted-tool-result>\n"):
+                            preview = self._persist_tool_result(
+                                result["tool_call_id"], content, tool_name=name,
+                                arguments=arguments, created_paths=new_paths,
+                            )
+                        # Read only the metadata header, not locator-like body text.
+                        header = preview.split("\nHead:\n", 1)[0]
+                        locator = next(line.removeprefix("Full output: ")
+                                       for line in header.splitlines()
+                                       if line.startswith("Full output: "))
+                        path = self.workspace / locator
+                        if (path.is_symlink() or not path.is_file()
+                                or path.resolve().parent != self._artifact_directory("tool-results")):
+                            raise ContextArtifactError("Invalid tool-result locator")
+                        replacement = (
+                            "[Historical tool result cleared.\n"
+                            f"tool={name or 'unknown'}\nfull_output={locator}]"
+                        )
+                    except Exception:
+                        for path in new_paths:
+                            path.unlink(missing_ok=True)
+                        continue
+                    created_paths.extend(new_paths)
                     original = projected["content"]
                     projected["content"] = replacement
                     candidate_tokens = measure_request(working)
                     if candidate_tokens >= after_tokens:
                         projected["content"] = original
-                        created_paths[-1].unlink(missing_ok=True)
-                        created_paths.pop()
+                        for path in new_paths:
+                            path.unlink(missing_ok=True)
+                            created_paths.remove(path)
                         continue
                     changed_batches.add(batch_index)
                     changes.append((result, replacement))
@@ -733,9 +756,9 @@ class ContextCompactor(ContextArtifacts):
             target_reached = after_tokens <= self.config.working_context_target_tokens
             blocked = not target_reached and any(
                 isinstance(result.get("content"), str)
-                and not result["content"].startswith("<persisted-tool-result>\n")
-                and len(result["content"]) > self.config.result_preview_chars
-                for result in projected_results
+                and not result["content"].startswith("[Historical tool result cleared.\n")
+                and bool(result["content"])
+                for batch in batches[eligible_count:] for result in batch[1:]
             )
             self.emit_compacted(PreparedContext(
                 messages=working, before_tokens=before_tokens, after_tokens=after_tokens,
@@ -743,7 +766,8 @@ class ContextCompactor(ContextArtifacts):
                 persisted_tool_call_ids=tuple(result["tool_call_id"] for result, _ in changes),
             ), "working", turn=turn, pruned_results=len(changes),
                 pruned_batches=len(changed_batches), target_reached=target_reached,
-                blocked_by_recent_protection=blocked)
+                blocked_by_recent_protection=blocked,
+                strategy="historical_result_clearing")
             request_messages[:] = working
             for result, replacement in changes:
                 result["content"] = replacement
