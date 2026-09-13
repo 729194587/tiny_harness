@@ -59,7 +59,7 @@ class ShellRunnerTest(unittest.TestCase):
             execute.call_args.args[0],
             [
                 "docker", "exec", "--workdir", "/testbed", "task-container",
-                "/bin/bash", "-lc", "pytest -q",
+                "/bin/bash", "-lc", "umask 000\npytest -q",
             ],
         )
         self.assertFalse(execute.call_args.kwargs["check"])

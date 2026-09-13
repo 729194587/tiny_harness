@@ -57,7 +57,11 @@ class DockerShellRunner:
             self.container_name,
             "/bin/bash",
             "-lc",
-            command,
+            # Git checkout/reset/stash replace inodes: initialization chmod
+            # cannot cover those files (or newly created directories). Retain
+            # the image user/environment, but share newly created workspace
+            # files with host filesystem tools too. Apply after login startup.
+            "umask 000\n" + command,
         ]
 
     def run(self, workspace: Path, command: str) -> str:
