@@ -71,6 +71,38 @@ class ChatCompletionsProviderTest(unittest.TestCase):
             [{"model": "test-model", "messages": messages, "tools": tools}],
         )
 
+    def test_disables_thinking_for_deepseek_only(self) -> None:
+        api_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(content="done", tool_calls=None),
+                )
+            ]
+        )
+        deepseek_client, deepseek_completions = fake_client(api_response)
+        other_client, other_completions = fake_client(api_response)
+        messages = [{"role": "user", "content": "hello"}]
+
+        ChatCompletionsProvider(
+            "secret",
+            "https://api.deepseek.com/v1",
+            "deepseek-v4-flash",
+            client=deepseek_client,
+        ).complete(messages, [])
+        ChatCompletionsProvider(
+            "secret",
+            "https://example.test/v1",
+            "test-model",
+            client=other_client,
+        ).complete(messages, [])
+
+        self.assertEqual(
+            deepseek_completions.calls[0]["extra_body"],
+            {"thinking": {"type": "disabled"}},
+        )
+        self.assertNotIn("extra_body", other_completions.calls[0])
+
     def test_serializes_explicit_tool_choice(self) -> None:
         api_response = SimpleNamespace(
             choices=[
