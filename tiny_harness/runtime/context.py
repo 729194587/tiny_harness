@@ -1404,25 +1404,24 @@ def prepare_context(
     before_tokens = context_token_count(
         working, compactor.tools, compactor.token_meter
     )
-    before_todo_messages = copy.deepcopy(working)
-    working = compactor.upsert_todo_marker(working, todo_state)
-    todo_state_updated = working != before_todo_messages
-    measured_tokens = context_token_count(
-        working, compactor.tools, compactor.token_meter
-    )
     soft_limit = compactor.soft_limit
     target_limit = compactor.target_limit
 
-    if measured_tokens <= soft_limit:
+    if before_tokens <= soft_limit:
+        # Normal turns expose Todo updates through appended tool results and
+        # reminders. Existing markers are snapshots of the last compaction.
         prepared = PreparedContext(
             messages=copy.deepcopy(working),
             before_tokens=before_tokens,
-            after_tokens=measured_tokens,
-            todo_state_updated=todo_state_updated,
+            after_tokens=before_tokens,
         )
         if prepared.lossy_changed:
             compactor.emit_compacted(prepared, "automatic")
     else:
+        # Safety compaction establishes a new prefix and refreshes its snapshot.
+        before_todo_messages = working
+        working = compactor.upsert_todo_marker(working, todo_state)
+        todo_state_updated = working != before_todo_messages
         summary_source = copy.deepcopy(working)
         persisted_tool_call_ids: list[str] = []
         persisted = compactor.pressure_compact_tool_results(

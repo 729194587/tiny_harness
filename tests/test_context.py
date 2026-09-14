@@ -643,7 +643,7 @@ class ContextCompactorTest(unittest.TestCase):
         self.assertEqual(prepared.messages[-3:], latest_batch)
         self.assertNotIn("X" * 3_000, json.dumps(prepared.messages))
 
-    def test_current_todo_marker_is_replaced_without_accumulating(self):
+    def test_normal_preparation_does_not_insert_or_refresh_todo_snapshot(self):
         compactor = self.compactor()
         first = self.prepare(compactor, self.prefix, "[>] FIRST_TODO")
         second = self.prepare(
@@ -657,9 +657,12 @@ class ContextCompactorTest(unittest.TestCase):
             for message in second.messages
             if message.get("name") == "tinyharness_todo_state"
         ]
-        self.assertEqual(len(markers), 1)
-        self.assertIn("UPDATED_TODO", markers[0]["content"])
-        self.assertNotIn("FIRST_TODO", markers[0]["content"])
+        self.assertEqual(markers, [])
+        self.assertEqual(second.messages, self.prefix)
+        snapshot = compactor.upsert_todo_marker(self.prefix, "[>] FIRST_TODO")
+        unchanged = self.prepare(compactor, snapshot, "[x] UPDATED_TODO")
+        self.assertEqual(unchanged.messages, snapshot)
+        self.assertFalse(unchanged.todo_state_updated)
 
     def test_summary_is_last_resort_and_preserves_task_todo_and_latest_block(self):
         provider = FakeProvider([ModelResponse("FACTUAL_SUMMARY", None, [], "stop")])
