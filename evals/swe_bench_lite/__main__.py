@@ -34,6 +34,9 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     report = subparsers.add_parser("report", help="Analyze existing run artifacts offline")
     report.add_argument("run_dir", type=Path)
+    finalize = subparsers.add_parser("finalize", help="Finalize one run with official evaluation")
+    finalize.add_argument("run_dir", type=Path)
+    finalize.add_argument("--dataset", type=Path, help="Override the recorded evaluation dataset")
     compare = subparsers.add_parser("compare", help="Compare existing runs offline")
     compare.add_argument("run_a", type=Path)
     compare.add_argument("run_b", type=Path)
@@ -92,6 +95,12 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "finalize":
+        from .finalizer import ERROR, finalize_run, render_summary
+
+        result = finalize_run(args.run_dir, dataset=args.dataset)
+        print(render_summary(result), end="")
+        return 2 if result["official_status"] == ERROR else 0
     if args.command in {"report", "compare"}:
         from .report import analyze_run, compare_runs
 

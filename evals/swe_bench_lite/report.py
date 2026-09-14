@@ -28,6 +28,9 @@ def analyze_run(run_dir: Path) -> dict:
     first_writes = []
     mutations = []
     started_tools = 0
+    checkpoints = []
+    summary_hit = []
+    summary_miss = []
     for path in paths:
         current_turns = {}
         with path.open(encoding="utf-8") as stream:
@@ -72,6 +75,11 @@ def analyze_run(run_dir: Path) -> dict:
                                     entry["peak_estimated_tokens"] = max(entry["peak_estimated_tokens"], value)
                 elif kind == EventType.MODEL_RESPONDED:
                     responses += 1
+                    if data.get("purpose") == "summary":
+                        for name, values in (("prompt_cache_hit_tokens", summary_hit),
+                                             ("prompt_cache_miss_tokens", summary_miss)):
+                            if isinstance(data.get(name), (int, float)):
+                                values.append(data[name])
                     for name, values in usage.items():
                         value = data.get(name)
                         if name == "total_tokens" and value is None:
@@ -94,6 +102,10 @@ def analyze_run(run_dir: Path) -> dict:
                         if not any(item["scope"] == list(scope) for item in first_writes):
                             first_writes.append({"scope": list(scope), "turn": turn})
                 elif kind == EventType.CONTEXT_COMPACTED and data.get("reason") == "working":
+                    if data.get("strategy") == "llm_task_state_checkpoint":
+                        checkpoints.append({"scope": list(scope), "turn": data.get("turn"),
+                                            "before_tokens": data.get("before_tokens"),
+                                            "after_tokens": data.get("after_tokens")})
                     prunes.append({"scope": list(scope), "turn": data.get("turn"), **{
                         name: data.get(name) for name in (
                             "before_tokens", "after_tokens", "pruned_results", "pruned_batches", "strategy",
@@ -109,6 +121,10 @@ def analyze_run(run_dir: Path) -> dict:
     totals = {name: sum(values) if values else None for name, values in usage.items()}
     hit, miss = totals["prompt_cache_hit_tokens"], totals["prompt_cache_miss_tokens"]
     return {
+        "checkpoint_count": len(checkpoints), "checkpoints": checkpoints,
+        "summary_cache_hit_rate": (sum(summary_hit) / (sum(summary_hit) + sum(summary_miss))
+                                   if summary_hit and summary_miss and sum(summary_hit) + sum(summary_miss) > 0
+                                   else None),
         "total_prompt_tokens": totals["prompt_tokens"],
         "total_cache_hit_tokens": hit,
         "total_cache_miss_tokens": miss,
