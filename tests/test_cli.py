@@ -105,9 +105,6 @@ class CliTest(unittest.TestCase):
             RecoveryPolicy(max_retries=2),
         )
         self.assertFalse(session_class.call_args.kwargs["memory_enabled"])
-        self.assertEqual(
-            session_class.call_args.kwargs["working_memory_enabled"], False
-        )
         session_class.return_value.submit.assert_called_once_with("create a file")
 
     def test_working_context_configuration_is_forwarded(self):
@@ -127,18 +124,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual(session.call_args.kwargs["working_context_target_tokens"], 12_000)
         self.assertEqual(session.call_args.kwargs["keep_recent_tool_batches"], 2)
 
-    @patch("tiny_harness.__main__.AgentSession")
-    @patch("tiny_harness.__main__.ChatCompletionsProvider")
-    def test_working_memory_option(self, _, session_class) -> None:
-        session_class.return_value.submit.return_value = "done"
-        with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
-            with contextlib.redirect_stdout(io.StringIO()):
-                exit_code = main(["task", "--workspace", str(self.workspace), "--working-memory"])
-        self.assertEqual(exit_code, 0)
-        self.assertTrue(session_class.call_args.kwargs["working_memory_enabled"])
-
-    def test_legacy_task_state_flags_are_removed(self) -> None:
-        for flag in ("--task-state", "--task-state-reflection", "--task-state-reflection-interval"):
+    def test_removed_flags_are_rejected(self) -> None:
+        for flag in ("--task-state", "--task-state-reflection", "--task-state-reflection-interval",
+                     "--working-memory", "--progress"):
             with self.subTest(flag=flag), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as error:
                     main(["task", flag])

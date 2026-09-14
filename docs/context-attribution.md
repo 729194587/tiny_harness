@@ -10,15 +10,14 @@ request before it is measured again. No request or canonical history is edited.
 ## Classification
 
 - system/developer messages: `system_runtime_guidance`, including unmarked
-  runtime state, efficiency/finalization guidance and progress guidance.
+  runtime state and efficiency/finalization guidance.
 - user messages: `user_task_messages`; assistant messages, including function
   names/arguments and any reasoning fields: `assistant_history`.
 - tool messages: `fresh_tool_results` if after the last assistant message,
-  otherwise `historical_tool_results`. Appended working memory does not change
-  this boundary. Fresh means no subsequent accepted assistant response, not
+  otherwise `historical_tool_results`. Fresh means no subsequent accepted assistant response, not
   proof of remote non-consumption (failed/retried calls may have read them).
-- Exact known `name` markers override role classification: working memory,
-  environment, skill catalog, persistent memory catalog/relevant memory,
+- Exact known `name` markers override role classification: environment,
+  skill catalog, persistent memory catalog/relevant memory,
   context summary/archive, and todo state have separate projection categories.
 - Tool schemas: `tool_schemas`; unrecognized roles: `other_messages`.
 

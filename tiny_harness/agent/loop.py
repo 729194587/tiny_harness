@@ -172,8 +172,6 @@ def run_agent(
     is_main_agent: bool = True,
     environment_adapter: EnvironmentAdapter | None = None,
     tool_trace: ToolTraceConfig = ToolTraceConfig(),
-    progress_enabled: bool = False,
-    working_memory_enabled: bool = False,
 ) -> str:
     """兼容配置入口：装配运行上下文后进入三参数核心循环。"""
 
@@ -201,8 +199,6 @@ def run_agent(
         is_main_agent=is_main_agent,
         environment_adapter=environment_adapter,
         tool_trace=tool_trace,
-        progress_enabled=progress_enabled,
-        working_memory_enabled=working_memory_enabled,
     )
     active_request = next(
         (

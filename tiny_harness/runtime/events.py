@@ -42,11 +42,9 @@ class EventType(str, Enum):
     TOOL_RESULT_RETAINED = "tool_result_retained"
     WORKSPACE_OBSERVED = "workspace_observed"
     TODO_UPDATED = "todo_updated"
-    WORKING_MEMORY_UPDATED = "working_memory_updated"
     SUBAGENT_STARTED = "subagent_started"
     SUBAGENT_FINISHED = "subagent_finished"
     SUBAGENT_FAILED = "subagent_failed"
-    TODO_REMINDER = "todo_reminder"
     RUN_FINISHED = "run_finished"
     RUN_FAILED = "run_failed"
 

@@ -43,7 +43,7 @@ class TodoCacheTest(unittest.TestCase):
         messages.append(assistant_message_from_response(response))
         execute_tool_batch(messages, response.tool_calls, self.context)
 
-    def test_loop_multiple_updates_clear_and_reminder_preserve_request_prefix(self):
+    def test_loop_multiple_updates_and_clear_preserve_request_prefix(self):
         requests = []
         responses = iter([
             todo_response(1, "pending"), todo_response(2, "in_progress"),
@@ -66,12 +66,11 @@ class TodoCacheTest(unittest.TestCase):
         for index, state in ((1, "[ ] Implement change"), (2, "[>] Implement change"),
                              (3, "[x] Implement change"), (7, "No todos.")):
             self.assertIn(state, requests[index][0][-1]["content"])
-        self.assertIn("<todo-reminder>", requests[6][0][-1]["content"])
-        self.assertIn("[x] Implement change", requests[6][0][-1]["content"])
+        for index in range(4, 7):
+            self.assertEqual(requests[index][0][-1]["content"], requests[4][0][-1]["content"])
         self.assertFalse(any(m.get("name") == "tinyharness_todo_state" for m in messages))
         self.assertEqual(self.context.todo_manager.render(), "No todos.")
         self.assertEqual(sum(c.args[0] == EventType.TODO_UPDATED for c in self.logger.emit.call_args_list), 4)
-        self.assertEqual(sum(c.args[0] == EventType.TODO_REMINDER for c in self.logger.emit.call_args_list), 1)
 
     def test_working_checkpoint_snapshots_todos_then_updates_remain_append_only(self):
         messages = [{"role": "user", "content": "task"}]

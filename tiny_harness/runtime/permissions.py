@@ -253,7 +253,6 @@ class DefaultPermissionPolicy:
             "edit_file",
             "list_files",
             "todo_write",
-            "update_working_memory",
             "task",
             "load_skill",
             "compact",

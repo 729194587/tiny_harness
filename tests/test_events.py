@@ -401,36 +401,6 @@ class EventLifecycleTest(unittest.TestCase):
         self.assertEqual(called["path"], "source.txt")
         self.assertNotIn("PRIVATE_SOURCE_BODY", json.dumps(logger.events))
 
-    def test_todo_reminder_is_recorded_without_todo_content(self) -> None:
-        logger = RecordingEventLogger()
-        provider = FakeProvider(
-            [
-                ModelResponse(
-                    None,
-                    None,
-                    [ToolCall(f"list-{index}", "list_files", "{}")],
-                    "tool_calls",
-                )
-                for index in range(1, 4)
-            ]
-            + [ModelResponse("done", None, [], "stop")]
-        )
-
-        agent_loop(provider, self.workspace, [], event_logger=logger)
-
-        event_names = [event["event_type"] for event in logger.events]
-        reminder_index = event_names.index("todo_reminder")
-        self.assertEqual(event_names[reminder_index - 1], "tool_result")
-        self.assertEqual(event_names[reminder_index + 1], "context_prepared")
-        self.assertEqual(
-            logger.events[reminder_index]["data"],
-            {"turn": 3, "rounds_since_todo": 3, "todo_count": 0},
-        )
-        self.assertNotIn(
-            "Current todos",
-            json.dumps(logger.events[reminder_index]),
-        )
-
     def test_model_failure_records_run_failed(self) -> None:
         logger = RecordingEventLogger()
         provider = FakeProvider([RuntimeError("provider failed")])

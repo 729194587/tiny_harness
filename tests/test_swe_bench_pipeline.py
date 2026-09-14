@@ -124,8 +124,6 @@ class SweDataBoundaryTest(unittest.TestCase):
         self.assertEqual(result.model_patch, "MODEL PATCH")
         self.assertEqual(FakeEnvironment.instances[-1].network_mode, "none")
         self.assertEqual(observed["options"]["max_context_tokens"], 125_000)
-        self.assertIs(observed["options"]["progress_enabled"], False)
-        self.assertEqual(observed["options"]["working_memory_enabled"], False)
         self.assertEqual(observed["options"]["tool_trace"],
                          ToolTraceConfig(enabled=True, result_preview_chars=200))
         self.assertNotIn("environment_adapter", observed["options"])
@@ -206,7 +204,6 @@ class SweCliContextBudgetTest(unittest.TestCase):
         args = _parser().parse_args(["run"])
         self.assertEqual(args.max_context_tokens, 125_000)
         self.assertFalse(args.coding_environment)
-        self.assertFalse(args.progress)
 
     def test_explicit_context_budget(self):
         args = _parser().parse_args(
@@ -249,49 +246,14 @@ class SweCliContextBudgetTest(unittest.TestCase):
         self.assertIsInstance(run.call_args.kwargs["environment_adapter"], CodingEnvironmentAdapter)
 
 
-class SweWorkingMemoryTest(unittest.TestCase):
-    def test_cli_forwards_default_and_enabled(self):
-        for enabled in (False, True):
-            with (
-                self.subTest(enabled=enabled),
-                patch.dict(os.environ, {"TINYHARNESS_API_KEY": "test-key"}),
-                patch("evals.swe_bench_lite.__main__.ChatCompletionsProvider"),
-                patch("evals.swe_bench_lite.__main__.run_selected_smoke", return_value=Path("run")) as run,
-            ):
-                self.assertEqual(main(["run"] + (["--working-memory"] if enabled else [])), 0)
-                self.assertIs(run.call_args.kwargs["working_memory_enabled"], enabled)
-
+class SweRemovedFlagsTest(unittest.TestCase):
     def test_cli_removes_legacy_flags(self):
-        for flag in ("--task-state", "--task-state-reflection", "--task-state-reflection-interval"):
+        for flag in ("--task-state", "--task-state-reflection", "--task-state-reflection-interval",
+                     "--working-memory", "--progress"):
             with self.subTest(flag=flag), patch("sys.stderr"):
                 with self.assertRaises(SystemExit) as error:
                     _parser().parse_args(["run", flag])
                 self.assertEqual(error.exception.code, 2)
-
-    def test_pipeline_forwards_through_rollout_to_agent(self):
-        from functools import partial
-        from evals.swe_bench_lite.calibration import CalibrationResult
-
-        calibrated = CalibrationResult(task().instance_id, CALIBRATED, True, True, True, True, None)
-        for enabled in (False, True):
-            with self.subTest(enabled=enabled), tempfile.TemporaryDirectory() as temporary:
-                observed = []
-
-                def agent(provider, workspace, messages, **options):
-                    observed.append(options["working_memory_enabled"])
-                    return "done"
-
-                with (
-                    patch("evals.swe_bench_lite.pipeline.load_agent_tasks", return_value=[task()]),
-                    patch("evals.swe_bench_lite.pipeline.load_evaluation_bundles", return_value=[bundle()]),
-                ):
-                    run_selected_smoke(
-                        object(), model_name_or_path="model", results_root=Path(temporary),
-                        run_id="test", calibrator=lambda *args: calibrated,
-                        rollout=partial(rollout_task, environment_factory=FakeEnvironment, agent_entrypoint=agent),
-                        **({"working_memory_enabled": True} if enabled else {}),
-                    )
-                self.assertEqual(observed, [enabled])
 
 
 class SweExperimentMetadataTest(unittest.TestCase):
@@ -323,7 +285,6 @@ class SweExperimentMetadataTest(unittest.TestCase):
                     adapter = CodingEnvironmentAdapter() if enabled else None
                     options = ({
                         "max_turns": 7, "subagent_max_turns": 3, "max_context_tokens": None,
-                        "working_memory_enabled": True, "progress_enabled": True,
                         "working_context_trigger_tokens": 18000,
                         "working_context_target_tokens": 12000,
                         "keep_recent_tool_batches": 2,
@@ -336,8 +297,6 @@ class SweExperimentMetadataTest(unittest.TestCase):
                         "working_context_trigger_tokens": 18000 if enabled else 20000,
                         "working_context_target_tokens": 12000 if enabled else 14000,
                         "keep_recent_tool_batches": 2 if enabled else 3,
-                        "working_memory_enabled": enabled,
-                        "progress_enabled": enabled,
                         "environment_adapter": (
                             f"{type(adapter).__module__}.{type(adapter).__qualname__}" if enabled else None
                         ),
@@ -377,44 +336,6 @@ class SweExperimentMetadataTest(unittest.TestCase):
                             self.assertEqual(agent_options[name], expected[name])
                     for metadata in (run_metadata, task_metadata, run_metadata["tasks"][0]):
                         self.assertEqual({key: metadata[key] for key in expected}, expected)
-
-
-class SweProgressTest(unittest.TestCase):
-    def test_cli_forwards_default_and_enabled_progress(self):
-        for enabled in (False, True):
-            with (
-                self.subTest(enabled=enabled),
-                patch.dict(os.environ, {"TINYHARNESS_API_KEY": "test-key"}),
-                patch("evals.swe_bench_lite.__main__.ChatCompletionsProvider"),
-                patch("evals.swe_bench_lite.__main__.run_selected_smoke", return_value=Path("run")) as run,
-            ):
-                self.assertEqual(main(["run"] + (["--progress"] if enabled else [])), 0)
-                self.assertIs(run.call_args.kwargs["progress_enabled"], enabled)
-
-    def test_pipeline_forwards_progress_through_rollout_to_agent(self):
-        from functools import partial
-        from evals.swe_bench_lite.calibration import CalibrationResult
-
-        calibrated = CalibrationResult(task().instance_id, CALIBRATED, True, True, True, True, None)
-        for enabled in (False, True):
-            with self.subTest(enabled=enabled), tempfile.TemporaryDirectory() as temporary:
-                observed = []
-
-                def agent(provider, workspace, messages, **options):
-                    observed.append(options["progress_enabled"])
-                    return "done"
-
-                with (
-                    patch("evals.swe_bench_lite.pipeline.load_agent_tasks", return_value=[task()]),
-                    patch("evals.swe_bench_lite.pipeline.load_evaluation_bundles", return_value=[bundle()]),
-                ):
-                    run_selected_smoke(
-                        object(), model_name_or_path="model", results_root=Path(temporary),
-                        run_id="test", calibrator=lambda *args: calibrated,
-                        rollout=partial(rollout_task, environment_factory=FakeEnvironment, agent_entrypoint=agent),
-                        **({"progress_enabled": True} if enabled else {}),
-                    )
-                self.assertEqual(observed, [enabled])
 
 
 class SweAdapterIntegrationTest(unittest.TestCase):

@@ -21,7 +21,6 @@ class TodoManager:
 
     def __init__(self) -> None:
         self.items: list[TodoItem] = []
-        self.revision = 0
 
     def update(self, todos: list[object] | str) -> str:
         """Atomically replace the todo list and return its rendered state."""
@@ -69,7 +68,6 @@ class TodoManager:
             raise ValueError("Only one todo can be in_progress at a time")
 
         self.items = validated
-        self.revision += 1
         return self.render()
 
     def render(self) -> str:

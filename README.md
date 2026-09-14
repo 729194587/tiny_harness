@@ -18,22 +18,6 @@ LLM response
 
 `clear()` 显式丢弃会话历史并解除 failed 状态，不撤销工具副作用；空任务的输入校验失败不会使 Session 进入 failed 状态。直接使用 `run_agent()` / `agent_loop()` 的调用方应在异常后自行丢弃运行或重建会话，不能把可能未闭合的 messages 直接用于下一次运行。
 
-### Working Memory（可选）
-
-通过 Python API 的 `working_memory_enabled=True` 为 `AgentSession`、
-`run_agent()` 或 `create_run_context()` 启用单个任务的短期工作记忆。
-CLI 和 SWE-bench Lite runner 均使用 `--working-memory`，默认关闭。
-
-状态仅包含 `objective` 和 `note`。objective 来自当前任务；
-模型调用 `update_working_memory(note)` 整体替换 note，保留前 2000 个字符，
-空字符串清空 note。没有自动反思、定时更新或额外模型调用。
-
-每次 agent 请求在 history 末尾投影当前状态，不改写 canonical history 或稳定
-system-prefix；projection 计入上下文预算，压缩历史不删除内存中的状态。
-每次 Session 提交和每个子代理都有独立状态，子代理 objective 来自 delegated task。
-不写入 Persistent Memory；更新事件仅记录长度、hash 和截断标记。
-此能力替换实验性的 TaskState API 与旧 CLI 开关。
-
 ## Tools
 
 每个 Tool module 通过 `build_tools(context)` 返回零个或多个 `ToolDefinition`。一个 definition 同时拥有 model-facing 元数据与可执行 handler：
@@ -100,7 +84,7 @@ Memory 用于跨 Session 的稳定偏好、反馈、项目事实和参考信息�
 - **Permission**：每次 Tool Call 得到 `ALLOW`、`DENY` 或 `ASK`；重复拒绝会向模型返回可执行的恢复提示。
 - **Hooks 与 Events**：Pre/Post Tool Hooks 和生命周期事件位于统一执行边界，Tool handler 不重复实现横切逻辑。
 - **Subagent**：使用独立 messages、共享 workspace，并继承 Permission、Hooks、Recovery、Context、Skills、Memory 与测试 capability；不允许嵌套 Subagent。
-- **Todo**：维护 run-scoped 任务状态，并在长时间未更新时插入协议安全的 reminder。
+- **Todo**：维护 run-scoped 任务状态，通过 `todo_write` 显式更新。
 
 ## Quick Start
 

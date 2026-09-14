@@ -5,48 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from tiny_harness.agent.messages import ToolCall, validate_tool_call_batch
-from tiny_harness.runtime.events import EventType
 from tiny_harness.runtime.context import retain_tool_result
 from tiny_harness.tools.registry import dispatch, emit_tool_called
 
 if TYPE_CHECKING:
     from tiny_harness.agent.context import AgentRunContext
-
-TODO_REMINDER_ROUNDS = 3
-
-
-def _update_todo_reminder(
-    messages: list[dict[str, Any]],
-    previous_revision: int,
-    context: AgentRunContext,
-) -> None:
-    """更新 Todo 提醒计数，并在阈值处追加协议安全的提醒。"""
-
-    if context.todo_manager.revision != previous_revision:
-        context.rounds_since_todo = 0
-    else:
-        context.rounds_since_todo += 1
-
-    if context.rounds_since_todo < TODO_REMINDER_ROUNDS:
-        return
-
-    reminder = (
-        "<todo-reminder>\n"
-        "Update your todo list.\n\n"
-        "Current todos:\n"
-        f"{context.todo_manager.render()}\n"
-        "</todo-reminder>"
-    )
-    messages[-1]["content"] += f"\n\n{reminder}"
-    context.event_logger.emit(
-        EventType.TODO_REMINDER,
-        {
-            "turn": context.current_turn,
-            "rounds_since_todo": context.rounds_since_todo,
-            "todo_count": len(context.todo_manager.items),
-        },
-    )
-    context.rounds_since_todo = 0
 
 
 def _apply_manual_compaction(
@@ -83,7 +46,6 @@ def execute_tool_batch(
     """
 
     validate_tool_call_batch(calls)
-    todo_revision = context.todo_manager.revision
     compact_revision = (
         context.compaction_request.revision
         if context.compaction_request is not None
@@ -122,5 +84,4 @@ def execute_tool_batch(
             }
         )
 
-    _update_todo_reminder(messages, todo_revision, context)
     _apply_manual_compaction(messages, compact_revision, context)

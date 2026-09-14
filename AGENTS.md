@@ -20,7 +20,7 @@ Use current code and tests as the authority when README descriptions differ.
 - `tiny_harness/agent/context.py`: `AgentRunContext` and capability assembly.
 - `tiny_harness/context/`: heuristic/calibrated token meters and request attribution.
 - `tiny_harness/runtime/`: context preparation/artifacts, permission decisions,
-  hooks, events/console, recovery, skills, todos, Working Memory, and test runner.
+  hooks, events/console, recovery, skills, todos, and test runner.
 - `tiny_harness/environments/`: explicitly selected coding-environment adapter;
   repository context and read-only Git capabilities, not automatic discovery.
 - `tiny_harness/tools/`: `ToolDefinition`, discovery, registry/dispatch, and
@@ -29,7 +29,7 @@ Use current code and tests as the authority when README descriptions differ.
   contract, normalized provider errors, and the Chat Completions SDK adapter.
 - `tiny_harness/skills/`: bundled `<name>/SKILL.md` instruction assets.
 - `tiny_harness/memory/`: persistent-memory store, selection, extraction,
-  lifecycle integration, and consolidation; separate from Working Memory and todos.
+  lifecycle integration, and consolidation; separate from todos.
 - `evals/swe_bench_lite/`: Docker rollout/calibration, official evaluation, and
   offline `report.py` analysis of pipeline event artifacts.
 - `tests/`: deterministic regression tests using scripted providers, mocks,
@@ -94,7 +94,7 @@ Use current code and tests as the authority when README descriptions differ.
 - Canonical history is runtime-owned state, not the exact model request or an
   immutable transcript. `model_context_messages()` copies it and bounds large
   `read_file` results without artifacts or canonical edits, even without a budget.
-  Runtime guidance and Working Memory are also request-only projections.
+  Runtime guidance is also a request-only projection.
 - Keep the two pressure levels distinct. Working trigger/target default to
   20,000/14,000 tokens and measure the fully projected request plus tool schemas.
   `max_context_tokens` is the hard budget underlying automatic soft/target limits
@@ -106,7 +106,7 @@ Use current code and tests as the authority when README descriptions differ.
   hard-budget compaction are disabled, but request projection still applies.
 - Working pruning persists eligible old tool-result bodies and substitutes
   bounded previews with artifact references in canonical history and the request.
-  It does not summarize, remove assistant messages, or update Working Memory.
+  It does not summarize or remove assistant messages.
   Visit oldest results first; protect the latest `keep_recent_tool_batches`
   (default 3), counting each multi-tool batch once. Skip already persisted results
   and non-reducing candidates. Stop at target or eligibility exhaustion; recent
@@ -138,13 +138,6 @@ Use current code and tests as the authority when README descriptions differ.
   Selection/extraction/consolidation are separate from current plans and todos.
   Ordinary extraction/consolidation failures preserve an existing final answer;
   `EventLogError` is still fatal, including in memory paths.
-- Working Memory is separately opt-in, run-scoped state in
-  `runtime/working_memory.py`. `update_working_memory` explicitly replaces a note
-  capped at 2,000 characters (empty clears it); initialization resets it.
-  Its request projection is reference data, survives history compaction, and
-  consumes context budget. Updates make no provider calls or persistent writes.
-  Do not couple it to pruning, automatic summaries, persistent memory, or Todo;
-  children receive independent state when enabled.
 
 ### Observability
 
@@ -211,7 +204,7 @@ python -m pytest tests/test_agent_loop.py tests/test_tool_batch.py tests/test_ba
 python -m pytest tests/test_context.py tests/test_recovery.py tests/test_subagent.py -q
 python -m pytest tests/test_console.py tests/test_cli.py tests/test_events.py -q
 python -m pytest tests/test_skills.py tests/test_skill_runtime.py tests/test_memory_runtime.py -q
-python -m pytest tests/test_working_context.py tests/test_context_attribution.py tests/test_working_memory.py -q
+python -m pytest tests/test_working_context.py tests/test_context_attribution.py -q
 python -m pytest tests/test_swe_bench_report.py tests/test_swe_bench_pipeline.py -q
 ```
 

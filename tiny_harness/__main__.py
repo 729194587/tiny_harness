@@ -106,10 +106,6 @@ def _parser() -> argparse.ArgumentParser:
             ".tinyharness/memory）"
         ),
     )
-    parser.add_argument(
-        "--working-memory", action="store_true",
-        help="启用当前任务的短期 Working Memory（默认关闭，无额外模型调用）",
-    )
     return parser
 
 
@@ -295,7 +291,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         keep_recent_tool_batches=args.keep_recent_tool_batches,
         recovery_policy=RecoveryPolicy(max_retries=args.max_model_retries),
         memory_enabled=args.memory,
-        working_memory_enabled=args.working_memory,
     )
 
     try:

@@ -817,9 +817,7 @@ class SubagentTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             agent_loop(provider, self.workspace, [])
 
-        child_reminder = provider.calls[4]["messages"][-1]["content"]
-        self.assertIn("Current todos:\nNo todos.", child_reminder)
-        self.assertNotIn("PARENT_TODO_SECRET", child_reminder)
+        self.assertNotIn("PARENT_TODO_SECRET", json.dumps(provider.calls[4]["messages"]))
 
     def test_child_event_log_failure_aborts_parent_run(self) -> None:
         provider = ScriptedProvider(

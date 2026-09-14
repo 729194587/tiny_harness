@@ -14,8 +14,7 @@ from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter, Ca
 from tiny_harness.memory import MemoryRuntime, create_memory_runtime
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.context import CompactionConfig, CompactionRequest, ContextCompactor
-from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger, CompositeEventLogger
-from tiny_harness.runtime.progress import ProgressTracker
+from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger
 from tiny_harness.runtime.hooks import FinalAnswerHook, ToolHooks
 from tiny_harness.runtime.permissions import (
     DEFAULT_PERMISSION_POLICY,
@@ -37,7 +36,6 @@ from tiny_harness.runtime.skills import (
 from tiny_harness.runtime.shell_runner import DEFAULT_SHELL_RUNNER, ShellRunner
 from tiny_harness.runtime.test_runner import TestRunner
 from tiny_harness.runtime.todos import TodoManager
-from tiny_harness.runtime.working_memory import WorkingMemory, WorkingMemoryTokenMeter
 from tiny_harness.tools.discovery import discover_tools
 from tiny_harness.tools.definition import ToolDefinition
 from tiny_harness.tools.registry import ToolRegistry
@@ -79,12 +77,9 @@ class AgentRunContext:
     permission_rejections: PermissionRejectionTracker
     is_main_agent: bool = True
     current_turn: int = 0
-    rounds_since_todo: int = 0
     last_finish_reason: str | None = None
     environment_context: str = ""
     tool_trace: ToolTraceConfig = ToolTraceConfig()
-    progress_tracker: ProgressTracker | None = None
-    working_memory: WorkingMemory | None = None
     compaction_config: CompactionConfig = CompactionConfig()
 
     @property
@@ -134,8 +129,6 @@ def initialize_run_state(
         })
     upsert_skill_catalog_marker(messages, context.skill_catalog)
     context.memory.initialize(messages, active_request)
-    if context.working_memory is not None:
-        context.working_memory.initialize(active_request)
 
 
 ModelCompletion = Callable[
@@ -225,8 +218,6 @@ def _subagent_runner(
     shell_runner: ShellRunner,
     environment_adapter: EnvironmentAdapter | None,
     tool_trace: ToolTraceConfig,
-    progress_enabled: bool,
-    working_memory_enabled: bool,
     compaction_config: CompactionConfig,
 ) -> SubagentRunner | None:
     if not enabled:
@@ -254,8 +245,6 @@ def _subagent_runner(
         shell_runner=shell_runner,
         environment_adapter=environment_adapter,
         tool_trace=tool_trace,
-        progress_enabled=progress_enabled,
-        working_memory_enabled=working_memory_enabled,
         working_context_trigger_tokens=compaction_config.working_context_trigger_tokens,
         working_context_target_tokens=compaction_config.working_context_target_tokens,
         keep_recent_tool_batches=compaction_config.keep_recent_tool_batches,
@@ -287,8 +276,6 @@ def create_run_context(
     is_main_agent: bool = True,
     environment_adapter: EnvironmentAdapter | None = None,
     tool_trace: ToolTraceConfig = ToolTraceConfig(),
-    progress_enabled: bool = False,
-    working_memory_enabled: bool = False,
 ) -> AgentRunContext:
     """Compose one run from top-level policy to concrete runtime state."""
 
@@ -320,10 +307,6 @@ def create_run_context(
 
     token_meter = (token_meter if isinstance(token_meter, CalibratedTokenMeter)
                    else CalibratedTokenMeter(token_meter))
-    downstream_logger = event_logger
-    progress_tracker = ProgressTracker() if progress_enabled else None
-    if progress_tracker is not None:
-        event_logger = CompositeEventLogger(event_logger, progress_tracker)
     recovery = RecoveryExecutor(recovery_policy, event_logger=event_logger)
     context: AgentRunContext
     complete_for = _completion_router(
@@ -349,13 +332,11 @@ def create_run_context(
         max_turns=subagent_max_turns,
         permission_policy=permission_policy,
         permission_prompt=permission_prompt,
-        event_logger=downstream_logger,
+        event_logger=event_logger,
         max_context_tokens=max_context_tokens,
         token_meter=token_meter.heuristic,
         environment_adapter=environment_adapter,
         tool_trace=tool_trace,
-        progress_enabled=progress_enabled,
-        working_memory_enabled=working_memory_enabled,
         tool_hooks=tool_hooks,
         recovery_policy=recovery_policy,
         skill_catalog=active_skill_catalog,
@@ -391,8 +372,6 @@ def create_run_context(
         permission_rejections=PermissionRejectionTracker(),
         is_main_agent=is_main_agent,
         tool_trace=tool_trace,
-        progress_tracker=progress_tracker,
-        working_memory=WorkingMemory() if working_memory_enabled else None,
     )
     context.tool_registry = discover_tools(context)
     if environment_adapter is not None:
@@ -414,6 +393,4 @@ def create_run_context(
         event_logger,
         compaction_config,
     )
-    if context.compactor is not None and context.working_memory is not None:
-        context.compactor.token_meter = WorkingMemoryTokenMeter(token_meter, context.working_memory)
     return context

@@ -8,16 +8,6 @@ from tiny_harness.agent.messages import ToolCall
 from tiny_harness.agent.tool_batch import execute_tool_batch
 
 
-class RecordingEventLogger:
-    def __init__(self) -> None:
-        self.events = []
-
-    def emit(self, event_type, data=None) -> None:
-        self.events.append(
-            {"event_type": event_type.value, "data": dict(data or {})}
-        )
-
-
 class RecordingCompactor:
     def __init__(self) -> None:
         self.calls = []
@@ -41,10 +31,8 @@ class ExecuteToolBatchTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def context(self, *, event_logger=None, max_context_tokens=None):
+    def context(self, *, max_context_tokens=None):
         keyword_arguments = {"allow_subagent": False}
-        if event_logger is not None:
-            keyword_arguments["event_logger"] = event_logger
         if max_context_tokens is not None:
             keyword_arguments["max_context_tokens"] = max_context_tokens
         return create_run_context(
@@ -72,27 +60,6 @@ class ExecuteToolBatchTest(unittest.TestCase):
             ["write-1", "read-1"],
         )
         self.assertEqual(messages[-1]["content"], "A")
-
-    def test_adds_todo_reminder_after_three_unchanged_batches(self) -> None:
-        logger = RecordingEventLogger()
-        context = self.context(event_logger=logger)
-        messages = []
-
-        for turn in range(1, 4):
-            context.current_turn = turn
-            execute_tool_batch(
-                messages,
-                [ToolCall(f"list-{turn}", "list_files", "{}")],
-                context,
-            )
-
-        self.assertIn("<todo-reminder>", messages[-1]["content"])
-        reminder = next(
-            event for event in logger.events
-            if event["event_type"] == "todo_reminder"
-        )
-        self.assertEqual(reminder["data"]["turn"], 3)
-        self.assertEqual(reminder["data"]["rounds_since_todo"], 3)
 
     def test_manual_compaction_runs_after_the_complete_batch(self) -> None:
         compactor = RecordingCompactor()

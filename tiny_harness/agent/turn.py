@@ -61,8 +61,6 @@ def model_request_inputs(
             insert_at,
             {"role": "system", "content": FINALIZATION_INSTRUCTION},
         )
-    if context.working_memory is not None:
-        request_messages.append(context.working_memory.projection())
     return request_messages, ([] if finalization else context.tools)
 
 

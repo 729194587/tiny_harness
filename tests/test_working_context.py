@@ -76,9 +76,6 @@ class WorkingContextTest(unittest.TestCase):
     def test_checkpoint_uses_full_original_source_and_rebuilds_request(self):
         messages = self.checkpoint_history()
         original = copy.deepcopy(messages)
-        self.context.working_memory = Mock()
-        memory = {"role": "user", "name": "tinyharness_working_memory", "content": "live state"}
-        self.context.working_memory.projection.return_value = memory
         summary = "current task state " * 200
         self.provider.complete.return_value = ModelResponse(summary, "PRIVATE_SUMMARY_REASONING", [], "stop")
         meter = self.context.token_meter
@@ -102,8 +99,6 @@ class WorkingContextTest(unittest.TestCase):
         self.assertIn(summary, markers[0]["content"])
         self.assertNotIn("PRIVATE_SUMMARY_REASONING", str(messages))
         self.assertEqual((request, tools), model_request_inputs(messages, self.context, finalization=False))
-        self.assertIn(memory, request)
-        self.assertNotIn(memory, messages)
         after = meter.estimate_request(messages, request, tools)
         self.assertLess(after, 10_000)
         self.assertEqual(after, meter.heuristic.estimate(request, tools))

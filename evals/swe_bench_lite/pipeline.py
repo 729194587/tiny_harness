@@ -54,8 +54,6 @@ def _experiment_config(
     max_turns: int,
     subagent_max_turns: int,
     max_context_tokens: int | None,
-    working_memory_enabled: bool,
-    progress_enabled: bool,
     environment_adapter: EnvironmentAdapter | None,
     working_context_trigger_tokens: int,
     working_context_target_tokens: int,
@@ -70,10 +68,8 @@ def _experiment_config(
         "working_context_trigger_tokens": working_context_trigger_tokens,
         "working_context_target_tokens": working_context_target_tokens,
         "keep_recent_tool_batches": keep_recent_tool_batches,
-        "working_memory_enabled": working_memory_enabled,
         "memory_enabled": False,
         "workspace_mutation_observation_enabled": True,
-        "progress_enabled": progress_enabled,
         "environment_adapter": (
             f"{adapter_type.__module__}.{adapter_type.__qualname__}"
             if environment_adapter is not None else None
@@ -97,8 +93,6 @@ def rollout_task(
     environment_factory: Callable[..., DockerTaskEnvironment] = DockerTaskEnvironment,
     agent_entrypoint: Callable[..., str] = run_agent,
     environment_adapter: EnvironmentAdapter | None = None,
-    progress_enabled: bool = False,
-    working_memory_enabled: bool = False,
 ) -> RolloutResult:
     """Run an agent using only SweTask; evaluator bundles cannot enter this API."""
 
@@ -113,7 +107,7 @@ def rollout_task(
     started_at = datetime.now(timezone.utc).isoformat()
     experiment_config = _experiment_config(
         max_turns, subagent_max_turns, max_context_tokens,
-        working_memory_enabled, progress_enabled, environment_adapter,
+        environment_adapter,
         working_context_trigger_tokens, working_context_target_tokens, keep_recent_tool_batches,
     )
     experiment_config.update(provenance)
@@ -143,8 +137,6 @@ def rollout_task(
                 tool_trace=ToolTraceConfig(enabled=True, result_preview_chars=200),
                 shell_runner=environment.shell_runner,
                 memory_enabled=False,
-                progress_enabled=progress_enabled,
-                working_memory_enabled=working_memory_enabled,
                 **({"environment_adapter": environment_adapter}
                    if environment_adapter is not None else {}),
             )
@@ -228,15 +220,13 @@ def run_selected_smoke(
     calibrator: Callable[..., CalibrationResult] = calibrate_task,
     rollout: Callable[..., RolloutResult] = rollout_task,
     environment_adapter: EnvironmentAdapter | None = None,
-    progress_enabled: bool = False,
-    working_memory_enabled: bool = False,
 ) -> Path:
     """Calibrate then serially roll out the selected four-task smoke set."""
 
     active_run_id = run_id or new_run_id("smoke")
     experiment_config = _experiment_config(
         max_turns, subagent_max_turns, max_context_tokens,
-        working_memory_enabled, progress_enabled, environment_adapter,
+        environment_adapter,
         working_context_trigger_tokens, working_context_target_tokens, keep_recent_tool_batches,
     )
     experiment_config.update(source_metadata())
@@ -284,11 +274,9 @@ def run_selected_smoke(
                 max_turns=max_turns,
                 subagent_max_turns=subagent_max_turns,
                 max_context_tokens=max_context_tokens,
-                progress_enabled=progress_enabled,
                 working_context_trigger_tokens=working_context_trigger_tokens,
                 working_context_target_tokens=working_context_target_tokens,
                 keep_recent_tool_batches=keep_recent_tool_batches,
-                working_memory_enabled=working_memory_enabled,
                 **({"environment_adapter": environment_adapter}
                    if environment_adapter is not None else {}),
             )

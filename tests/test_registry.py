@@ -223,7 +223,6 @@ class ToolRegistryTest(unittest.TestCase):
             registry=self.make_registry(compaction_request=manager),
         )
 
-        self.assertEqual(manager.revision, 1)
         self.assertEqual(
             result.content,
             "Compaction requested after this tool batch.",
@@ -308,7 +307,6 @@ class ToolRegistryTest(unittest.TestCase):
 
         self.assertEqual(result.tool_call_id, "todo-1")
         self.assertIn("[>] Implement the feature", result.content)
-        self.assertEqual(manager.revision, 1)
 
     def test_todo_write_without_manager_is_not_registered(self) -> None:
         result = self.call(

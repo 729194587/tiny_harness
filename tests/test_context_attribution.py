@@ -73,7 +73,7 @@ class AttributionTest(unittest.TestCase):
                     {"role": "user", "content": "SECRET"}]
         messages += batch("read_file", "SECRET" * 100)
         messages += batch("bash", "SECRET中文")
-        for marker in ("working_memory", "environment_context", "skill_catalog"):
+        for marker in ("environment_context", "skill_catalog"):
             messages.append({"role": "user", "name": "tinyharness_" + marker,
                              "content": "SECRET"})
         original = copy.deepcopy(messages)
@@ -85,7 +85,7 @@ class AttributionTest(unittest.TestCase):
         self.assertNotIn("SECRET", json.dumps(result))
         categories = result["categories"]
         for key in ("system_runtime_guidance", "user_task_messages", "assistant_history",
-                    "fresh_tool_results", "historical_tool_results", "working_memory_projection",
+                    "fresh_tool_results", "historical_tool_results",
                     "environment_projection", "skill_projection"):
             self.assertIn(key, categories)
         self.assertEqual(categories["fresh_tool_results"]["count"], 1)
@@ -100,8 +100,7 @@ class AttributionTest(unittest.TestCase):
                 logger = Mock()
                 provider = Mock()
                 provider.complete.return_value = ModelResponse("done", None, [], "stop")
-                context = create_run_context(provider, Path(directory), event_logger=logger,
-                                             working_memory_enabled=True)
+                context = create_run_context(provider, Path(directory), event_logger=logger)
                 messages = [{"role": "user", "content": "task"}] + batch("read_file", "x" * 50000)
                 messages[1]["reasoning_content"] = "SECRET reasoning replay"
                 original = copy.deepcopy(messages)

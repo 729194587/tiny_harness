@@ -26,7 +26,6 @@ class TodoManagerTest(unittest.TestCase):
                 TodoItem("Run tests", "pending"),
             ],
         )
-        self.assertEqual(manager.revision, 1)
         self.assertEqual(
             output,
             "[x] Inspect files\n"
@@ -47,7 +46,6 @@ class TodoManagerTest(unittest.TestCase):
 
         self.assertIn("[ ] JSON task", json_output)
         self.assertIn("[x] Literal task", literal_output)
-        self.assertEqual(manager.revision, 2)
 
     def test_empty_list_clears_todos(self) -> None:
         manager = TodoManager()
@@ -57,7 +55,6 @@ class TodoManagerTest(unittest.TestCase):
 
         self.assertEqual(output, "No todos.")
         self.assertEqual(manager.items, [])
-        self.assertEqual(manager.revision, 2)
 
     def test_rejects_invalid_todo_lists(self) -> None:
         invalid_values = [
@@ -92,7 +89,6 @@ class TodoManagerTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     manager.update(value)
                 self.assertEqual(manager.items, [])
-                self.assertEqual(manager.revision, 0)
 
     def test_invalid_update_preserves_previous_state(self) -> None:
         manager = TodoManager()
@@ -102,7 +98,6 @@ class TodoManagerTest(unittest.TestCase):
             manager.update([{"content": "", "status": "pending"}])
 
         self.assertEqual(manager.items, [TodoItem("Keep me", "pending")])
-        self.assertEqual(manager.revision, 1)
 
     def test_tool_returns_current_tasks_without_printing(self) -> None:
         manager = TodoManager()

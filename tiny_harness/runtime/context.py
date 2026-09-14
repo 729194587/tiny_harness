@@ -48,7 +48,6 @@ class CompactionConfig:
     large_result_chars: int = 30_000
     result_preview_chars: int = 2_000
     max_messages: int = 50
-    keep_recent_results: int = 3
     micro_result_chars: int = 120
     summary_input_chars: int = 80_000
     compaction_target_ratio: float = COMPACTION_TARGET_RATIO
@@ -906,39 +905,6 @@ class ContextCompactor(ContextArtifacts):
             else:
                 prefix.append(marker)
         return _flatten(prefix, blocks)
-
-    def micro_compact(self, messages: list[dict[str, Any]]) -> int:
-        """保留最新结果，同时替换较早且过长的工具结果。"""
-
-        _, blocks = _split_context(messages)
-        results = [
-            message
-            for block in blocks
-            for message in block
-            if message.get("role") == "tool"
-        ]
-        keep = self.config.keep_recent_results
-        old_results = results[:-keep] if keep else results
-        shortened = 0
-        for message in old_results:
-            content = str(message.get("content", ""))
-            if len(content) <= self.config.micro_result_chars:
-                continue
-            saved_path = next(
-                (
-                    line.removeprefix("Full output: ")
-                    for line in content.splitlines()
-                    if line.startswith("Full output: ")
-                ),
-                None,
-            )
-            message["content"] = (
-                f"[Earlier tool result saved at {saved_path}.]"
-                if saved_path
-                else "[Earlier tool result omitted; rerun the tool if needed.]"
-            )
-            shortened += 1
-        return shortened
 
     def _summary_request(
         self,
