@@ -11,8 +11,6 @@ from typing import Any
 
 from tiny_harness.__main__ import DEFAULT_MAX_CONTEXT_TOKENS
 from tiny_harness.agent.loop import run_agent
-from tiny_harness.agent.environment import EnvironmentAdapter
-from tiny_harness.environments import CodingEnvironmentAdapter
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import JsonlEventLogger
 from tiny_harness.runtime.context import CompactionConfig
@@ -54,13 +52,11 @@ def _experiment_config(
     max_turns: int,
     subagent_max_turns: int,
     max_context_tokens: int | None,
-    environment_adapter: EnvironmentAdapter | None,
     working_context_trigger_tokens: int,
     working_context_target_tokens: int,
     keep_recent_tool_batches: int,
 ) -> dict[str, Any]:
     """Use identical configuration fields in task and run metadata."""
-    adapter_type = type(environment_adapter)
     return {
         "max_turns": max_turns,
         "subagent_max_turns": subagent_max_turns,
@@ -70,11 +66,6 @@ def _experiment_config(
         "keep_recent_tool_batches": keep_recent_tool_batches,
         "memory_enabled": False,
         "workspace_mutation_observation_enabled": True,
-        "environment_adapter": (
-            f"{adapter_type.__module__}.{adapter_type.__qualname__}"
-            if environment_adapter is not None else None
-        ),
-        "coding_environment_enabled": isinstance(environment_adapter, CodingEnvironmentAdapter),
     }
 
 
@@ -92,7 +83,6 @@ def rollout_task(
     keep_recent_tool_batches: int = CompactionConfig.keep_recent_tool_batches,
     environment_factory: Callable[..., DockerTaskEnvironment] = DockerTaskEnvironment,
     agent_entrypoint: Callable[..., str] = run_agent,
-    environment_adapter: EnvironmentAdapter | None = None,
 ) -> RolloutResult:
     """Run an agent using only SweTask; evaluator bundles cannot enter this API."""
 
@@ -107,7 +97,6 @@ def rollout_task(
     started_at = datetime.now(timezone.utc).isoformat()
     experiment_config = _experiment_config(
         max_turns, subagent_max_turns, max_context_tokens,
-        environment_adapter,
         working_context_trigger_tokens, working_context_target_tokens, keep_recent_tool_batches,
     )
     experiment_config.update(provenance)
@@ -137,8 +126,6 @@ def rollout_task(
                 tool_trace=ToolTraceConfig(enabled=True, result_preview_chars=200),
                 shell_runner=environment.shell_runner,
                 memory_enabled=False,
-                **({"environment_adapter": environment_adapter}
-                   if environment_adapter is not None else {}),
             )
             model_patch = environment.collect_patch()
         final_path.write_text(answer, encoding="utf-8")
@@ -219,14 +206,12 @@ def run_selected_smoke(
     keep_recent_tool_batches: int = CompactionConfig.keep_recent_tool_batches,
     calibrator: Callable[..., CalibrationResult] = calibrate_task,
     rollout: Callable[..., RolloutResult] = rollout_task,
-    environment_adapter: EnvironmentAdapter | None = None,
 ) -> Path:
     """Calibrate then serially roll out the selected four-task smoke set."""
 
     active_run_id = run_id or new_run_id("smoke")
     experiment_config = _experiment_config(
         max_turns, subagent_max_turns, max_context_tokens,
-        environment_adapter,
         working_context_trigger_tokens, working_context_target_tokens, keep_recent_tool_batches,
     )
     experiment_config.update(source_metadata())
@@ -277,8 +262,6 @@ def run_selected_smoke(
                 working_context_trigger_tokens=working_context_trigger_tokens,
                 working_context_target_tokens=working_context_target_tokens,
                 keep_recent_tool_batches=keep_recent_tool_batches,
-                **({"environment_adapter": environment_adapter}
-                   if environment_adapter is not None else {}),
             )
         except (KeyboardInterrupt, SystemExit):
             raise

@@ -10,7 +10,6 @@ from tiny_harness.agent.context import (
     create_run_context,
 )
 from tiny_harness.agent.loop import agent_loop
-from tiny_harness.agent.environment import EnvironmentAdapter, ENVIRONMENT_CONTEXT_MARKER
 from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter, CalibratedTokenMeter
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger
@@ -27,7 +26,6 @@ RUN_SCOPED_MARKERS = frozenset(
         "tinyharness_relevant_memory",
         "tinyharness_skill_catalog",
         "tinyharness_todo_state",
-        ENVIRONMENT_CONTEXT_MARKER,
     }
 )
 
@@ -60,11 +58,9 @@ class AgentSession:
         recovery_policy: RecoveryPolicy = RecoveryPolicy(),
         memory_enabled: bool = False,
         event_logger_factory: Callable[[], EventLogger] = _null_event_logger,
-        environment_adapter: EnvironmentAdapter | None = None,
         tool_trace: ToolTraceConfig = ToolTraceConfig(),
     ) -> None:
         self.provider = provider
-        self.environment_adapter = environment_adapter
         self.tool_trace = tool_trace
         self.workspace = workspace.resolve()
         self.skill_catalog = discover_skills(self.workspace)
@@ -126,7 +122,6 @@ class AgentSession:
             recovery_policy=self.recovery_policy,
             skill_catalog=self.skill_catalog,
             memory_enabled=self.memory_enabled,
-            environment_adapter=self.environment_adapter,
             tool_trace=self.tool_trace,
         )
         answer = agent_loop(self.messages, context, task)

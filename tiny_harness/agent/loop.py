@@ -11,7 +11,6 @@ from tiny_harness.agent.context import (
     run_started_data,
 )
 from tiny_harness.agent.messages import ModelResponse, assistant_message_from_response
-from tiny_harness.agent.environment import EnvironmentAdapter
 from tiny_harness.agent.tool_batch import execute_tool_batch
 from tiny_harness.agent.turn import call_model, prepare_model_request_inputs
 from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter
@@ -170,7 +169,6 @@ def run_agent(
     memory_enabled: bool = False,
     memory_extraction_enabled: bool = True,
     is_main_agent: bool = True,
-    environment_adapter: EnvironmentAdapter | None = None,
     tool_trace: ToolTraceConfig = ToolTraceConfig(),
 ) -> str:
     """兼容配置入口：装配运行上下文后进入三参数核心循环。"""
@@ -197,7 +195,6 @@ def run_agent(
         memory_enabled=memory_enabled,
         memory_extraction_enabled=memory_extraction_enabled,
         is_main_agent=is_main_agent,
-        environment_adapter=environment_adapter,
         tool_trace=tool_trace,
     )
     active_request = next(

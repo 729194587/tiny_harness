@@ -5,12 +5,10 @@ import unittest
 from pathlib import Path
 
 from tiny_harness.agent.context import create_run_context, initialize_run_state
-from tiny_harness.agent.environment import ENVIRONMENT_CONTEXT_MARKER
 from tiny_harness.agent.loop import run_agent
 from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.agent.turn import model_request_inputs
 from tiny_harness.context.attribution import request_attribution
-from tiny_harness.environments import CodingEnvironmentAdapter
 from tiny_harness.runtime.context import context_token_count
 from tiny_harness.runtime.hooks import ToolHooks
 from tiny_harness.runtime.permissions import PermissionDecision
@@ -173,11 +171,9 @@ class SkillRuntimeTest(unittest.TestCase):
             json.dumps(logger.events, ensure_ascii=False),
         )
 
-    def test_initialization_refreshes_catalog_after_task_and_environment(self) -> None:
+    def test_initialization_refreshes_catalog_after_task(self) -> None:
         self.write_skill()
-        context = create_run_context(
-            None, self.workspace, environment_adapter=CodingEnvironmentAdapter(),
-        )
+        context = create_run_context(None, self.workspace)
         messages = [
             {"role": "system", "content": "BASE_SYSTEM"},
             {"role": "system", "name": "tinyharness_skill_catalog", "content": "OLD"},
@@ -192,10 +188,7 @@ class SkillRuntimeTest(unittest.TestCase):
             self.assertEqual(catalog["role"], "user")
             self.assertNotEqual(catalog["content"], "OLD")
             task_index = next(i for i, m in enumerate(request) if m.get("content") == "current task")
-            environment_index = next(i for i, m in enumerate(request)
-                                     if m.get("name") == ENVIRONMENT_CONTEXT_MARKER)
-            self.assertLess(task_index, environment_index)
-            self.assertEqual(request.index(catalog), environment_index + 1)
+            self.assertEqual(request.index(catalog), task_index + 1)
             self.assertEqual(messages[-1], catalog)
             categories = request_attribution(request, tools)["categories"]
             self.assertEqual(categories["skill_projection"]["count"], 1)

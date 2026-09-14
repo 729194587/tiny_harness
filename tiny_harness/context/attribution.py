@@ -7,7 +7,6 @@ from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER
 
 
 PROJECTIONS = {
-    "tinyharness_environment_context": "environment_projection",
     "tinyharness_skill_catalog": "skill_projection",
     "tinyharness_memory_catalog": "memory_projection",
     "tinyharness_relevant_memory": "memory_projection",

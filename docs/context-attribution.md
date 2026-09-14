@@ -16,8 +16,8 @@ request before it is measured again. No request or canonical history is edited.
 - tool messages: `fresh_tool_results` if after the last assistant message,
   otherwise `historical_tool_results`. Fresh means no subsequent accepted assistant response, not
   proof of remote non-consumption (failed/retried calls may have read them).
-- Exact known `name` markers override role classification: environment,
-  skill catalog, persistent memory catalog/relevant memory,
+- Exact known `name` markers override role classification: skill catalog,
+  persistent memory catalog/relevant memory,
   context summary/archive, and todo state have separate projection categories.
 - Tool schemas: `tool_schemas`; unrecognized roles: `other_messages`.
 

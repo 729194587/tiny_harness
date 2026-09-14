@@ -73,7 +73,7 @@ class AttributionTest(unittest.TestCase):
                     {"role": "user", "content": "SECRET"}]
         messages += batch("read_file", "SECRET" * 100)
         messages += batch("bash", "SECRET中文")
-        for marker in ("environment_context", "skill_catalog"):
+        for marker in ("skill_catalog",):
             messages.append({"role": "user", "name": "tinyharness_" + marker,
                              "content": "SECRET"})
         original = copy.deepcopy(messages)
@@ -86,7 +86,7 @@ class AttributionTest(unittest.TestCase):
         categories = result["categories"]
         for key in ("system_runtime_guidance", "user_task_messages", "assistant_history",
                     "fresh_tool_results", "historical_tool_results",
-                    "environment_projection", "skill_projection"):
+                    "skill_projection"):
             self.assertIn(key, categories)
         self.assertEqual(categories["fresh_tool_results"]["count"], 1)
         self.assertEqual(result["tool_results_by_name"]["read_file"], categories["historical_tool_results"])

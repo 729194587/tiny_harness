@@ -21,8 +21,6 @@ Use current code and tests as the authority when README descriptions differ.
 - `tiny_harness/context/`: heuristic/calibrated token meters and request attribution.
 - `tiny_harness/runtime/`: context preparation/artifacts, permission decisions,
   hooks, events/console, recovery, skills, todos, and test runner.
-- `tiny_harness/environments/`: explicitly selected coding-environment adapter;
-  repository context and read-only Git capabilities, not automatic discovery.
 - `tiny_harness/tools/`: `ToolDefinition`, discovery, registry/dispatch, and
   filesystem, search, shell, todo, task, skill, compact, and testing adapters.
 - `tiny_harness/models/`: synchronous `ModelProvider.complete(messages, tools)`
