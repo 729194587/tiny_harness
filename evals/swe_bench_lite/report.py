@@ -18,7 +18,7 @@ def analyze_run(run_dir: Path) -> dict:
         raise ValueError(f"No events.jsonl artifacts in {run_dir}")
     turns = set()
     calls = Counter()
-    usage = {name: [] for name in ("prompt_tokens", "completion_tokens", "total_tokens")}
+    usage = {name: [] for name in ("prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens")}
     request_contexts = []
     pre_prune_contexts = []
     prunes = []
@@ -106,7 +106,13 @@ def analyze_run(run_dir: Path) -> dict:
         item["observation_status"] == "complete" for item in mutations)
     changed_turns = [item["root_turn"] for item in mutations
                      if item["workspace_changed"] and isinstance(item["root_turn"], int)]
+    totals = {name: sum(values) if values else None for name, values in usage.items()}
+    hit, miss = totals["prompt_cache_hit_tokens"], totals["prompt_cache_miss_tokens"]
     return {
+        "total_prompt_tokens": totals["prompt_tokens"],
+        "total_cache_hit_tokens": hit,
+        "total_cache_miss_tokens": miss,
+        "overall_cache_hit_rate": hit / (hit + miss) if hit is not None and miss is not None and hit + miss > 0 else None,
         "run_dir": str(run_dir), "event_files": len(paths), "turns": len(turns),
         **{name: sum(values) if values and len(values) == responses else None
            for name, values in usage.items()},
@@ -128,6 +134,7 @@ def analyze_run(run_dir: Path) -> dict:
 
 
 CORE_METRICS = (
+    "total_prompt_tokens", "total_cache_hit_tokens", "total_cache_miss_tokens", "overall_cache_hit_rate",
     "turns", "prompt_tokens", "completion_tokens", "total_tokens", "tool_calls",
     "tool_call_turns", "multi_tool_turns", "multi_tool_rate", "calls_per_tool_turn",
     "first_workspace_mutation_turn", "peak_request_context_tokens",

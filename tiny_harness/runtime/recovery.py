@@ -217,8 +217,14 @@ class RecoveryExecutor:
                     "attempt": state.attempt,
                     "finish_reason": response.finish_reason,
                     **{name: getattr(response, name) for name in
-                       ("prompt_tokens", "completion_tokens", "total_tokens")
+                       ("prompt_tokens", "completion_tokens", "total_tokens",
+                        "prompt_cache_hit_tokens", "prompt_cache_miss_tokens")
                        if getattr(response, name) is not None},
+                    **({"cache_hit_rate": response.prompt_cache_hit_tokens / (
+                        response.prompt_cache_hit_tokens + response.prompt_cache_miss_tokens
+                    )} if response.prompt_cache_hit_tokens is not None
+                        and response.prompt_cache_miss_tokens is not None
+                        and response.prompt_cache_hit_tokens + response.prompt_cache_miss_tokens > 0 else {}),
                     "tool_call_count": len(response.tool_calls),
                     "content_length": len(response.content or ""),
                     **({"finalization": True} if finalization else {}),

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 from typing import TYPE_CHECKING, Any
 
 from tiny_harness.agent.messages import ModelResponse, validate_model_response
 from tiny_harness.models.base import ModelErrorKind, ModelProviderError
 from tiny_harness.runtime.context import model_context_messages
-from tiny_harness.runtime.events import EventType
+from tiny_harness.runtime.events import EventLogError, EventType
 from tiny_harness.runtime.recovery import RecoveryState
 
 if TYPE_CHECKING:
@@ -34,17 +35,6 @@ FINALIZATION_INSTRUCTION = (
 )
 
 
-def _runtime_state(context: AgentRunContext, *, finalization: bool) -> str:
-    remaining_turns = context.max_turns - context.current_turn
-    return (
-        "TinyHarness runtime state:\n"
-        f"- current main-agent turn: {context.current_turn} / {context.max_turns}\n"
-        f"- remaining main-agent turns: {remaining_turns}\n"
-        f"- finalization: {str(finalization).lower()}\n"
-        f"- tools available: {str(not finalization and bool(context.tools)).lower()}"
-    )
-
-
 def model_request_inputs(
     messages: list[dict[str, Any]],
     context: AgentRunContext,
@@ -66,25 +56,9 @@ def model_request_inputs(
             {"role": "system", "content": TOOL_USE_EFFICIENCY_GUIDANCE},
         )
         insert_at += 1
-    if context.is_main_agent:
-        request_messages.insert(
-            insert_at,
-            {
-                "role": "system",
-                "content": _runtime_state(context, finalization=finalization),
-            },
-        )
-    if context.progress_tracker is not None:
-        request_messages.insert(
-            insert_at,
-            {"role": "system", "content": context.progress_tracker.render(
-                turn=context.current_turn, max_turns=context.max_turns,
-            )},
-        )
-        insert_at += 1
     if finalization:
         request_messages.insert(
-            insert_at + int(context.is_main_agent),
+            insert_at,
             {"role": "system", "content": FINALIZATION_INSTRUCTION},
         )
     if context.working_memory is not None:
@@ -104,13 +78,38 @@ def prepare_model_request_inputs(
         messages, context, finalization=finalization,
     )
     if context.compactor is not None:
-        context.compactor.prune_working_context(
-            messages, request_messages,
-            lambda candidate: context.token_meter.estimate_request(
-                messages, candidate, request_tools,
-            ),
-            turn=context.current_turn,
-        )
+        before_tokens = context.token_meter.estimate_request(messages, request_messages, request_tools)
+        if before_tokens >= context.compactor.config.working_context_trigger_tokens:
+            def measure_compacted(candidate: list[dict[str, Any]]) -> int:
+                projected, tools = model_request_inputs(
+                    candidate, context, finalization=finalization,
+                )
+                return context.token_meter.estimate(projected, tools)
+
+            try:
+                prepared = context.compactor.compact_history(
+                    messages, context.todo_manager.render(), reason="working",
+                    max_tokens=context.compactor.config.working_context_target_tokens,
+                    recent_tail_budget=max(
+                        1, context.compactor.config.working_context_target_tokens // 3,
+                    ),
+                    summary_source_messages=copy.deepcopy(messages),
+                    summary_request_messages=request_messages,
+                    summary_request_tools=request_tools,
+                    turn=context.current_turn,
+                    before_tokens=before_tokens,
+                    measure_compacted=measure_compacted,
+                )
+            except EventLogError:
+                raise
+            except Exception:
+                pass
+            else:
+                messages[:] = prepared.messages
+                request_messages, request_tools = model_request_inputs(
+                    messages, context, finalization=finalization,
+                )
+                context.token_meter.estimate_request(messages, request_messages, request_tools)
     return request_messages, request_tools
 
 

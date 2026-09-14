@@ -47,7 +47,6 @@ class ProgressTests(unittest.TestCase):
             tracker.emit(EventType.TOOL_STARTED, {"tool_name": name})
         for _ in range(3):
             tracker.emit(EventType.MODEL_REQUESTED, {"turn": 1})
-            tracker.render(turn=1, max_turns=20)
         self.assertEqual(tracker.state, ExecutionState(4, 1, 1, 2, 3, 1))
 
     def test_dispatch_and_request_rebuild(self):
@@ -62,13 +61,15 @@ class ProgressTests(unittest.TestCase):
             self.assertEqual(state.commands_started, 0)
             messages = [{"role": "user", "content": "task"}]
             original = copy.deepcopy(messages)
+            first = model_request_inputs(messages, context, finalization=False)
             context.current_turn = 8
+            context.progress_tracker.emit(EventType.TOOL_CALLED)
             for _ in range(3):
-                request, _ = model_request_inputs(messages, context, finalization=False)
-                self.assertIn("Turn: 8/20", observation(request)[0])
-                self.assertEqual(len(observation(request)), 1)
+                request, tools = model_request_inputs(messages, context, finalization=False)
+                self.assertFalse(observation(request))
+                self.assertEqual((request, tools), first)
             self.assertEqual(messages, original)
-            self.assertEqual(state.tool_calls, 2)
+            self.assertEqual(state.tool_calls, 3)
             disabled = create_run_context(Provider([]), Path(directory))
             self.assertIsNone(disabled.progress_tracker)
             self.assertFalse(observation(model_request_inputs(messages, disabled, finalization=False)[0]))
@@ -78,12 +79,12 @@ class ProgressTests(unittest.TestCase):
             provider = Provider([ModelResponse(None, None, [ToolCall("x", "unknown", "{}")], "tool_calls"), final(), final(), final()])
             session = AgentSession(provider, Path(directory), "system", progress_enabled=True)
             session.submit("first")
-            self.assertIn("Tool calls: 1", observation(provider.requests[1])[0])
+            self.assertFalse(observation(provider.requests[1]))
             session.submit("second")
-            self.assertIn("Tool calls: 0", observation(provider.requests[2])[0])
+            self.assertFalse(observation(provider.requests[2]))
             self.assertFalse(observation(session.messages))
             AgentSession(provider, Path(directory), "system", progress_enabled=True).submit("third")
-            self.assertIn("Tool calls: 0", observation(provider.requests[3])[0])
+            self.assertFalse(observation(provider.requests[3]))
 
     def test_child_events_do_not_reach_parent_tracker(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -91,7 +92,7 @@ class ProgressTests(unittest.TestCase):
             context = create_run_context(provider, Path(directory), progress_enabled=True)
             context.subagent_runner("child task", "parent-call")
             self.assertEqual(context.progress_tracker.state, ExecutionState())
-            self.assertIn("Tool calls: 1", observation(provider.requests[1])[0])
+            self.assertFalse(observation(provider.requests[1]))
 
     def test_retry_preserves_logical_turn(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -102,7 +103,7 @@ class ProgressTests(unittest.TestCase):
             )
             session.submit("task")
             self.assertEqual(observation(provider.requests[0]), observation(provider.requests[1]))
-            self.assertIn("Turn: 1/20", observation(provider.requests[1])[0])
+            self.assertFalse(observation(provider.requests[1]))
             self.assertFalse(observation(session.messages))
 
 

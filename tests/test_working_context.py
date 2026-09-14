@@ -6,16 +6,15 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from tiny_harness.agent.context import create_run_context, run_started_data
-from tiny_harness.agent.loop import agent_loop
 from tiny_harness.agent.messages import ModelResponse
 from tiny_harness.agent.session import AgentSession
 from tiny_harness.agent.turn import (
     call_model, model_request_inputs, prepare_model_request_inputs,
 )
-from tiny_harness.context.attribution import request_attribution
 from tiny_harness.models.base import ModelErrorKind, ModelProviderError
 from tiny_harness.runtime.context import (
-    CompactionConfig, ContextArtifactError, context_token_count, validate_active_request,
+    CompactionConfig, ContextProtocolError,
+    context_token_count, validate_active_request,
     PreparedContext,
 )
 from tiny_harness.runtime.events import EventLogError, EventType
@@ -59,8 +58,160 @@ class WorkingContextTest(unittest.TestCase):
     def request(self, messages):
         return prepare_model_request_inputs(messages, self.context, finalization=False)
 
+
     def artifacts(self):
         return list(self.workspace.glob(".tinyharness/context/tool-results/*.txt"))
+
+    def checkpoint_history(self):
+        messages = history(5, size=22_000, count=2)
+        for message in messages:
+            if message.get("tool_calls"):
+                message["reasoning_content"] = "diagnosis " * 100
+            elif message["role"] == "tool":
+                message["content"] = message["tool_call_id"] + " evidence " * 1200
+        # About 30k of history; the latest complete batch is about 6k.
+        return messages
+
+
+    def test_checkpoint_uses_full_original_source_and_rebuilds_request(self):
+        messages = self.checkpoint_history()
+        original = copy.deepcopy(messages)
+        self.context.working_memory = Mock()
+        memory = {"role": "user", "name": "tinyharness_working_memory", "content": "live state"}
+        self.context.working_memory.projection.return_value = memory
+        summary = "current task state " * 200
+        self.provider.complete.return_value = ModelResponse(summary, "PRIVATE_SUMMARY_REASONING", [], "stop")
+        meter = self.context.token_meter
+        old_request, tools = model_request_inputs(messages, self.context, finalization=False)
+        meter.observe(messages, old_request, tools, context_token_count(old_request, tools) + 1000)
+
+        request, tools = self.request(messages)
+
+        self.provider.complete.assert_called_once()
+        summary_request, summary_tools = self.provider.complete.call_args.args
+        self.assertEqual(summary_tools, tools)
+        self.assertEqual(summary_request[:-1], old_request)
+        self.assertEqual(summary_request[-1]["content"], self.context.compactor.WORKING_SUMMARY_SYSTEM)
+        self.assertEqual(self.artifacts(), [])
+        self.assertEqual(messages[-3:], original[-3:])
+        validate_active_request(messages, "task")
+        validate_active_request(request, "task")
+        markers = [m for m in messages if m.get("name") == "tinyharness_context_summary"]
+        self.assertEqual(len(markers), 1)
+        self.assertEqual(markers[0]["role"], "user")
+        self.assertIn(summary, markers[0]["content"])
+        self.assertNotIn("PRIVATE_SUMMARY_REASONING", str(messages))
+        self.assertEqual((request, tools), model_request_inputs(messages, self.context, finalization=False))
+        self.assertIn(memory, request)
+        self.assertNotIn(memory, messages)
+        after = meter.estimate_request(messages, request, tools)
+        self.assertLess(after, 10_000)
+        self.assertEqual(after, meter.heuristic.estimate(request, tools))
+        self.assertEqual(meter.estimate(original, tools), meter.heuristic.estimate(original, tools))
+        events = [c.args[1] for c in self.logger.emit.call_args_list
+                  if c.args[0] == EventType.CONTEXT_COMPACTED]
+        checkpoint, = events
+        self.assertEqual(checkpoint["strategy"], "llm_task_state_checkpoint")
+        self.assertTrue(checkpoint["summarized"])
+        self.assertEqual(checkpoint["after_tokens"], after)
+        self.assertLess(after, checkpoint["before_tokens"] * 0.6)
+
+    def test_checkpoint_failure_preserves_history_and_main_call_runs(self):
+        failures = [
+            RuntimeError("summary unavailable"),
+            ModelResponse("", None, [], "stop"),
+            ModelResponse("   ", None, [], "stop"),
+            ModelResponse("invalid", None, [], "length"),
+            ModelResponse("invalid", None, [Mock()], "tool_calls"),
+            None,
+        ]
+        for failure in failures:
+            with self.subTest(failure=failure):
+                messages = self.checkpoint_history()
+                original = copy.deepcopy(messages)
+                with patch.object(self.context.compactor, "_summary_complete") as summary:
+                    if isinstance(failure, Exception):
+                        summary.side_effect = failure
+                    else:
+                        summary.return_value = failure
+                    self.assertEqual(call_model(messages, self.context).content, "done")
+                    summary.assert_called_once()
+                self.assertFalse(pruned_ids(messages))
+                self.assertEqual(messages, original)
+                self.assertFalse(any(m.get("name") == "tinyharness_context_summary" for m in messages))
+                validate_active_request(messages, "task")
+                request, tools = self.provider.complete.call_args.args
+                self.assertGreater(context_token_count(request, tools), 14_000)
+
+    def test_checkpoint_validation_failure_does_not_commit(self):
+        messages = self.checkpoint_history()
+        with patch("tiny_harness.runtime.context.validate_active_request",
+                   side_effect=ContextProtocolError("invalid checkpoint")):
+            self.request(messages)
+        self.assertFalse(pruned_ids(messages))
+        self.assertFalse(any(m.get("name") == "tinyharness_context_summary" for m in messages))
+        validate_active_request(messages, "task")
+
+    def test_verbose_checkpoint_is_fitted_to_concise_state(self):
+        messages = self.checkpoint_history()
+        self.provider.complete.return_value = ModelResponse("state " * 20_000, None, [], "stop")
+        request, tools = self.request(messages)
+        self.provider.complete.assert_called_once()
+        self.assertLess(context_token_count(request, tools), 10_000)
+        self.assertIn("summary truncated", str(messages))
+        validate_active_request(messages, "task")
+
+    def test_working_tail_preserves_raw_results(self):
+        messages = history(20, size=2000)
+        for message in messages:
+            if message.get("tool_calls"):
+                message["reasoning_content"] = "reasoning " * 500
+        self.context.compactor.config = replace(
+            self.context.compactor.config, keep_recent_tool_batches=0,
+        )
+        original_tail = copy.deepcopy(messages[-4:])
+        request, tools = self.request(messages)
+        self.provider.complete.assert_called_once()
+        self.assertEqual(messages[-4:], original_tail)
+        self.assertFalse(pruned_ids(messages))
+        self.assertLess(context_token_count(request, tools), 14_000)
+
+    def test_checkpoint_without_older_history_fails_open(self):
+        messages = history(1, size=100_000)
+        original = copy.deepcopy(messages)
+        self.request(messages)
+        self.assertEqual(messages, original)
+        self.provider.complete.assert_not_called()
+
+    def test_checkpoint_event_failure_is_fatal_without_history_commit(self):
+        messages = self.checkpoint_history()
+
+        def emit(event_type, data):
+            if data.get("strategy") == "llm_task_state_checkpoint":
+                raise EventLogError("checkpoint event failed")
+
+        self.logger.emit.side_effect = emit
+        with self.assertRaises(EventLogError):
+            self.request(messages)
+        self.assertFalse(pruned_ids(messages))
+        self.assertFalse(any(m.get("name") == "tinyharness_context_summary" for m in messages))
+
+    def test_repeated_checkpoint_replaces_previous_snapshot(self):
+        messages = self.checkpoint_history()
+        self.provider.complete.return_value = ModelResponse("CHECKPOINT_A", None, [], "stop")
+        self.request(messages)
+        messages.extend(self.checkpoint_history()[1:])
+        recent = copy.deepcopy(messages[-3:])
+        self.provider.complete.return_value = ModelResponse("CHECKPOINT_B", None, [], "stop")
+        request, tools = self.request(messages)
+        self.assertEqual(self.provider.complete.call_count, 2)
+        self.assertIn("CHECKPOINT_A", str(self.provider.complete.call_args.args[0]))
+        self.assertNotIn("CHECKPOINT_A", str(messages))
+        self.assertIn("CHECKPOINT_B", str(messages))
+        self.assertEqual(sum(m.get("name") == "tinyharness_context_summary" for m in messages), 1)
+        self.assertEqual(messages[-3:], recent)
+        self.assertLess(context_token_count(request, tools), 14_000)
+        validate_active_request(messages, "task")
 
     def test_below_trigger_does_not_prune(self):
         messages = history(4, size=4000)
@@ -68,6 +219,7 @@ class WorkingContextTest(unittest.TestCase):
         self.request(messages)
         self.assertEqual(messages, original)
         self.assertEqual(self.artifacts(), [])
+        self.provider.complete.assert_not_called()
 
     def test_projection_below_trigger_does_not_prune_canonical_large_results(self):
         messages = history(4, size=100_000, name="read_file")
@@ -78,297 +230,51 @@ class WorkingContextTest(unittest.TestCase):
         self.assertEqual(messages, original)
         self.assertEqual(self.artifacts(), [])
 
-    def test_oldest_first_stops_at_target_and_protects_recent_three_batches(self):
-        messages = history()
-        original = copy.deepcopy(messages)
-        request, tools = self.request(messages)
-        selected = pruned_ids(messages)
-        self.assertTrue(selected)
-        self.assertEqual(selected, [f"{n}-0" for n in range(len(selected))])
-        self.assertLessEqual(len(selected), 5)
-        self.assertLessEqual(context_token_count(request, tools), 14_000)
-        # Restoring just the last chosen result crosses target: pruning stopped early.
-        last = selected[-1]
-        previous = copy.deepcopy(request)
-        next(m for m in previous if m.get("tool_call_id") == last)["content"] = "x" * 12_000
-        self.assertGreater(context_token_count(previous, tools), 14_000)
-        self.assertEqual(messages[-6:], original[-6:])
-        self.assertEqual([m for m in messages if m["role"] != "tool"],
-                         [m for m in original if m["role"] != "tool"])
-        validate_active_request(request, "task")
-        self.provider.complete.assert_not_called()
-        self.assertEqual(len(self.artifacts()), len(selected))
-        for artifact in self.artifacts():
-            self.assertEqual(artifact.read_text(encoding="utf-8"), "x" * 12_000)
-        preview = next(m["content"] for m in messages if m.get("tool_call_id") == last)
-        self.assertIn("full_output=.tinyharness/context/tool-results/", preview)
-        self.assertNotIn("Head:", preview)
-        self.assertNotIn("Tail:", preview)
-        self.assertLess(len(preview), 250)
-
-    def test_multi_tool_batch_counts_once_and_exhaustion_can_exceed_target(self):
-        messages = history(4, size=16_000, count=3)
-        original = copy.deepcopy(messages)
-        request, tools = self.request(messages)
-        self.assertEqual(pruned_ids(messages), ["0-0", "0-1", "0-2"])
-        self.assertEqual(messages[5:], original[5:])
-        self.assertGreater(context_token_count(request, tools), 14_000)
-        self.provider.complete.assert_not_called()
-
-    def test_no_eligible_batches_leaves_large_request_unchanged_without_summary(self):
-        messages = history(3, size=40_000)
-        original = copy.deepcopy(messages)
-        request, tools = self.request(messages)
-        self.assertGreater(context_token_count(request, tools), 20_000)
-        self.assertEqual(messages, original)
-        self.assertEqual(self.artifacts(), [])
-        self.provider.complete.assert_not_called()
-
-    def test_trigger_includes_request_guidance_tools_and_working_memory(self):
-        self.context.working_memory = Mock()
-        self.context.working_memory.projection.return_value = {
-            "role": "user", "name": "tinyharness_working_memory", "content": "state" * 1000,
-        }
-        messages = history(4, size=4000)
-        request, tools = model_request_inputs(messages, self.context, finalization=False)
-        threshold = self.context.token_meter.estimate_request(messages, request, tools)
-        self.assertGreater(threshold, context_token_count(messages, tools))
-        self.context.compactor.config = replace(
-            self.context.compactor.config,
-            working_context_trigger_tokens=threshold,
-            working_context_target_tokens=threshold - 1,
-        )
-        self.request(messages)
-        self.assertEqual(pruned_ids(messages), ["0-0"])
-
-    def test_pruned_results_remain_stable_and_reused_call_ids_are_batch_local(self):
-        messages = history(4, size=24_000)
-        for message in messages:
-            if message.get("tool_calls"):
-                message["tool_calls"][0]["id"] = "reused"
-            elif message["role"] == "tool":
-                message["tool_call_id"] = "reused"
-        self.context.compactor.config = replace(
-            self.context.compactor.config, working_context_target_tokens=1000,
-        )
-        first, _ = self.request(messages)
-        artifacts = self.artifacts()
-        second, _ = self.request(messages)
-        self.assertEqual(first, second)
-        self.assertEqual(self.artifacts(), artifacts)
-        self.assertEqual(pruned_ids(messages), ["reused"])
-        self.assertEqual(messages[-1]["content"], "x" * 24_000)
-
-    def test_persistence_failure_does_not_commit_partial_history(self):
-        messages = history()
-        original = copy.deepcopy(messages)
-        persist = self.context.compactor._persist_tool_result
-        calls = 0
-
-        def failing_persist(*args, **kwargs):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                raise ContextArtifactError("failed")
-            return persist(*args, **kwargs)
-
-        with patch.object(self.context.compactor, "_persist_tool_result", side_effect=failing_persist):
-            self.request(messages)
-        self.assertEqual(messages[4], original[4])
-        self.assertTrue(pruned_ids(messages))
-        self.assertEqual(len(self.artifacts()), len(pruned_ids(messages)))
-
-    def test_partial_artifact_write_is_cleaned(self):
-        original_open = Path.open
-
-        class BrokenWriter:
-            def __init__(self, stream):
-                self.stream = stream
-
-            def __enter__(self):
-                return self
-
-            def write(self, content):
-                self.stream.write(content[:10])
-                raise OSError("disk write failed")
-
-            def __exit__(self, *args):
-                self.stream.close()
-
-        def open_file(path, mode="r", *args, **kwargs):
-            stream = original_open(path, mode, *args, **kwargs)
-            return BrokenWriter(stream) if mode == "x" else stream
-
-        messages = history()
-        original = copy.deepcopy(messages)
-        with patch.object(Path, "open", open_file):
-            self.request(messages)
-        self.assertEqual(messages, original)
-        self.assertEqual(self.artifacts(), [])
-
-    def test_persisted_preview_ages_without_artifact_of_artifact(self):
-        messages = history(4, size=40_000)
-        preview = self.context.compactor._persist_tool_result(
-            "0-0", messages[2]["content"], tool_name="bash",
-        )
-        messages[2]["content"] = preview
-        existing = self.artifacts()
-        with patch.object(self.context.compactor, "_persist_tool_result") as persist:
-            request, _ = self.request(messages)
-            persist.assert_not_called()
-        self.assertEqual(pruned_ids(request), ["0-0"])
-        self.assertIn("full_output=" + existing[0].relative_to(self.workspace).as_posix(),
-                      messages[2]["content"])
-        self.assertEqual(self.artifacts(), existing)
-        self.assertEqual(existing[0].read_text(encoding="utf-8"), "x" * 40_000)
-        with patch.object(self.context.compactor, "_persist_tool_result") as persist:
-            self.request(messages)
-            persist.assert_not_called()
-
-    def test_existing_locator_survives_transaction_failure(self):
-        messages = history()
-        messages[2]["content"] = self.context.compactor._persist_tool_result(
-            "0-0", messages[2]["content"], tool_name="bash",
-        )
-        existing = self.artifacts()
-        original = copy.deepcopy(messages)
-        request, _ = model_request_inputs(messages, self.context, finalization=False)
-        original_request = copy.deepcopy(request)
-        with patch.object(self.logger, "emit", side_effect=EventLogError("failed")):
-            with self.assertRaises(EventLogError):
-                self.context.compactor.prune_working_context(
-                    messages, request, lambda candidate: context_token_count(candidate, self.context.tools),
-                )
-        self.assertEqual(messages, original)
-        self.assertEqual(request, original_request)
-        self.assertEqual(self.artifacts(), existing)
-
-    def test_missing_persisted_locator_keeps_preview_without_repersisting(self):
-        messages = history(4, size=40_000)
-        messages[2]["content"] = "<persisted-tool-result>\nFull output: missing.txt\nHead:\nevidence"
-        original = copy.deepcopy(messages)
-        with patch.object(self.context.compactor, "_persist_tool_result") as persist:
-            self.request(messages)
-            persist.assert_not_called()
-        self.assertEqual(messages, original)
-
-    def test_emit_failure_does_not_commit_pruned_canonical_history(self):
-        for error_type in (EventLogError, RuntimeError):
-            with self.subTest(error_type=error_type):
-                messages = history()
-                original = copy.deepcopy(messages)
-                error = error_type("emit failed")
-
-                def fail_emit(event_type, data):
-                    self.assertEqual(event_type, EventType.CONTEXT_COMPACTED)
-                    self.assertEqual(data["reason"], "working")
-                    self.assertGreater(data["persisted_results"], 0)
-                    self.assertEqual(messages, original)
-                    raise error
-
-                with patch.object(self.logger, "emit", side_effect=fail_emit) as emit:
-                    with self.assertRaises(error_type) as raised:
-                        call_model(messages, self.context)
-                self.assertIs(raised.exception, error)
-                emit.assert_called_once()
+    def test_exact_trigger_directly_checkpoints_without_clearing(self):
+        for tokens in (19_999, 20_000):
+            messages = self.checkpoint_history()
+            original = copy.deepcopy(messages)
+            with patch.object(self.context.token_meter, "estimate_request", return_value=tokens), patch.object(
+                self.context.compactor, "compact_history", wraps=self.context.compactor.compact_history,
+            ) as checkpoint:
+                self.request(messages)
+            self.assertEqual(checkpoint.call_count, int(tokens == 20_000))
+            self.assertFalse(pruned_ids(messages))
+            self.assertEqual(self.artifacts(), [])
+            if tokens < 20_000:
                 self.assertEqual(messages, original)
-                self.assertEqual(self.artifacts(), [])
-                self.provider.complete.assert_not_called()
 
-    def test_pruning_observability_includes_zero_change_and_batch_counts(self):
-        for count, expected_results, expected_batches in ((3, 0, 0), (4, 3, 1)):
-            with self.subTest(count=count):
-                self.logger.reset_mock()
-                self.context.current_turn = 7
-                self.request(history(count, size=16_000, count=3))
-                event = self.logger.emit.call_args.args[1]
-                self.assertEqual(event["turn"], 7)
-                self.assertEqual(event["strategy"], "historical_result_clearing")
-                self.assertEqual(event["pruned_results"], expected_results)
-                self.assertEqual(event["pruned_batches"], expected_batches)
-                self.assertFalse(event["target_reached"])
-                self.assertTrue(event["blocked_by_recent_protection"])
-                self.assertGreaterEqual(event["before_tokens"], event["after_tokens"])
-                self.assertNotIn("x" * 100, str(event))
-
-    def test_rejected_candidates_and_measurement_failure_clean_only_new_files(self):
-        self.request(history())
-        existing = set(self.artifacts())
-        for fail in (False, True):
-            messages = history()
-            request, _ = model_request_inputs(messages, self.context, finalization=False)
-            original, original_request = copy.deepcopy(messages), copy.deepcopy(request)
-            measure = Mock(side_effect=[100_000, RuntimeError("measure failed")] if fail else None,
-                           return_value=100_000)
-            if fail:
-                with self.assertRaises(RuntimeError):
-                    self.context.compactor.prune_working_context(messages, request, measure)
-            else:
-                self.context.compactor.prune_working_context(messages, request, measure)
-            self.assertEqual(messages, original)
-            self.assertEqual(request, original_request)
-            self.assertEqual(set(self.artifacts()), existing)
-
-    def test_transient_retry_uses_same_pruned_request_and_attribution(self):
-        messages = history()
+    def test_transient_retry_reuses_checkpoint_request(self):
+        messages = self.checkpoint_history()
         self.provider.complete.side_effect = [
-            ModelProviderError(ModelErrorKind.CONNECTION, message="offline"),
+            ModelResponse("checkpoint", None, [], "stop"),
+            ModelProviderError(ModelErrorKind.CONNECTION),
             ModelResponse("done", None, [], "stop"),
         ]
-        with patch.object(self.context.compactor, "prune_working_context",
-                          wraps=self.context.compactor.prune_working_context) as prune:
-            call_model(messages, self.context)
-        self.assertEqual(prune.call_count, 1)
+        with patch.object(self.context.compactor, "compact_history",
+                          wraps=self.context.compactor.compact_history) as checkpoint:
+            self.assertEqual(call_model(messages, self.context).content, "done")
+        checkpoint.assert_called_once()
         calls = self.provider.complete.call_args_list
-        self.assertEqual(calls[0].args, calls[1].args)
-        request, tools = calls[0].args
-        self.assertTrue(pruned_ids(request))
-        expected = request_attribution(request, tools)
-        events = [c.args[1] for c in self.logger.emit.call_args_list
-                  if c.args[0] == EventType.MODEL_REQUESTED]
-        self.assertEqual(len(events), 2)
-        for event in events:
-            attribution = dict(event["context_attribution"])
-            self.assertEqual(attribution.pop("calibration_adjustment_tokens"), 0)
-            self.assertEqual(attribution, expected)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[1].args, calls[2].args)
 
-    def test_loop_prepares_pruning_only_once_before_sending(self):
-        messages = history()
-        with patch.object(self.context.compactor, "prune_working_context",
-                          wraps=self.context.compactor.prune_working_context) as prune:
-            self.assertEqual(agent_loop(messages, self.context, "task"), "done")
-        self.assertEqual(prune.call_count, 1)
-        self.assertEqual(self.provider.complete.call_count, 1)
-        self.assertTrue(pruned_ids(self.provider.complete.call_args.args[0]))
-
-    def test_context_length_recovery_does_not_make_another_working_decision(self):
-        messages = history()
+    def test_reactive_recovery_does_not_repeat_working_checkpoint(self):
+        messages = self.checkpoint_history()
         self.provider.complete.side_effect = [
-            ModelProviderError(ModelErrorKind.CONTEXT_LENGTH, message="context full"),
+            ModelResponse("checkpoint", None, [], "stop"),
+            ModelProviderError(ModelErrorKind.CONTEXT_LENGTH),
             ModelResponse("done", None, [], "stop"),
         ]
-        # Existing hard recovery owns the new history; working pruning must not
-        # reselect results in the same logical request, even above its trigger.
         recovered = PreparedContext(messages=history(5, size=24_000),
                                     before_tokens=40_000, after_tokens=30_000)
-        with (
-            patch.object(self.context.compactor, "reactive_compact", return_value=recovered) as reactive,
-            patch.object(self.context.compactor, "prune_working_context",
-                         wraps=self.context.compactor.prune_working_context) as prune,
-        ):
-            call_model(messages, self.context)
+        with patch.object(self.context.compactor, "compact_history",
+                          wraps=self.context.compactor.compact_history) as checkpoint, patch.object(
+            self.context.compactor, "reactive_compact", return_value=recovered,
+        ) as reactive:
+            self.assertEqual(call_model(messages, self.context).content, "done")
+        checkpoint.assert_called_once()
         reactive.assert_called_once()
-        prune.assert_called_once()
-        self.assertFalse(pruned_ids(self.provider.complete.call_args.args[0]))
-
-    def test_zero_recent_batch_configuration_allows_pruning_latest_batch(self):
-        self.context.compactor.config = replace(
-            self.context.compactor.config, keep_recent_tool_batches=0,
-        )
-        messages = history(1, size=100_000)
-        request, tools = self.request(messages)
-        self.assertEqual(pruned_ids(messages), ["0-0"])
-        self.assertLessEqual(context_token_count(request, tools), 14_000)
 
     def test_configuration_validation_and_run_metadata(self):
         for kwargs in (

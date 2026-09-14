@@ -23,7 +23,7 @@ class ExecutionState:
 
 
 class ProgressTracker:
-    """Observe only this run's event stream; rendering has no side effects."""
+    """Observe only this run's event stream."""
 
     def __init__(self) -> None:
         self.state = ExecutionState()
@@ -48,18 +48,3 @@ class ProgressTracker:
                 state.tool_failed += 1
             elif outcome in {"permission_denied", "hook_blocked"}:
                 state.tool_denied += 1
-
-    def render(self, *, turn: int, max_turns: int) -> str:
-        state = self.state
-        return (
-            "Execution state (runtime observation):\n"
-            f"- Turn: {turn}/{max_turns}\n"
-            f"- Tool calls: {state.tool_calls}\n"
-            f"- Tool outcomes: {state.tool_succeeded} returned, "
-            f"{state.tool_failed} errors, {state.tool_denied} denied/blocked\n"
-            f"- Command tools started: {state.commands_started}\n"
-            f"- Explicit test tools started: {state.tests_started}\n"
-            "- Workspace changed: unknown\n"
-            "Counts reflect tool lifecycle events; returned does not imply "
-            "command or test success."
-        )

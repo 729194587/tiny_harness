@@ -144,7 +144,8 @@ class ConsoleRenderer:
         safe = []
         for key in ("turn", "tool_name", "outcome", "error_type", "duration_ms",
                     "context_tokens", "before_tokens", "after_tokens",
-                    "prompt_tokens", "completion_tokens", "total_tokens"):
+                    "prompt_tokens", "completion_tokens", "total_tokens",
+                    "prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "cache_hit_rate"):
             if key in data and (value := _short(data[key])):
                 safe.append(f"{key}={value}")
         error = event_type in {EventType.RUN_FAILED, EventType.TOOL_DENIED,
@@ -173,6 +174,14 @@ class ConsoleRenderer:
                 for key, label in (("prompt_tokens", "输入"), ("completion_tokens", "输出"))
                 if type(d.get(key)) is int
             )
+            cache = " / ".join(
+                f"cache {label} {d[key]}"
+                for key, label in (("prompt_cache_hit_tokens", "hit"), ("prompt_cache_miss_tokens", "miss"))
+                if type(d.get(key)) is int
+            )
+            if isinstance(d.get("cache_hit_rate"), (int, float)):
+                cache += f" / 命中率 {d['cache_hit_rate']:.1%}"
+            usage = " / ".join(part for part in (usage, cache) if part)
             if usage:
                 self._write(usage, style=_DIM_GRAY)
         self._update(event_type, d, key, aggregate=True)

@@ -680,22 +680,10 @@ class AgentLoopTest(unittest.TestCase):
         self.assertEqual(len(provider.calls), 20)
         self.assertTrue(all(call["tools"] for call in provider.calls[:19]))
         self.assertEqual(provider.calls[19]["tools"], [])
-        states = []
-        for call in provider.calls:
-            markers = [
-                message["content"]
-                for message in call["messages"]
-                if str(message.get("content", "")).startswith(
-                    "TinyHarness runtime state:"
-                )
-            ]
-            self.assertEqual(len(markers), 1)
-            states.append(markers[0])
-        self.assertIn("current main-agent turn: 1 / 20", states[0])
-        self.assertIn("remaining main-agent turns: 19", states[0])
-        self.assertIn("current main-agent turn: 20 / 20", states[-1])
-        self.assertIn("remaining main-agent turns: 0", states[-1])
-        self.assertIn("finalization: true", states[-1])
+        for previous, current in zip(provider.calls[:18], provider.calls[1:19]):
+            self.assertEqual(current["messages"][:len(previous["messages"])], previous["messages"])
+            self.assertEqual(current["tools"], previous["tools"])
+        self.assertNotIn("TinyHarness runtime state:", str(provider.calls))
 
     def test_provider_retry_stays_within_one_logical_turn(self) -> None:
         provider = FakeProvider(
