@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -69,6 +70,19 @@ def _experiment_config(
     }
 
 
+def _persist_context_transcripts(workspace: Path, output_dir: Path) -> None:
+    """Retain runtime transcripts before the disposable workspace is removed."""
+    source = workspace / ".tinyharness" / "context" / "transcripts"
+    if not source.is_dir() or not source.resolve().is_relative_to(workspace.resolve()):
+        return
+    destination = output_dir / "context" / "transcripts"
+    for transcript in source.glob("transcript-*.jsonl"):
+        if transcript.is_symlink() or not transcript.is_file():
+            continue
+        destination.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(transcript, destination / transcript.name)
+
+
 def rollout_task(
     task: SweTask,
     provider: ModelProvider,
@@ -108,26 +122,29 @@ def rollout_task(
         with environment_factory(task, network_mode="none") as environment:
             if environment.workspace is None or environment.shell_runner is None:
                 raise RuntimeError("Docker task environment did not start")
-            answer = agent_entrypoint(
-                provider,
-                environment.workspace,
-                [
-                    {"role": "system", "content": AGENT_SYSTEM_PROMPT},
-                    {"role": "user", "content": task.problem_statement},
-                ],
-                max_turns=max_turns,
-                subagent_max_turns=subagent_max_turns,
-                max_context_tokens=max_context_tokens,
-                working_context_trigger_tokens=working_context_trigger_tokens,
-                working_context_target_tokens=working_context_target_tokens,
-                keep_recent_tool_batches=keep_recent_tool_batches,
-                permission_policy=ContainerPermissionPolicy(),
-                event_logger=WorkspaceMutationLogger(JsonlEventLogger(events_path), environment.workspace),
-                tool_trace=ToolTraceConfig(enabled=True, result_preview_chars=200),
-                shell_runner=environment.shell_runner,
-                memory_enabled=False,
-            )
-            model_patch = environment.collect_patch()
+            try:
+                answer = agent_entrypoint(
+                    provider,
+                    environment.workspace,
+                    [
+                        {"role": "system", "content": AGENT_SYSTEM_PROMPT},
+                        {"role": "user", "content": task.problem_statement},
+                    ],
+                    max_turns=max_turns,
+                    subagent_max_turns=subagent_max_turns,
+                    max_context_tokens=max_context_tokens,
+                    working_context_trigger_tokens=working_context_trigger_tokens,
+                    working_context_target_tokens=working_context_target_tokens,
+                    keep_recent_tool_batches=keep_recent_tool_batches,
+                    permission_policy=ContainerPermissionPolicy(),
+                    event_logger=WorkspaceMutationLogger(JsonlEventLogger(events_path), environment.workspace),
+                    tool_trace=ToolTraceConfig(enabled=True, result_preview_chars=200),
+                    shell_runner=environment.shell_runner,
+                    memory_enabled=False,
+                )
+                model_patch = environment.collect_patch()
+            finally:
+                _persist_context_transcripts(environment.workspace, output_dir)
         final_path.write_text(answer, encoding="utf-8")
         patch_path.write_text(model_patch, encoding="utf-8", newline="\n")
         metadata = {

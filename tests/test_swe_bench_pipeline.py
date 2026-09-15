@@ -534,6 +534,59 @@ class DockerNetworkPolicyTest(unittest.TestCase):
 
 
 class LifecycleAndEvaluatorTest(unittest.TestCase):
+    def test_context_transcripts_survive_workspace_cleanup(self):
+        from tiny_harness.runtime.context import ContextArtifacts
+
+        for outcome in ("success", "agent_failure", "patch_failure"):
+            for generated in (False, True):
+                with self.subTest(outcome=outcome, generated=generated), tempfile.TemporaryDirectory() as temporary:
+                    output = Path(temporary) / "out"
+                    expected = {}
+
+                    class Environment(FakeEnvironment):
+                        def collect_patch(self):
+                            if outcome == "patch_failure":
+                                raise RuntimeError("patch failed")
+                            return super().collect_patch()
+
+                    def agent(provider, workspace, messages, **options):
+                        if generated:
+                            artifacts = ContextArtifacts(workspace)
+                            for content in ("first checkpoint", "第二个 checkpoint"):
+                                relative = artifacts._write_transcript([
+                                    {"role": "user", "content": content},
+                                ])
+                                path = workspace / relative
+                                expected[path.name] = path.read_bytes()
+                        if outcome == "agent_failure":
+                            raise RuntimeError("model failed")
+                        return "done"
+
+                    def run():
+                        return rollout_task(
+                            task(), object(), output, model_name_or_path="model",
+                            environment_factory=Environment, agent_entrypoint=agent,
+                        )
+
+                    if outcome == "success":
+                        result = run()
+                        self.assertEqual(result.final_answer, "done")
+                        self.assertEqual(result.model_patch, "MODEL PATCH")
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "model failed" if outcome == "agent_failure" else "patch failed"):
+                            run()
+                    environment = Environment.instances[-1]
+                    self.assertTrue(environment.closed)
+                    self.assertFalse(environment.workspace.exists())
+                    destination = output / "context" / "transcripts"
+                    self.assertEqual(
+                        {path.name: path.read_bytes() for path in destination.glob("*")},
+                        expected,
+                    )
+                    self.assertEqual(destination.exists(), generated)
+                    metadata = json.loads((output / "metadata.json").read_text())
+                    self.assertEqual(metadata["status"], "COMPLETED" if outcome == "success" else "FAILED")
+
     def test_agent_exception_still_closes_task_environment(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
