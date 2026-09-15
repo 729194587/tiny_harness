@@ -1,4 +1,5 @@
 import copy
+import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -110,6 +111,35 @@ class WorkingContextTest(unittest.TestCase):
         self.assertTrue(checkpoint["summarized"])
         self.assertEqual(checkpoint["after_tokens"], after)
         self.assertLess(after, checkpoint["before_tokens"] * 0.6)
+        transcript, = self.workspace.glob(".tinyharness/context/transcripts/*.jsonl")
+        self.assertEqual([json.loads(line) for line in transcript.read_text(encoding="utf-8").splitlines()], original)
+        self.assertEqual(transcript.with_suffix(".summary.txt").read_bytes(), summary.encode("utf-8"))
+
+    def test_checkpoint_prompt_preserves_epistemic_status(self):
+        messages = self.checkpoint_history()
+        messages[1]["content"] = "Hypothesis: only empty inputs fail; broader cases remain untested."
+        messages[2]["content"] = "Model-created regression test for empty inputs passed."
+        summary = (
+            "Observed: the added empty-input regression test passed.\n"
+            "Hypothesis: failure is limited to empty inputs; broader scope remains unverified.\n"
+            "Next: check non-empty inputs."
+        )
+        self.provider.complete.return_value = ModelResponse(summary, None, [], "stop")
+        self.request(messages)
+        request = self.provider.complete.call_args.args[0]
+        self.assertIn("broader cases remain untested", str(request[:-1]))
+        prompt = request[-1]["content"]
+        for requirement in (
+            "observed facts and direct tool evidence", "completed workspace changes",
+            "actual verification results and what they specifically establish",
+            "hypotheses or interpretations, distinct from observations",
+            "unresolved uncertainty, risks, open questions", "original epistemic status",
+            "do not increase certainty", "model-created reproducer or regression test",
+            "does not make it confirmed or proven", "limited verification scope",
+        ):
+            self.assertIn(requirement, prompt)
+        marker, = [m for m in messages if m.get("name") == "tinyharness_context_summary"]
+        self.assertIn(summary, marker["content"])
 
     def test_checkpoint_failure_preserves_history_and_main_call_runs(self):
         failures = [
@@ -137,6 +167,7 @@ class WorkingContextTest(unittest.TestCase):
                 validate_active_request(messages, "task")
                 request, tools = self.provider.complete.call_args.args
                 self.assertGreater(context_token_count(request, tools), 14_000)
+                self.assertEqual(list(self.workspace.glob(".tinyharness/context/transcripts/*.summary.txt")), [])
 
     def test_checkpoint_validation_failure_does_not_commit(self):
         messages = self.checkpoint_history()
@@ -154,6 +185,8 @@ class WorkingContextTest(unittest.TestCase):
         self.provider.complete.assert_called_once()
         self.assertLess(context_token_count(request, tools), 10_000)
         self.assertIn("summary truncated", str(messages))
+        summary, = self.workspace.glob(".tinyharness/context/transcripts/*.summary.txt")
+        self.assertEqual(summary.read_bytes(), ("state " * 20_000).encode("utf-8"))
         validate_active_request(messages, "task")
 
     def test_working_tail_preserves_raw_results(self):
@@ -200,6 +233,12 @@ class WorkingContextTest(unittest.TestCase):
         self.provider.complete.return_value = ModelResponse("CHECKPOINT_B", None, [], "stop")
         request, tools = self.request(messages)
         self.assertEqual(self.provider.complete.call_count, 2)
+        transcripts = list(self.workspace.glob(".tinyharness/context/transcripts/*.jsonl"))
+        self.assertEqual(len(transcripts), 2)
+        self.assertEqual(
+            {p.with_suffix(".summary.txt").read_text(encoding="utf-8") for p in transcripts},
+            {"CHECKPOINT_A", "CHECKPOINT_B"},
+        )
         self.assertIn("CHECKPOINT_A", str(self.provider.complete.call_args.args[0]))
         self.assertNotIn("CHECKPOINT_A", str(messages))
         self.assertIn("CHECKPOINT_B", str(messages))
@@ -213,6 +252,7 @@ class WorkingContextTest(unittest.TestCase):
         original = copy.deepcopy(messages)
         self.request(messages)
         self.assertEqual(messages, original)
+        self.assertFalse((self.workspace / ".tinyharness/context/transcripts").exists())
         self.assertEqual(self.artifacts(), [])
         self.provider.complete.assert_not_called()
 

@@ -558,6 +558,9 @@ class LifecycleAndEvaluatorTest(unittest.TestCase):
                                 ])
                                 path = workspace / relative
                                 expected[path.name] = path.read_bytes()
+                                summary = f"Hypothesis: {content}; verification remains limited.\n"
+                                artifacts._write_summary(relative, summary)
+                                expected[path.with_suffix(".summary.txt").name] = summary.encode("utf-8")
                         if outcome == "agent_failure":
                             raise RuntimeError("model failed")
                         return "done"

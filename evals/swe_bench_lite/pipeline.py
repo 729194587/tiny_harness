@@ -71,12 +71,13 @@ def _experiment_config(
 
 
 def _persist_context_transcripts(workspace: Path, output_dir: Path) -> None:
-    """Retain runtime transcripts before the disposable workspace is removed."""
+    """Retain runtime transcripts and paired summaries before workspace removal."""
     source = workspace / ".tinyharness" / "context" / "transcripts"
     if not source.is_dir() or not source.resolve().is_relative_to(workspace.resolve()):
         return
     destination = output_dir / "context" / "transcripts"
-    for transcript in source.glob("transcript-*.jsonl"):
+    for transcript in (*source.glob("transcript-*.jsonl"),
+                       *source.glob("transcript-*.summary.txt")):
         if transcript.is_symlink() or not transcript.is_file():
             continue
         destination.mkdir(parents=True, exist_ok=True)

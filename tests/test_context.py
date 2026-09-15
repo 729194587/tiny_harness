@@ -693,6 +693,8 @@ class ContextCompactorTest(unittest.TestCase):
         self.assertIn("ORIGINAL_TASK", compacted_json)
         self.assertIn("CURRENT_TODO", compacted_json)
         self.assertIn("FACTUAL_SUMMARY", compacted_json)
+        transcript, = (self.workspace / ".tinyharness/context/transcripts").glob("*.jsonl")
+        self.assertEqual(transcript.with_suffix(".summary.txt").read_text(encoding="utf-8"), "FACTUAL_SUMMARY")
         self.assertIn("latest", compacted_json)
         self.assertIn("LATEST_EVIDENCE", compacted_json)
         self.assertNotIn("\"old\"", compacted_json)
@@ -766,6 +768,8 @@ class ContextCompactorTest(unittest.TestCase):
         self.assertIn("ORIGINAL_TASK", compacted)
         self.assertIn("CURRENT_TODO", compacted)
         self.assertIn("REACTIVE_SUMMARY", compacted)
+        transcript, = (self.workspace / ".tinyharness/context/transcripts").glob("*.jsonl")
+        self.assertEqual(transcript.with_suffix(".summary.txt").read_text(encoding="utf-8"), "REACTIVE_SUMMARY")
         self.assertIn("LATEST_EVIDENCE", compacted)
         self.assertNotIn("\"old\"", compacted)
 
