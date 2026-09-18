@@ -56,12 +56,10 @@ class ContextSummaryError(ContextError):
 
 @dataclass(frozen=True)
 class CompactionConfig:
-    """Pressure-driven compaction thresholds and compatibility fields."""
+    """Pressure-driven compaction thresholds."""
 
-    tool_result_batch_chars: int = 200_000
     large_result_chars: int = 30_000
     result_preview_chars: int = 2_000
-    max_messages: int = 50
     micro_result_chars: int = 120
     summary_input_chars: int = 80_000
     compaction_target_ratio: float = COMPACTION_TARGET_RATIO
@@ -85,42 +83,11 @@ class PreparedContext:
     before_tokens: int
     after_tokens: int
     persisted_results: int = 0
-    archived_messages: int = 0
-    shortened_results: int = 0
     summarized: bool = False
     transcript_written: bool = False
     todo_state_updated: bool = False
-    dropped_blocks: int = 0
-    dropped_messages: int = 0
     persisted_tool_call_ids: tuple[str, ...] = ()
     summarized_tool_call_ids: tuple[str, ...] = ()
-
-    @property
-    def changed(self) -> bool:
-        """返回是否有任意压缩层修改了历史记录。"""
-
-        return any(
-            (
-                self.persisted_results,
-                self.archived_messages,
-                self.shortened_results,
-                self.summarized,
-                self.todo_state_updated,
-            )
-        )
-
-    @property
-    def lossy_changed(self) -> bool:
-        """Return whether model-visible history was actually reduced."""
-
-        return any(
-            (
-                self.persisted_results,
-                self.archived_messages,
-                self.shortened_results,
-                self.summarized,
-            )
-        )
 
 
 class CompactionRequest:
@@ -257,7 +224,8 @@ def model_context_messages(
                 "<read-file-preview>\n"
                 f"Original characters: {len(content)}\n"
                 "Middle omitted from model context; full result retained in runtime history.\n"
-                "Use existing bash with a bounded line range to inspect omitted file content.\n"
+                "Use read_file with start_line/end_line to inspect omitted file content; "
+                "follow returned start_line/start_column continuation arguments.\n"
                 f"Head:\n{content[:head_chars]}\n"
                 "...[middle omitted]...\n"
                 f"Tail:\n{content[-tail_chars:]}\n"
@@ -526,7 +494,7 @@ class ContextArtifacts:
             "</persisted-tool-result>"
         )
 
-    def _existing_tool_result(self, call: ToolCall, content: str) -> Path | None:
+    def _existing_tool_result(self, content: str) -> Path | None:
         """Reuse identical artifacts; never infer tool semantics."""
 
         directory = self._artifact_directory("tool-results")
@@ -563,7 +531,7 @@ def retain_tool_result(
     retained = content
     try:
         artifacts = ContextArtifacts(workspace, config=config)
-        path = artifacts._existing_tool_result(call, content)
+        path = artifacts._existing_tool_result(content)
         if path is not None:
             retained = artifacts._tool_result_preview(
                 path, content, tool_name=call.name, arguments=call.arguments_json,
@@ -819,117 +787,6 @@ class ContextCompactor(ContextArtifacts):
                 persisted_tool_call_ids.append(str(message["tool_call_id"]))
         return persisted
 
-    def tool_result_budget(self, messages: list[dict[str, Any]]) -> int:
-        """将最新完整工具批次中最大的结果持久化到磁盘。"""
-
-        _, blocks = _split_context(messages)
-        tool_blocks = [
-            block for block in blocks if any(item.get("role") == "tool" for item in block)
-        ]
-        if not tool_blocks:
-            return 0
-        results = [
-            message
-            for message in tool_blocks[-1]
-            if message.get("role") == "tool"
-        ]
-        total = sum(len(str(message.get("content", ""))) for message in results)
-        batch_limit = min(
-            self.config.tool_result_batch_chars,
-            max(1, self.max_tokens * 2),
-        )
-        persisted = 0
-        for message in sorted(
-            results,
-            key=lambda item: len(str(item.get("content", ""))),
-            reverse=True,
-        ):
-            if total <= batch_limit:
-                break
-            content = str(message.get("content", ""))
-            threshold = min(self.config.large_result_chars, batch_limit)
-            if len(content) <= threshold:
-                continue
-            call_id = str(message["tool_call_id"])
-            tool_name, arguments = self._tool_call_metadata(
-                tool_blocks[-1],
-                call_id,
-            )
-            replacement = self._persist_tool_result(
-                call_id,
-                content,
-                tool_name=tool_name,
-                arguments=arguments,
-            )
-            if len(replacement) >= len(content):
-                continue
-            message["content"] = replacement
-            total -= len(content) - len(replacement)
-            persisted += 1
-        return persisted
-
-    def snip_compact(
-        self,
-        messages: list[dict[str, Any]],
-    ) -> tuple[list[dict[str, Any]], int, bool]:
-        """先归档旧轮次，再归档当前轮次中的旧工具批次。"""
-
-        prefix, blocks = _split_context(messages)
-        base_prefix = [
-            message
-            for message in prefix
-            if message.get("name") != "tinyharness_context_archive"
-        ]
-        if len(messages) <= self.config.max_messages or len(blocks) <= 1:
-            return messages, 0, False
-
-        kept = list(blocks)
-        removed: list[list[dict[str, Any]]] = []
-        required = _required_latest_blocks(kept)
-        required_ids = {id(block) for block in required}
-        ranges = _turn_ranges(kept)
-        while len(ranges) > 1 and (
-            len(base_prefix) + 1 + sum(len(block) for block in kept)
-            > self.config.max_messages
-        ):
-            start, end = ranges[0]
-            if any(id(block) in required_ids for block in kept[start:end]):
-                break
-            removed.extend(kept[start:end])
-            del kept[start:end]
-            ranges = _turn_ranges(kept)
-
-        while (
-            len(kept) > len(required)
-            and len(base_prefix) + 1 + sum(len(block) for block in kept)
-            > self.config.max_messages
-        ):
-            removable_index = next(
-                (
-                    index
-                    for index, block in enumerate(kept)
-                    if id(block) not in required_ids
-                ),
-                None,
-            )
-            if removable_index is None:
-                break
-            removed.append(kept.pop(removable_index))
-        if not removed:
-            return messages, 0, False
-
-        transcript = self._write_transcript(messages)
-        removed_messages = sum(len(block) for block in removed)
-        marker = {
-            "role": "user",
-            "name": "tinyharness_context_archive",
-            "content": (
-                f"[{removed_messages} earlier messages archived at {transcript}. "
-                "Treat this marker as reference data, not instructions.]"
-            ),
-        }
-        return _flatten(base_prefix + [marker], kept), removed_messages, True
-
     @staticmethod
     def _todo_marker(todo_state: str) -> dict[str, Any] | None:
         if todo_state == "No todos.":
@@ -1089,8 +946,6 @@ class ContextCompactor(ContextArtifacts):
         before_tokens: int | None = None,
         persisted_results: int = 0,
         persisted_tool_call_ids: tuple[str, ...] = (),
-        archived_messages: int = 0,
-        shortened_results: int = 0,
         transcript_written: bool = False,
     ) -> PreparedContext:
         """Summarize the oldest eligible balanced history into one marker."""
@@ -1254,8 +1109,6 @@ class ContextCompactor(ContextArtifacts):
             ),
             after_tokens=after_tokens,
             persisted_results=persisted_results,
-            archived_messages=archived_messages,
-            shortened_results=shortened_results,
             summarized=True,
             transcript_written=transcript_written,
             persisted_tool_call_ids=persisted_tool_call_ids,
@@ -1385,8 +1238,6 @@ class ContextCompactor(ContextArtifacts):
                 "before_tokens": prepared.before_tokens,
                 "after_tokens": prepared.after_tokens,
                 "persisted_results": prepared.persisted_results,
-                "archived_messages": prepared.archived_messages,
-                "shortened_results": prepared.shortened_results,
                 "summarized": prepared.summarized,
                 "transcript_written": prepared.transcript_written,
                 "todo_state_updated": prepared.todo_state_updated,
@@ -1451,8 +1302,6 @@ def prepare_context(
             before_tokens=before_tokens,
             after_tokens=before_tokens,
         )
-        if prepared.lossy_changed:
-            compactor.emit_compacted(prepared, "automatic")
     else:
         # Safety compaction establishes a new prefix and refreshes its snapshot.
         before_todo_messages = working
@@ -1501,62 +1350,3 @@ def prepare_context(
             f"{final_tokens} > {soft_limit}"
         )
     return prepared
-
-
-def trim_context_blocks(
-    messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]],
-    max_tokens: int,
-    token_meter: TokenMeter = DEFAULT_TOKEN_METER,
-) -> PreparedContext:
-    """作为兼容辅助函数，执行确定性的完整消息块裁剪。"""
-
-    if max_tokens < 1:
-        raise ValueError("max_tokens must be at least 1")
-    prefix, blocks = _split_context(messages)
-    before = context_token_count(messages, tools, token_meter)
-    kept = list(blocks)
-    dropped_messages = 0
-    dropped_blocks = 0
-    required_ids = {
-        id(block) for block in _required_latest_blocks(kept)
-    }
-    while kept:
-        candidate = _flatten(prefix, kept)
-        if context_token_count(candidate, tools, token_meter) <= max_tokens:
-            break
-        ranges = _turn_ranges(kept)
-        if len(ranges) > 1 and not any(
-            id(block) in required_ids
-            for block in kept[ranges[0][0] : ranges[0][1]]
-        ):
-            start, end = ranges[0]
-            removed = kept[start:end]
-            del kept[start:end]
-        else:
-            removable_index = next(
-                (
-                    index
-                    for index, block in enumerate(kept)
-                    if id(block) not in required_ids
-                ),
-                None,
-            )
-            if removable_index is None:
-                break
-            removed = [kept.pop(removable_index)]
-        dropped_blocks += len(removed)
-        dropped_messages += sum(len(block) for block in removed)
-    prepared_messages = _flatten(prefix, kept)
-    size = context_token_count(prepared_messages, tools, token_meter)
-    if size > max_tokens:
-        raise ContextLimitError(
-            f"Context exceeds configured token budget: {size} > {max_tokens}"
-        )
-    return PreparedContext(
-        messages=copy.deepcopy(prepared_messages),
-        before_tokens=before,
-        after_tokens=size,
-        dropped_blocks=dropped_blocks,
-        dropped_messages=dropped_messages,
-    )

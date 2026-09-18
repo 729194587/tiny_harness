@@ -12,6 +12,7 @@ from tiny_harness.agent.context import create_run_context
 from tiny_harness.agent.loop import run_agent
 from tiny_harness.agent.messages import ModelResponse, ToolCall, assistant_message_from_response
 from tiny_harness.agent.tool_batch import execute_tool_batch
+from tiny_harness.agent.turn import prepare_model_request_inputs
 from tiny_harness.models.base import ModelErrorKind, ModelProviderError
 from tiny_harness.runtime.context import (
     CompactionConfig, ContextArtifacts, retain_tool_result, validate_active_request,
@@ -189,30 +190,40 @@ class ToolResultRetentionTest(unittest.TestCase):
             with self.subTest(column=column), self.assertRaises((TypeError, ValueError)):
                 read_file(self.workspace, "anything", start_column=column)
 
-    def test_spilled_history_can_be_archived_without_losing_original_artifact(self):
+    def test_spilled_history_leaves_working_checkpoint_without_losing_original_artifact(self):
         retained = self.retain()
         artifact, = self.artifacts()
         context = self.context(max_context_tokens=125_000)
-        context.compactor.config = replace(context.compactor.config, max_messages=2)
+        context.provider.supports_tool_choice = False
+        context.provider.complete.return_value = ModelResponse("Task checkpoint.", None, [], "stop")
         messages = [
             {"role": "user", "content": "old task"},
             assistant_message_from_response(ModelResponse(None, None, [self.call], "tool_calls")),
             {"role": "tool", "tool_call_id": self.call.id, "content": retained},
             {"role": "assistant", "content": "old answer"},
+            {"role": "assistant", "content": "older investigation " * 5000},
             {"role": "user", "content": "new task"},
             assistant_message_from_response(ModelResponse(
                 None, None, [ToolCall("latest", "list_files", "{}")], "tool_calls")),
             {"role": "tool", "tool_call_id": "latest", "content": "small"},
         ]
-        compacted, removed, written = context.compactor.snip_compact(messages)
-        self.assertGreater(removed, 0)
-        self.assertTrue(written)
-        self.assertFalse(any(m.get("tool_call_id") == self.call.id for m in compacted))
+        original = copy.deepcopy(messages)
+        request, _ = prepare_model_request_inputs(messages, context, finalization=False)
+        context.provider.complete.assert_called_once()
+        checkpoint, = [c.args[1] for c in self.logger.emit.call_args_list
+                       if c.args[0] == EventType.CONTEXT_COMPACTED]
+        self.assertEqual(checkpoint["reason"], "working")
+        self.assertEqual(checkpoint["strategy"], "llm_task_state_checkpoint")
+        self.assertTrue(any(m.get("name") == "tinyharness_context_summary" for m in messages))
+        for active in (messages, request):
+            self.assertFalse(any(m.get("tool_call_id") == self.call.id for m in active))
+            self.assertTrue(any(m.get("tool_call_id") == "latest" for m in active))
+            validate_active_request(active, "new task")
+        self.assertTrue(artifact.is_file())
         self.assertEqual(artifact.read_bytes().decode("utf-8"), self.content)
         transcript, = self.workspace.glob(".tinyharness/context/transcripts/*.jsonl")
         archived = [json.loads(line) for line in transcript.read_text(encoding="utf-8").splitlines()]
-        self.assertEqual(archived, messages)
-        validate_active_request(compacted, "new task")
+        self.assertEqual(archived, original)
 
     def test_persistence_failure_keeps_raw_success_and_batch_continues(self):
         context = self.context()

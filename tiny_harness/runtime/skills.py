@@ -106,13 +106,13 @@ def bundled_skills_root() -> Path:
 def default_skill_sources(workspace: Path) -> tuple[SkillSource, ...]:
     """Return TinyHarness's fixed bundled, workspace, and user Skill sources."""
 
-    package_root = Path(__file__).resolve().parents[1]
+    bundled_root = bundled_skills_root()
     user_home = Path.home()
     return (
         SkillSource(
             origin=SkillOrigin.BUNDLED,
-            root=package_root / SKILLS_DIRECTORY,
-            boundary=package_root,
+            root=bundled_root,
+            boundary=bundled_root.parent,
         ),
         SkillSource(
             origin=SkillOrigin.WORKSPACE,

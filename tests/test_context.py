@@ -21,7 +21,6 @@ from tiny_harness.runtime.context import (
     ContextSummaryError,
     context_token_count,
     prepare_context,
-    trim_context_blocks,
     validate_active_request,
 )
 from tiny_harness.runtime.hooks import HookBlock, ToolHooks
@@ -141,18 +140,6 @@ class ContextPrimitiveTest(unittest.TestCase):
         self.assertEqual(prepared.after_tokens, 10)
         self.assertGreaterEqual(len(meter.calls), 2)
 
-    def test_compatibility_helper_drops_complete_old_blocks(self) -> None:
-        prefix = [{"role": "user", "content": "task"}]
-        old = tool_block("old")
-        latest = tool_block("latest")
-        budget = context_token_count(prefix + latest, TOOLS)
-
-        prepared = trim_context_blocks(prefix + old + latest, TOOLS, budget)
-
-        self.assertEqual(prepared.messages, prefix + latest)
-        self.assertEqual(prepared.dropped_blocks, 1)
-        self.assertEqual(prepared.dropped_messages, 2)
-
     def test_protocol_validation_rejects_orphan_and_reordered_results(self) -> None:
         orphan = [{"role": "tool", "tool_call_id": "x", "content": "bad"}]
         reordered = [
@@ -168,9 +155,9 @@ class ContextPrimitiveTest(unittest.TestCase):
             {"role": "tool", "tool_call_id": "a", "content": "a"},
         ]
         with self.assertRaises(ContextProtocolError):
-            trim_context_blocks(orphan, TOOLS, 2_500)
+            validate_active_request(orphan, "")
         with self.assertRaises(ContextProtocolError):
-            trim_context_blocks(reordered, TOOLS, 2_500)
+            validate_active_request(reordered, "")
 
     def test_active_request_must_match_latest_real_user_message(self) -> None:
         messages = [
@@ -235,7 +222,6 @@ class ContextCompactorTest(unittest.TestCase):
         prepared = self.prepare(self.compactor(), messages)
 
         self.assertEqual(prepared.messages, messages)
-        self.assertFalse(prepared.changed)
         self.assertFalse((self.workspace / ".tinyharness").exists())
 
     def test_under_budget_does_not_shorten_tool_results(self):
@@ -262,8 +248,6 @@ class ContextCompactorTest(unittest.TestCase):
             if message.get("role") == "tool"
         ]
         self.assertEqual(visible_results, results)
-        self.assertEqual(prepared.shortened_results, 0)
-        self.assertEqual(prepared.archived_messages, 0)
         self.assertEqual(provider.calls, [])
 
     def test_new_tool_batch_does_not_evict_previous_batch_under_budget(self):
@@ -279,8 +263,6 @@ class ContextCompactorTest(unittest.TestCase):
         visible = json.dumps(prepared.messages, ensure_ascii=False)
         for _, evidence in reads + greps:
             self.assertIn(evidence, visible)
-        self.assertEqual(prepared.shortened_results, 0)
-        self.assertEqual(prepared.archived_messages, 0)
         self.assertFalse(prepared.summarized)
 
     def test_compaction_starts_only_under_pressure(self):
@@ -419,13 +401,11 @@ class ContextCompactorTest(unittest.TestCase):
         provider = FakeProvider()
 
         prepared = self.prepare(
-            self.compactor(provider, max_tokens=25_000, max_messages=50),
+            self.compactor(provider, max_tokens=25_000),
             messages,
         )
 
         self.assertEqual(prepared.messages, messages)
-        self.assertEqual(prepared.archived_messages, 0)
-        self.assertEqual(prepared.shortened_results, 0)
         self.assertFalse(prepared.summarized)
         self.assertEqual(provider.calls, [])
 
@@ -532,7 +512,7 @@ class ContextCompactorTest(unittest.TestCase):
         )
 
         prepared = self.prepare(
-            self.compactor(provider, max_tokens=500, max_messages=3),
+            self.compactor(provider, max_tokens=500),
             messages,
         )
 
@@ -577,7 +557,6 @@ class ContextCompactorTest(unittest.TestCase):
             provider,
             TOOLS,
             450,
-            config=CompactionConfig(max_messages=50),
         )
 
         prepared = self.prepare(compactor, messages)
@@ -604,7 +583,6 @@ class ContextCompactorTest(unittest.TestCase):
             provider,
             TOOLS,
             450,
-            config=CompactionConfig(max_messages=50),
         )
 
         prepared = self.prepare(compactor, messages)
@@ -615,33 +593,6 @@ class ContextCompactorTest(unittest.TestCase):
         self.assertIn("RECENT_EVIDENCE", compacted)
         self.assertIn("prior answer", compacted)
         self.assertIn("FOLLOW_UP_TASK", compacted)
-
-    def test_multi_turn_trim_drops_old_turn_without_splitting_latest_batch(self):
-        latest_batch = [
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {"id": "a", "type": "function", "function": {}},
-                    {"id": "b", "type": "function", "function": {}},
-                ],
-            },
-            {"role": "tool", "tool_call_id": "a", "content": "A"},
-            {"role": "tool", "tool_call_id": "b", "content": "B"},
-        ]
-        messages = (
-            self.prefix
-            + tool_block("old", "X" * 3_000)
-            + [{"role": "assistant", "content": "old answer"}]
-            + [{"role": "user", "content": "CURRENT_TASK"}]
-            + latest_batch
-        )
-
-        prepared = trim_context_blocks(messages, TOOLS, 250)
-
-        self.assertIn({"role": "user", "content": "CURRENT_TASK"}, prepared.messages)
-        self.assertEqual(prepared.messages[-3:], latest_batch)
-        self.assertNotIn("X" * 3_000, json.dumps(prepared.messages))
 
     def test_normal_preparation_does_not_insert_or_refresh_todo_snapshot(self):
         compactor = self.compactor()
@@ -676,7 +627,6 @@ class ContextCompactorTest(unittest.TestCase):
             provider,
             TOOLS,
             375,
-            config=CompactionConfig(max_messages=50),
         )
 
         prepared = self.prepare(compactor, messages, "[>] CURRENT_TODO")
@@ -827,7 +777,6 @@ class ContextCompactorTest(unittest.TestCase):
                 self.prepare(
                     self.compactor(
                         max_tokens=1_250,
-                        tool_result_batch_chars=1_000,
                         large_result_chars=100,
                     ),
                     messages,
