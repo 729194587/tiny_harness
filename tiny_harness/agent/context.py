@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
@@ -190,53 +190,30 @@ def _compactor(
     )
 
 
-def _subagent_runner(
-    *,
-    enabled: bool,
-    provider: ModelProvider,
-    workspace: Path,
-    max_turns: int,
-    permission_policy: PermissionPolicy,
-    permission_prompt: PermissionPrompt | None,
-    event_logger: EventLogger,
-    max_context_tokens: int | None,
-    token_meter: TokenMeter,
-    tool_hooks: ToolHooks | None,
-    recovery_policy: RecoveryPolicy,
-    skill_catalog: SkillCatalog,
-    memory_enabled: bool,
-    test_runner: TestRunner | None,
-    shell_runner: ShellRunner,
-    tool_trace: ToolTraceConfig,
-    compaction_config: CompactionConfig,
-) -> SubagentRunner | None:
-    if not enabled:
-        return None
+@dataclass(frozen=True)
+class RunConfig:
+    """Inheritable dependencies, separate from per-run execution state."""
 
-    # Import the composition entry point lazily to avoid context <-> loop
-    # initialization recursion. The core Agent Loop remains dependency-free.
-    from tiny_harness.agent.loop import run_agent
-
-    return SubagentExecutor(
-        run_agent,
-        provider,
-        workspace,
-        max_turns=max_turns,
-        permission_policy=permission_policy,
-        permission_prompt=permission_prompt,
-        event_logger=event_logger,
-        max_context_tokens=max_context_tokens,
-        token_meter=token_meter,
-        tool_hooks=tool_hooks,
-        recovery_policy=recovery_policy,
-        skill_catalog=skill_catalog,
-        memory_enabled=memory_enabled,
-        test_runner=test_runner,
-        shell_runner=shell_runner,
-        tool_trace=tool_trace,
-        working_context_trigger_tokens=compaction_config.working_context_trigger_tokens,
-        working_context_target_tokens=compaction_config.working_context_target_tokens,
-    )
+    provider: ModelProvider
+    workspace: Path
+    max_turns: int = 20
+    permission_policy: PermissionPolicy = DEFAULT_PERMISSION_POLICY
+    permission_prompt: PermissionPrompt | None = None
+    event_logger: EventLogger = NULL_EVENT_LOGGER
+    max_context_tokens: int | None = None
+    working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens
+    working_context_target_tokens: int = CompactionConfig.working_context_target_tokens
+    token_meter: TokenMeter = DEFAULT_TOKEN_METER
+    tool_hooks: ToolHooks | None = None
+    subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS
+    allow_subagent: bool = True
+    recovery_policy: RecoveryPolicy = RecoveryPolicy()
+    test_runner: TestRunner | None = None
+    shell_runner: ShellRunner = DEFAULT_SHELL_RUNNER
+    skill_catalog: SkillCatalog | None = None
+    memory_enabled: bool = False
+    memory_extraction_enabled: bool = True
+    tool_trace: ToolTraceConfig = ToolTraceConfig()
 
 
 def create_run_context(
@@ -264,84 +241,95 @@ def create_run_context(
 ) -> AgentRunContext:
     """Compose one run from top-level policy to concrete runtime state."""
 
-    _validate_run_configuration(
+    return build_run_context(RunConfig(
+        provider=provider,
+        workspace=workspace,
         max_turns=max_turns,
+        permission_policy=permission_policy,
+        permission_prompt=permission_prompt,
+        event_logger=event_logger,
         max_context_tokens=max_context_tokens,
-        subagent_max_turns=subagent_max_turns,
-    )
-    compaction_config = CompactionConfig(
         working_context_trigger_tokens=working_context_trigger_tokens,
         working_context_target_tokens=working_context_target_tokens,
+        token_meter=token_meter,
+        tool_hooks=tool_hooks,
+        subagent_max_turns=subagent_max_turns,
+        allow_subagent=allow_subagent,
+        recovery_policy=recovery_policy,
+        test_runner=test_runner,
+        shell_runner=shell_runner,
+        skill_catalog=skill_catalog,
+        memory_enabled=memory_enabled,
+        memory_extraction_enabled=memory_extraction_enabled,
+        tool_trace=tool_trace,
+    ))
+
+
+def build_run_context(config: RunConfig) -> AgentRunContext:
+    """Build fresh runtime state from one explicit configuration source."""
+
+    _validate_run_configuration(
+        max_turns=config.max_turns,
+        max_context_tokens=config.max_context_tokens,
+        subagent_max_turns=config.subagent_max_turns,
     )
-    if max_context_tokens is not None and working_context_trigger_tokens >= max_context_tokens:
+    compaction_config = CompactionConfig(
+        working_context_trigger_tokens=config.working_context_trigger_tokens,
+        working_context_target_tokens=config.working_context_target_tokens,
+    )
+    if config.max_context_tokens is not None and config.working_context_trigger_tokens >= config.max_context_tokens:
         raise ValueError("working context requires target < trigger < max_context_tokens")
 
     if (
-        skill_catalog is not None
-        and skill_catalog.workspace != workspace.resolve()
+        config.skill_catalog is not None
+        and config.skill_catalog.workspace != config.workspace.resolve()
     ):
         raise ValueError("Skill catalog workspace does not match run workspace")
     active_skill_catalog = (
-        discover_skills(workspace) if skill_catalog is None else skill_catalog
+        discover_skills(config.workspace) if config.skill_catalog is None else config.skill_catalog
     )
     todo_manager = TodoManager()
     compaction_request = (
-        CompactionRequest() if max_context_tokens is not None else None
+        CompactionRequest() if config.max_context_tokens is not None else None
     )
 
-    token_meter = (token_meter if isinstance(token_meter, CalibratedTokenMeter)
-                   else CalibratedTokenMeter(token_meter))
-    recovery = RecoveryExecutor(recovery_policy, event_logger=event_logger)
+    token_meter = (config.token_meter if isinstance(config.token_meter, CalibratedTokenMeter)
+                   else CalibratedTokenMeter(config.token_meter))
+    recovery = RecoveryExecutor(config.recovery_policy, event_logger=config.event_logger)
     context: AgentRunContext
     complete_for = _completion_router(
-        provider,
+        config.provider,
         recovery,
         lambda: context.current_turn,
     )
     memory = create_memory_runtime(
-        workspace,
-        enabled=memory_enabled,
-        extraction_enabled=memory_extraction_enabled,
+        config.workspace,
+        enabled=config.memory_enabled,
+        extraction_enabled=config.memory_extraction_enabled,
         complete_for=complete_for,
-        event_logger=event_logger,
-        max_context_tokens=max_context_tokens,
+        event_logger=config.event_logger,
+        max_context_tokens=config.max_context_tokens,
         token_meter=token_meter,
     )
 
-    subagent = _subagent_runner(
-        compaction_config=compaction_config,
-        enabled=allow_subagent,
-        provider=provider,
-        workspace=workspace,
-        max_turns=subagent_max_turns,
-        permission_policy=permission_policy,
-        permission_prompt=permission_prompt,
-        event_logger=event_logger,
-        max_context_tokens=max_context_tokens,
-        token_meter=token_meter.heuristic,
-        tool_trace=tool_trace,
-        tool_hooks=tool_hooks,
-        recovery_policy=recovery_policy,
-        skill_catalog=active_skill_catalog,
-        memory_enabled=memory_enabled,
-        test_runner=test_runner,
-        shell_runner=shell_runner,
-    )
+    # Children inherit the resolved skill catalog snapshot.
+    config = replace(config, skill_catalog=active_skill_catalog)
+    subagent = SubagentExecutor(config) if config.allow_subagent else None
     context = AgentRunContext(
         compaction_config=compaction_config,
-        provider=provider,
-        workspace=workspace,
+        provider=config.provider,
+        workspace=config.workspace,
         tool_registry=ToolRegistry(),
-        max_context_tokens=max_context_tokens,
+        max_context_tokens=config.max_context_tokens,
         token_meter=token_meter,
-        max_turns=max_turns,
-        subagent_max_turns=subagent_max_turns,
-        allow_subagent=allow_subagent,
-        permission_policy=permission_policy,
-        permission_prompt=permission_prompt,
-        tool_hooks=tool_hooks,
-        recovery_policy=recovery_policy,
-        event_logger=event_logger,
+        max_turns=config.max_turns,
+        subagent_max_turns=config.subagent_max_turns,
+        allow_subagent=config.allow_subagent,
+        permission_policy=config.permission_policy,
+        permission_prompt=config.permission_prompt,
+        tool_hooks=config.tool_hooks,
+        recovery_policy=config.recovery_policy,
+        event_logger=config.event_logger,
         recovery_executor=recovery,
         todo_manager=todo_manager,
         skill_catalog=active_skill_catalog,
@@ -350,20 +338,20 @@ def create_run_context(
         compaction_request=compaction_request,
         subagent_runner=subagent,
         final_answer_hook=memory.final_answer_hook,
-        test_runner=test_runner,
-        shell_runner=shell_runner,
+        test_runner=config.test_runner,
+        shell_runner=config.shell_runner,
         permission_rejections=PermissionRejectionTracker(),
-        tool_trace=tool_trace,
+        tool_trace=config.tool_trace,
     )
     context.tool_registry = discover_tools(context)
     context.compactor = _compactor(
-        workspace,
-        provider,
+        config.workspace,
+        config.provider,
         context.tools,
-        max_context_tokens,
+        config.max_context_tokens,
         token_meter,
         complete_for,
-        event_logger,
+        config.event_logger,
         compaction_config,
     )
     return context

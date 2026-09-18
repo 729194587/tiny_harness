@@ -97,7 +97,7 @@ class ToolTraceTest(unittest.TestCase):
                 permission_policy=SimpleNamespace(decide=lambda *args: PermissionDecision.ALLOW),
                 shell_runner=SimpleNamespace(run=lambda *args: "abcdef"),
             )
-            self.assertIs(context.subagent_runner.tool_trace, config)
+            self.assertIs(context.subagent_runner.config.tool_trace, config)
             messages = []
             execute_tool_batch(messages, [ToolCall("1", "bash", '{"command":"echo x"}')], context)
             results = [data for kind, data in logger.events if kind == EventType.TOOL_RESULT]

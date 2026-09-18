@@ -425,8 +425,8 @@ class WorkingContextTest(unittest.TestCase):
             self.assertEqual(create.call_args.kwargs[name], value)
         context = create_run_context(self.provider, self.workspace, max_context_tokens=125_000, **options)
         child = Mock(return_value="done")
-        context.subagent_runner.run_agent = child
-        context.subagent_runner("child task", "parent")
+        with patch("tiny_harness.agent.loop.agent_loop", child):
+            context.subagent_runner("child task", "parent")
         for name, value in options.items():
             self.assertEqual(getattr(context.compactor.config, name), value)
-            self.assertEqual(child.call_args.kwargs[name], value)
+            self.assertEqual(getattr(child.call_args.args[1].compactor.config, name), value)
