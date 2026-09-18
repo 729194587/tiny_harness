@@ -97,16 +97,14 @@ Use current code and tests as the authority when README descriptions differ.
   20,000/14,000 tokens and measure the fully projected request plus tool schemas.
   `max_context_tokens` is the hard budget underlying automatic soft/target limits
   and reactive context-length recovery; it is not the working trigger.
-  Require `0 < target < trigger < max_context_tokens` when the hard budget is set,
-  and non-negative `keep_recent_tool_batches`.
+  Require `0 < target < trigger < max_context_tokens` when the hard budget is set.
   `prepare_context()` runs first and may persist, archive, or summarize history.
   With `max_context_tokens=None`, no compactor exists: both working pruning and
   hard-budget compaction are disabled, but request projection still applies.
 - Working pruning persists eligible old tool-result bodies and substitutes
   bounded previews with artifact references in canonical history and the request.
   It does not summarize or remove assistant messages.
-  Visit oldest results first; protect the latest `keep_recent_tool_batches`
-  (default 3), counting each multi-tool batch once. Skip already persisted results
+  Recent-history protection is token-budget based. Skip already persisted results
   and non-reducing candidates. Stop at target or eligibility exhaustion; recent
   protection may leave the request above target and must not be weakened for it.
 - Prune once before logical-request recovery. Transient retries reuse the prepared

@@ -74,7 +74,6 @@ class AgentRunContext:
     test_runner: TestRunner | None
     shell_runner: ShellRunner
     permission_rejections: PermissionRejectionTracker
-    is_main_agent: bool = True
     current_turn: int = 0
     last_finish_reason: str | None = None
     tool_trace: ToolTraceConfig = ToolTraceConfig()
@@ -95,7 +94,6 @@ def run_started_data(context: AgentRunContext) -> dict[str, Any]:
         "max_model_retries": context.recovery_policy.max_retries,
         "working_context_trigger_tokens": context.compaction_config.working_context_trigger_tokens,
         "working_context_target_tokens": context.compaction_config.working_context_target_tokens,
-        "keep_recent_tool_batches": context.compaction_config.keep_recent_tool_batches,
     }
     if context.allow_subagent:
         data["subagent_max_turns"] = context.subagent_max_turns
@@ -238,7 +236,6 @@ def _subagent_runner(
         tool_trace=tool_trace,
         working_context_trigger_tokens=compaction_config.working_context_trigger_tokens,
         working_context_target_tokens=compaction_config.working_context_target_tokens,
-        keep_recent_tool_batches=compaction_config.keep_recent_tool_batches,
     )
 
 
@@ -253,7 +250,6 @@ def create_run_context(
     max_context_tokens: int | None = None,
     working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens,
     working_context_target_tokens: int = CompactionConfig.working_context_target_tokens,
-    keep_recent_tool_batches: int = CompactionConfig.keep_recent_tool_batches,
     token_meter: TokenMeter = DEFAULT_TOKEN_METER,
     tool_hooks: ToolHooks | None = None,
     subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS,
@@ -264,7 +260,6 @@ def create_run_context(
     skill_catalog: SkillCatalog | None = None,
     memory_enabled: bool = False,
     memory_extraction_enabled: bool = True,
-    is_main_agent: bool = True,
     tool_trace: ToolTraceConfig = ToolTraceConfig(),
 ) -> AgentRunContext:
     """Compose one run from top-level policy to concrete runtime state."""
@@ -277,7 +272,6 @@ def create_run_context(
     compaction_config = CompactionConfig(
         working_context_trigger_tokens=working_context_trigger_tokens,
         working_context_target_tokens=working_context_target_tokens,
-        keep_recent_tool_batches=keep_recent_tool_batches,
     )
     if max_context_tokens is not None and working_context_trigger_tokens >= max_context_tokens:
         raise ValueError("working context requires target < trigger < max_context_tokens")
@@ -359,7 +353,6 @@ def create_run_context(
         test_runner=test_runner,
         shell_runner=shell_runner,
         permission_rejections=PermissionRejectionTracker(),
-        is_main_agent=is_main_agent,
         tool_trace=tool_trace,
     )
     context.tool_registry = discover_tools(context)

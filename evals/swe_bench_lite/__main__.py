@@ -210,7 +210,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_context_tokens=args.max_context_tokens,
         working_context_trigger_tokens=args.working_context_trigger_tokens,
         working_context_target_tokens=args.working_context_target_tokens,
-        keep_recent_tool_batches=args.keep_recent_tool_batches,
     )
     print(run_dir)
     return 0

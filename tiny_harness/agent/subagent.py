@@ -34,7 +34,6 @@ class SubagentExecutor:
         max_context_tokens: int | None,
         working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens,
         working_context_target_tokens: int = CompactionConfig.working_context_target_tokens,
-        keep_recent_tool_batches: int = CompactionConfig.keep_recent_tool_batches,
         token_meter: TokenMeter = DEFAULT_TOKEN_METER,
         tool_hooks: ToolHooks | None,
         recovery_policy: RecoveryPolicy,
@@ -54,7 +53,6 @@ class SubagentExecutor:
         self.max_context_tokens = max_context_tokens
         self.working_context_trigger_tokens = working_context_trigger_tokens
         self.working_context_target_tokens = working_context_target_tokens
-        self.keep_recent_tool_batches = keep_recent_tool_batches
         self.token_meter = token_meter
         self.tool_hooks = tool_hooks
         self.recovery_policy = recovery_policy
@@ -97,7 +95,6 @@ class SubagentExecutor:
                 max_context_tokens=self.max_context_tokens,
                 working_context_trigger_tokens=self.working_context_trigger_tokens,
                 working_context_target_tokens=self.working_context_target_tokens,
-                keep_recent_tool_batches=self.keep_recent_tool_batches,
                 token_meter=self.token_meter,
                 tool_hooks=self.tool_hooks,
                 subagent_max_turns=self.max_turns,
@@ -108,7 +105,6 @@ class SubagentExecutor:
                 shell_runner=self.shell_runner,
                 memory_enabled=self.memory_enabled,
                 memory_extraction_enabled=False,
-                is_main_agent=False,
                 **({"tool_trace": self.tool_trace} if self.tool_trace.enabled else {}),
             )
         except EventLogError:

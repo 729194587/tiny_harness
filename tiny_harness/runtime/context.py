@@ -66,13 +66,10 @@ class CompactionConfig:
     reactive_target_ratio: float = 0.75
     working_context_trigger_tokens: int = 20_000
     working_context_target_tokens: int = 14_000
-    keep_recent_tool_batches: int = 3
 
     def __post_init__(self) -> None:
         if not 0 < self.working_context_target_tokens < self.working_context_trigger_tokens:
             raise ValueError("working context requires 0 < target < trigger")
-        if self.keep_recent_tool_batches < 0:
-            raise ValueError("keep_recent_tool_batches must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -946,7 +943,6 @@ class ContextCompactor(ContextArtifacts):
         before_tokens: int | None = None,
         persisted_results: int = 0,
         persisted_tool_call_ids: tuple[str, ...] = (),
-        transcript_written: bool = False,
     ) -> PreparedContext:
         """Summarize the oldest eligible balanced history into one marker."""
 
@@ -960,7 +956,6 @@ class ContextCompactor(ContextArtifacts):
         )
         source_prefix, source_blocks = _split_context(source_messages)
         transcript = self._write_transcript(source_messages)
-        transcript_written = True
         prefix, blocks = _split_context(messages)
         if len(source_blocks) != len(blocks):
             raise ContextProtocolError(
@@ -1110,7 +1105,7 @@ class ContextCompactor(ContextArtifacts):
             after_tokens=after_tokens,
             persisted_results=persisted_results,
             summarized=True,
-            transcript_written=transcript_written,
+            transcript_written=True,
             persisted_tool_call_ids=persisted_tool_call_ids,
             summarized_tool_call_ids=summarized_tool_call_ids,
         )

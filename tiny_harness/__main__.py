@@ -122,11 +122,6 @@ def add_working_context_arguments(parser: argparse.ArgumentParser) -> None:
         default=CompactionConfig.working_context_target_tokens,
         help="Working Context 裁剪目标 token 数（默认：14000）",
     )
-    parser.add_argument(
-        "--keep-recent-tool-batches", type=_non_negative_int,
-        default=CompactionConfig.keep_recent_tool_batches,
-        help="保护最近的工具调用批次数（默认：3）",
-    )
 
 
 def _ask_permission(tool_name: str, arguments: Mapping[str, Any]) -> bool:
@@ -296,7 +291,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         subagent_max_turns=args.subagent_max_turns,
         working_context_trigger_tokens=args.working_context_trigger_tokens,
         working_context_target_tokens=args.working_context_target_tokens,
-        keep_recent_tool_batches=args.keep_recent_tool_batches,
         recovery_policy=RecoveryPolicy(max_retries=args.max_model_retries),
         memory_enabled=args.memory,
     )

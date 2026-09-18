@@ -221,26 +221,24 @@ class CallModelTest(unittest.TestCase):
         ]
         original = copy.deepcopy(messages)
         guidance = {"role": "system", "content": TOOL_USE_EFFICIENCY_GUIDANCE}
-        for is_main_agent in (True, False):
-            for has_tools, finalization in ((True, False), (False, False), (True, True)):
-                with self.subTest(main=is_main_agent, tools=has_tools, final=finalization):
-                    tools = [{"type": "function", "function": {"name": "read_file"}}] if has_tools else []
-                    context = self.context(FakeProvider([]), tools)
-                    context.is_main_agent = is_main_agent
-                    for _ in range(2):
-                        request, schemas = model_request_inputs(
-                            messages, context, finalization=finalization,
-                        )
-                        self.assertEqual(request.count(guidance), int(has_tools and not finalization))
-                        self.assertEqual(schemas, [] if finalization else tools)
-                        self.assertEqual(messages, original)
-                        self.assertEqual(request[0], original[0])
-                        if finalization:
-                            self.assertEqual(request[:-1], original)
-                            self.assertEqual(request[-1]["role"], "system")
-                            self.assertIn("The tool-use phase has ended", request[-1]["content"])
-                        else:
-                            self.assertEqual(request[-1], original[-1])
+        for has_tools, finalization in ((True, False), (False, False), (True, True)):
+            with self.subTest(tools=has_tools, final=finalization):
+                tools = [{"type": "function", "function": {"name": "read_file"}}] if has_tools else []
+                context = self.context(FakeProvider([]), tools)
+                for _ in range(2):
+                    request, schemas = model_request_inputs(
+                        messages, context, finalization=finalization,
+                    )
+                    self.assertEqual(request.count(guidance), int(has_tools and not finalization))
+                    self.assertEqual(schemas, [] if finalization else tools)
+                    self.assertEqual(messages, original)
+                    self.assertEqual(request[0], original[0])
+                    if finalization:
+                        self.assertEqual(request[:-1], original)
+                        self.assertEqual(request[-1]["role"], "system")
+                        self.assertIn("The tool-use phase has ended", request[-1]["content"])
+                    else:
+                        self.assertEqual(request[-1], original[-1])
 
     def test_main_turns_send_auto_and_finalization_sends_none(self) -> None:
         provider = ToolChoiceProvider(

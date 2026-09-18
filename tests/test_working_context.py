@@ -2,7 +2,6 @@ import copy
 import json
 import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -281,9 +280,6 @@ class WorkingContextTest(unittest.TestCase):
         for message in messages:
             if message.get("tool_calls"):
                 message["reasoning_content"] = "reasoning " * 500
-        self.context.compactor.config = replace(
-            self.context.compactor.config, keep_recent_tool_batches=0,
-        )
         original_tail = copy.deepcopy(messages[-4:])
         request, tools = self.request(messages)
         self.provider.complete.assert_called_once()
@@ -411,18 +407,16 @@ class WorkingContextTest(unittest.TestCase):
         for kwargs in (
             {"working_context_target_tokens": 20_000},
             {"working_context_target_tokens": 0},
-            {"keep_recent_tool_batches": -1},
         ):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 CompactionConfig(**kwargs)
         data = run_started_data(self.context)
         self.assertEqual(data["working_context_trigger_tokens"], 20_000)
         self.assertEqual(data["working_context_target_tokens"], 14_000)
-        self.assertEqual(data["keep_recent_tool_batches"], 3)
 
     def test_session_and_subagent_forward_configuration(self):
         options = dict(working_context_trigger_tokens=18_000,
-                       working_context_target_tokens=12_000, keep_recent_tool_batches=2)
+                       working_context_target_tokens=12_000)
         session = AgentSession(self.provider, self.workspace, "system", max_context_tokens=125_000,
                                **options)
         with patch("tiny_harness.agent.session.create_run_context", wraps=create_run_context) as create:

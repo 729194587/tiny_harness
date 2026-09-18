@@ -131,14 +131,14 @@ class WorkingContextInvariantTest(unittest.TestCase):
 
 
     def test_configuration_relationships(self):
-        for hard, trigger, target, recent in (
-            (20_000, 20_000, 14_000, 3), (19_999, 20_000, 14_000, 3),
-            (125_000, 20_000, 20_000, 3), (125_000, 20_000, 14_000, -1),
+        for hard, trigger, target in (
+            (20_000, 20_000, 14_000), (19_999, 20_000, 14_000),
+            (125_000, 20_000, 20_000),
         ):
-            with self.subTest(hard=hard, trigger=trigger, target=target, recent=recent):
+            with self.subTest(hard=hard, trigger=trigger, target=target):
                 with self.assertRaises(ValueError):
                     create_run_context(Mock(), self.root, max_context_tokens=hard,
                                        working_context_trigger_tokens=trigger,
-                                       working_context_target_tokens=target, keep_recent_tool_batches=recent)
+                                       working_context_target_tokens=target)
         self.assertEqual(CompactionConfig().working_context_trigger_tokens, 20_000)
         self.assertIsNone(create_run_context(Mock(), self.root, max_context_tokens=None).compactor)

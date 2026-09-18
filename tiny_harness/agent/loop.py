@@ -164,7 +164,6 @@ def run_agent(
     max_context_tokens: int | None = None,
     working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens,
     working_context_target_tokens: int = CompactionConfig.working_context_target_tokens,
-    keep_recent_tool_batches: int = CompactionConfig.keep_recent_tool_batches,
     token_meter: TokenMeter = DEFAULT_TOKEN_METER,
     tool_hooks: ToolHooks | None = None,
     subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS,
@@ -175,7 +174,6 @@ def run_agent(
     skill_catalog: SkillCatalog | None = None,
     memory_enabled: bool = False,
     memory_extraction_enabled: bool = True,
-    is_main_agent: bool = True,
     tool_trace: ToolTraceConfig = ToolTraceConfig(),
 ) -> str:
     """兼容配置入口：装配运行上下文后进入三参数核心循环。"""
@@ -190,7 +188,6 @@ def run_agent(
         max_context_tokens=max_context_tokens,
         working_context_trigger_tokens=working_context_trigger_tokens,
         working_context_target_tokens=working_context_target_tokens,
-        keep_recent_tool_batches=keep_recent_tool_batches,
         token_meter=token_meter,
         tool_hooks=tool_hooks,
         subagent_max_turns=subagent_max_turns,
@@ -201,7 +198,6 @@ def run_agent(
         skill_catalog=skill_catalog,
         memory_enabled=memory_enabled,
         memory_extraction_enabled=memory_extraction_enabled,
-        is_main_agent=is_main_agent,
         tool_trace=tool_trace,
     )
     active_request = next(

@@ -93,7 +93,6 @@ class CliTest(unittest.TestCase):
         )
         self.assertEqual(session_class.call_args.kwargs["working_context_trigger_tokens"], 20_000)
         self.assertEqual(session_class.call_args.kwargs["working_context_target_tokens"], 14_000)
-        self.assertEqual(session_class.call_args.kwargs["keep_recent_tool_batches"], 3)
         self.assertEqual(
             session_class.call_args.kwargs["subagent_max_turns"],
             DEFAULT_SUBAGENT_MAX_TURNS,
@@ -116,11 +115,9 @@ class CliTest(unittest.TestCase):
                 "task", "--workspace", str(self.workspace),
                 "--working-context-trigger-tokens", "18000",
                 "--working-context-target-tokens", "12000",
-                "--keep-recent-tool-batches", "2",
             ]), 0)
         self.assertEqual(session.call_args.kwargs["working_context_trigger_tokens"], 18_000)
         self.assertEqual(session.call_args.kwargs["working_context_target_tokens"], 12_000)
-        self.assertEqual(session.call_args.kwargs["keep_recent_tool_batches"], 2)
 
     def test_removed_flags_are_rejected(self) -> None:
         for flag in ("--task-state", "--task-state-reflection", "--task-state-reflection-interval",

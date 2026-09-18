@@ -55,7 +55,6 @@ def _experiment_config(
     max_context_tokens: int | None,
     working_context_trigger_tokens: int,
     working_context_target_tokens: int,
-    keep_recent_tool_batches: int,
 ) -> dict[str, Any]:
     """Use identical configuration fields in task and run metadata."""
     return {
@@ -64,7 +63,6 @@ def _experiment_config(
         "max_context_tokens": max_context_tokens,
         "working_context_trigger_tokens": working_context_trigger_tokens,
         "working_context_target_tokens": working_context_target_tokens,
-        "keep_recent_tool_batches": keep_recent_tool_batches,
         "memory_enabled": False,
         "workspace_mutation_observation_enabled": True,
     }
@@ -95,7 +93,6 @@ def rollout_task(
     max_context_tokens: int | None = DEFAULT_MAX_CONTEXT_TOKENS,
     working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens,
     working_context_target_tokens: int = CompactionConfig.working_context_target_tokens,
-    keep_recent_tool_batches: int = CompactionConfig.keep_recent_tool_batches,
     environment_factory: Callable[..., DockerTaskEnvironment] = DockerTaskEnvironment,
     agent_entrypoint: Callable[..., str] = run_agent,
 ) -> RolloutResult:
@@ -112,7 +109,7 @@ def rollout_task(
     started_at = datetime.now(timezone.utc).isoformat()
     experiment_config = _experiment_config(
         max_turns, subagent_max_turns, max_context_tokens,
-        working_context_trigger_tokens, working_context_target_tokens, keep_recent_tool_batches,
+        working_context_trigger_tokens, working_context_target_tokens,
     )
     experiment_config.update(provenance)
     (output_dir / "metadata.json").write_text(json.dumps({
@@ -136,7 +133,6 @@ def rollout_task(
                     max_context_tokens=max_context_tokens,
                     working_context_trigger_tokens=working_context_trigger_tokens,
                     working_context_target_tokens=working_context_target_tokens,
-                    keep_recent_tool_batches=keep_recent_tool_batches,
                     permission_policy=ContainerPermissionPolicy(),
                     event_logger=WorkspaceMutationLogger(JsonlEventLogger(events_path), environment.workspace),
                     tool_trace=ToolTraceConfig(enabled=True, result_preview_chars=200),
@@ -221,7 +217,6 @@ def run_selected_smoke(
     max_context_tokens: int | None = DEFAULT_MAX_CONTEXT_TOKENS,
     working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens,
     working_context_target_tokens: int = CompactionConfig.working_context_target_tokens,
-    keep_recent_tool_batches: int = CompactionConfig.keep_recent_tool_batches,
     calibrator: Callable[..., CalibrationResult] = calibrate_task,
     rollout: Callable[..., RolloutResult] = rollout_task,
 ) -> Path:
@@ -230,7 +225,7 @@ def run_selected_smoke(
     active_run_id = run_id or new_run_id("smoke")
     experiment_config = _experiment_config(
         max_turns, subagent_max_turns, max_context_tokens,
-        working_context_trigger_tokens, working_context_target_tokens, keep_recent_tool_batches,
+        working_context_trigger_tokens, working_context_target_tokens,
     )
     experiment_config.update(source_metadata())
     experiment_config["model_name_or_path"] = model_name_or_path
@@ -279,7 +274,6 @@ def run_selected_smoke(
                 max_context_tokens=max_context_tokens,
                 working_context_trigger_tokens=working_context_trigger_tokens,
                 working_context_target_tokens=working_context_target_tokens,
-                keep_recent_tool_batches=keep_recent_tool_batches,
             )
         except (KeyboardInterrupt, SystemExit):
             raise

@@ -246,10 +246,9 @@ class SweRemovedFlagsTest(unittest.TestCase):
 class SweExperimentMetadataTest(unittest.TestCase):
     def test_cli_forwards_working_context_defaults_and_overrides(self):
         for flags, expected in [
-            ([], (20_000, 14_000, 3)),
+            ([], (20_000, 14_000)),
             (["--working-context-trigger-tokens", "18000",
-              "--working-context-target-tokens", "12000",
-              "--keep-recent-tool-batches", "2"], (18_000, 12_000, 2)),
+              "--working-context-target-tokens", "12000"], (18_000, 12_000)),
         ]:
             with (
                 self.subTest(flags=flags),
@@ -259,7 +258,7 @@ class SweExperimentMetadataTest(unittest.TestCase):
             ):
                 self.assertEqual(main(["run"] + flags), 0)
             self.assertEqual(tuple(run.call_args.kwargs[name] for name in (
-                "working_context_trigger_tokens", "working_context_target_tokens", "keep_recent_tool_batches",
+                "working_context_trigger_tokens", "working_context_target_tokens",
             )), expected)
 
     def test_task_and_run_configuration_match_for_all_outcomes(self):
@@ -273,7 +272,6 @@ class SweExperimentMetadataTest(unittest.TestCase):
                         "max_turns": 7, "subagent_max_turns": 3, "max_context_tokens": None,
                         "working_context_trigger_tokens": 18000,
                         "working_context_target_tokens": 12000,
-                        "keep_recent_tool_batches": 2,
                     } if enabled else {})
                     expected = {
                         "max_turns": 7 if enabled else 20,
@@ -281,7 +279,6 @@ class SweExperimentMetadataTest(unittest.TestCase):
                         "max_context_tokens": None if enabled else 125000,
                         "working_context_trigger_tokens": 18000 if enabled else 20000,
                         "working_context_target_tokens": 12000 if enabled else 14000,
-                        "keep_recent_tool_batches": 2 if enabled else 3,
                     }
                     calibrated = CalibrationResult(
                         task().instance_id,
@@ -312,8 +309,7 @@ class SweExperimentMetadataTest(unittest.TestCase):
                     self.assertEqual(task_metadata["status"], outcome)
                     self.assertEqual(run_metadata["tasks"][0]["status"], outcome)
                     for agent_options in observed:
-                        for name in ("working_context_trigger_tokens", "working_context_target_tokens",
-                                     "keep_recent_tool_batches"):
+                        for name in ("working_context_trigger_tokens", "working_context_target_tokens"):
                             self.assertEqual(agent_options[name], expected[name])
                     for metadata in (run_metadata, task_metadata, run_metadata["tasks"][0]):
                         self.assertEqual({key: metadata[key] for key in expected}, expected)

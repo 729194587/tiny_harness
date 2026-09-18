@@ -54,7 +54,6 @@ class AgentSession:
         max_context_tokens: int | None = None,
         working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens,
         working_context_target_tokens: int = CompactionConfig.working_context_target_tokens,
-        keep_recent_tool_batches: int = CompactionConfig.keep_recent_tool_batches,
         token_meter: TokenMeter = DEFAULT_TOKEN_METER,
         subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS,
         recovery_policy: RecoveryPolicy = RecoveryPolicy(),
@@ -78,7 +77,6 @@ class AgentSession:
         self.max_context_tokens = max_context_tokens
         self.working_context_trigger_tokens = working_context_trigger_tokens
         self.working_context_target_tokens = working_context_target_tokens
-        self.keep_recent_tool_batches = keep_recent_tool_batches
         self.token_meter = CalibratedTokenMeter(token_meter)
         self.subagent_max_turns = subagent_max_turns
         self.recovery_policy = recovery_policy
@@ -118,7 +116,6 @@ class AgentSession:
             max_context_tokens=self.max_context_tokens,
             working_context_trigger_tokens=self.working_context_trigger_tokens,
             working_context_target_tokens=self.working_context_target_tokens,
-            keep_recent_tool_batches=self.keep_recent_tool_batches,
             token_meter=self.token_meter,
             subagent_max_turns=self.subagent_max_turns,
             recovery_policy=self.recovery_policy,
