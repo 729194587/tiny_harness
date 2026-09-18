@@ -7,11 +7,11 @@ description: Explore an unfamiliar codebase efficiently when locating implementa
 
 Use this workflow when you need to understand unfamiliar code, locate an implementation, trace behavior across modules, or determine which files are relevant to a task.
 
-The goal is to gather enough evidence to act confidently without reading more of the repository than necessary.
+Seek sufficient evidence to answer or act confidently, not exhaustive repository coverage. Apply the guidance below as needed, not as a fixed sequence.
 
 ## 1. Start from the question
 
-Identify exactly what you need to understand.
+Identify exactly what you need to understand. Start from the files and symbols most directly relevant to the user's requested scope.
 
 Examples:
 
@@ -26,14 +26,14 @@ Do not begin by reading the entire repository.
 
 ## 2. Locate candidate files
 
-Prefer repository-aware search tools before shell commands.
+Prefer dedicated read-only repository tools such as `read_file`, `grep`, `search_code`, and `list_files` for exploration.
 
 Use:
 
 1. `glob` to locate files by name, extension, or directory pattern.
-2. `grep` for quick location of exact symbols, error strings, or literal occurrences.
+2. `grep` for exact symbols or error strings; use `regex=true` for patterns such as class/function definitions and `include="**/*.py"` to restrict files.
 3. `search_code` for literal search when nearby context is needed; it can avoid an extra search-to-read round trip.
-4. `list_files` when the immediate contents of a known directory are useful.
+4. `list_files` for immediate directory contents, or `recursive=true, pattern="*.py"` for recursive Python file discovery.
 
 Choose the tool that best answers the current question.
 
@@ -43,7 +43,7 @@ Examples:
 - `grep("MemoryRuntime", include="**/*.py")`
 - `grep("create_run_context", include="**/*.py")`
 
-Use `bash` primarily for execution, tests, git, or queries repository tools cannot express.
+For code inspection, use `bash` only when the dedicated repository tools cannot express the required inspection.
 
 ## 3. Narrow before reading
 
@@ -74,7 +74,7 @@ Separate implementation details from public or subsystem boundaries.
 
 ## 5. Follow dependencies only when needed
 
-If the current files do not fully explain the behavior, search for the next specific dependency.
+Expand into adjacent subsystems only when an unresolved question would materially change the answer.
 
 Typical follow-ups include:
 
@@ -87,6 +87,8 @@ Typical follow-ups include:
 Continue with focused search or ranged reading only while each step answers a concrete unanswered question. If search context already provides enough evidence for the next action, stop exploring and act.
 
 Avoid recursively exploring unrelated neighboring modules.
+
+Do not repeat an identical read or search unless new evidence gives a concrete reason to revisit it.
 
 ## 6. Use tests as behavioral evidence
 
@@ -118,11 +120,11 @@ The model should contain only components relevant to the current task.
 
 ## 8. Stop when the evidence is sufficient
 
-Exploration is complete when you can answer the original question or identify the files that must change with reasonable confidence.
+Once you can answer the original question or identify the files that must change with reasonable confidence, stop exploring and answer or proceed with the requested change.
 
 Do not continue searching merely because more code exists.
 
-If uncertainty remains, state the specific unresolved question and gather only the evidence needed to resolve it.
+If material uncertainty remains, state the specific unresolved question and gather only the evidence needed to resolve it.
 
 ## When making changes
 

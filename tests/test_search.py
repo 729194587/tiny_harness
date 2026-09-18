@@ -8,6 +8,29 @@ from tiny_harness.tools.search import glob_files, grep_text
 
 
 class SearchToolTest(unittest.TestCase):
+    def test_regex_recursive_discovery_and_filtering(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            (workspace / "src").mkdir()
+            for name in ("main.py", "src/nested.py", "src/notes.txt"):
+                (workspace / name).write_text("class Example:\n    def run(self):\nneedle.*\n", encoding="utf-8")
+            self.assertEqual(grep_text(workspace, r"^\s*(class|def)\s+", regex=True,
+                                       include="**/*.py").splitlines(), [
+                "main.py:1:class Example:", "main.py:2:    def run(self):",
+                "src/nested.py:1:class Example:", "src/nested.py:2:    def run(self):",
+            ])
+            self.assertEqual(grep_text(workspace, "needle.*", path="src", include="*.py"),
+                             "src/nested.py:3:needle.*")
+            self.assertEqual(grep_text(workspace, "^CLASS", path="main.py", regex=True,
+                                       case_sensitive=False), "main.py:1:class Example:")
+            with self.assertRaisesRegex(ValueError, "Invalid regular expression"):
+                grep_text(workspace, "[", regex=True)
+            with self.assertRaises(ValueError):
+                grep_text(workspace, "class", path="..", regex=True)
+            for include in ("../*.py", str(workspace / "*.py")):
+                with self.assertRaises(ValueError):
+                    grep_text(workspace, "class", include=include, regex=True)
+
     def test_glob_finds_matching_files_in_stable_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             workspace = Path(temporary_directory)

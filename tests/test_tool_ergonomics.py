@@ -28,6 +28,24 @@ class ToolErgonomicsTest(unittest.TestCase):
         self.file = self.workspace / "a.py"
         self.file.write_bytes(b"first\r\nneedle.*\r\nlast")
 
+    def test_repository_tool_descriptions_expose_affordances(self):
+        registry = discover_tools(SimpleNamespace(
+            workspace=self.workspace, todo_manager=TodoManager(), subagent_runner=None,
+            skill_catalog=None, compaction_request=None, test_runner=None,
+        ))
+        descriptions = {s["function"]["name"]: s["function"]["description"]
+                        for s in registry.model_schemas()}
+        for name, phrase in (
+            ("glob", "Preferred file/path discovery"),
+            ("grep", "Preferred recursive text/symbol search"),
+            ("list_files", "Inspect a workspace directory"),
+            ("read_file", "with ranged navigation"),
+            ("search_code", "Repository code search"),
+            ("bash", "Shell commands may require interactive approval"),
+        ):
+            self.assertIn(phrase, descriptions[name])
+        self.assertIn("list_files, glob, grep, search_code, and read_file", descriptions["bash"])
+
     def test_ranged_read(self):
         for start, end, expected in (
             (None, None, "first\nneedle.*\nlast"),
@@ -37,9 +55,14 @@ class ToolErgonomicsTest(unittest.TestCase):
             (10**30, None, ""), (3, 10**30, "last"),
         ):
             with self.subTest(start=start, end=end):
-                self.assertEqual(read_file(self.workspace, "a.py", start, end), expected)
+                first = start or 1
+                last = min(end or 3, 3)
+                span = f"{first}-{last}" if expected else "none"
+                self.assertEqual(read_file(self.workspace, "a.py", start, end),
+                                 f"[lines {span} of 3 | a.py]\n\n" + expected)
         self.file.write_text("")
-        self.assertEqual(read_file(self.workspace, "a.py", 1, 3), "")
+        self.assertEqual(read_file(self.workspace, "a.py", 1, 3), "[lines none of 0 | a.py]\n\n")
+        self.assertEqual(read_file(self.workspace, "a.py"), "[lines none of 0 | a.py]\n\n")
 
     def test_invalid_ranges(self):
         for start, end in ((0, None), (-1, 2), (3, 2), (None, 0),
@@ -53,7 +76,7 @@ class ToolErgonomicsTest(unittest.TestCase):
         self.assertIn("needle", read_file(self.workspace, path))
         write_file(self.workspace, path, "old")
         edit_file(self.workspace, path, "old", "new")
-        self.assertEqual(read_file(self.workspace, path), "new")
+        self.assertEqual(read_file(self.workspace, path), "[lines 1-1 of 1 | a.py]\n\nnew")
         self.assertEqual(list_files(self.workspace, str(self.workspace)), "a.py")
 
     def test_search_literal_context_and_scope(self):
@@ -137,6 +160,10 @@ class ToolErgonomicsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "escapes workspace"):
             read_file(self.workspace, "link/secret", 1)
         self.assertNotIn("secret", search_code(self.workspace, "needle"))
+        self.assertNotIn("secret", list_files(self.workspace, recursive=True))
+        self.assertNotIn("secret", grep_text(self.workspace, "needle", regex=True))
+        with self.assertRaisesRegex(ValueError, "escapes workspace"):
+            list_files(self.workspace, "link", recursive=True)
 
     def test_discovery_schemas_dispatch_and_boundaries(self):
         registry = discover_tools(SimpleNamespace(
@@ -145,13 +172,21 @@ class ToolErgonomicsTest(unittest.TestCase):
         ))
         schemas = {s["function"]["name"]: s["function"]["parameters"]
                    for s in registry.model_schemas()}
-        self.assertEqual(set(schemas["read_file"]["properties"]), {"path", "start_line", "end_line"})
+        self.assertEqual(set(schemas["read_file"]["properties"]),
+                         {"path", "start_line", "end_line", "start_column"})
         self.assertEqual(set(schemas["search_code"]["properties"]),
                          {"query", "path", "max_results", "context_lines"})
+        self.assertIn("recursive", schemas["list_files"]["properties"])
+        self.assertIn("pattern", schemas["list_files"]["properties"])
+        self.assertIn("regex", schemas["grep"]["properties"])
+        listing = ToolCall("list", "list_files", '{"recursive":true,"pattern":"*.py"}')
+        self.assertEqual(dispatch(registry, listing).content, "a.py")
+        regex = ToolCall("grep", "grep", '{"query":"^needle","regex":true,"include":"**/*.py"}')
+        self.assertEqual(dispatch(registry, regex).content, "a.py:2:needle.*")
         call = ToolCall("search", "search_code", json.dumps({"query": "needle"}))
         self.assertIn("a.py:2:needle", dispatch(registry, call).content)
         read = ToolCall("read", "read_file", json.dumps({"path": str(self.file), "start_line": 2, "end_line": 2}))
-        self.assertEqual(dispatch(registry, read).content, "needle.*\n")
+        self.assertEqual(dispatch(registry, read).content, "[lines 2-2 of 3 | a.py]\n\nneedle.*\n")
         bad = ToolCall("bad", "search_code", '{"query":"needle","max_results":0}')
         self.assertTrue(dispatch(registry, bad).content.startswith("Error:"))
         hooks = ToolHooks()
@@ -161,3 +196,21 @@ class ToolErgonomicsTest(unittest.TestCase):
             self.assertIn("blocked", dispatch(registry, call, tool_hooks=hooks).content)
             self.assertIn("Permission denied", dispatch(registry, call, permission_policy=deny).content)
         self.assertNotIn("query", registry.lookup("search_code").trace_metadata({"query": "secret"}))
+
+    def test_shallow_listing_defaults_through_dispatch(self):
+        for path in ("root.py", "dir_a/a.py", "dir_a/nested/deep.py",
+                     ".hidden/generated/cache.py"):
+            write_file(self.workspace, path, "content")
+        registry = discover_tools(SimpleNamespace(
+            workspace=self.workspace, todo_manager=TodoManager(), subagent_runner=None,
+            skill_catalog=None, compaction_request=None, test_runner=None,
+        ))
+        schema = registry.lookup("list_files").parameters
+        self.assertIs(schema["properties"]["recursive"]["default"], False)
+        for arguments in ({"path": "."}, {"path": ".", "recursive": False, "pattern": None}):
+            call = ToolCall("shallow", "list_files", json.dumps(arguments))
+            self.assertEqual(dispatch(registry, call).content,
+                             ".hidden/\na.py\ndir_a/\nroot.py")
+        call = ToolCall("recursive", "list_files", '{"path":".","recursive":true,"pattern":"*.py"}')
+        self.assertEqual(dispatch(registry, call).content,
+                         ".hidden/generated/cache.py\na.py\ndir_a/a.py\ndir_a/nested/deep.py\nroot.py")

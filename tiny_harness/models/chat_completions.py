@@ -1,6 +1,7 @@
 """Adapter for Chat Completions-compatible model APIs."""
 
 import math
+import re
 from typing import Any
 
 from openai import OpenAI
@@ -21,6 +22,9 @@ _CONTEXT_ERROR_MARKERS = (
     "too many tokens",
 )
 _SERVER_STATUS_CODES = frozenset({500, 502, 503, 504, 529})
+_DSML_TOOL_PROTOCOL = re.compile(
+    r"<\s*/?\s*(?:｜DSML｜|\|DSML\|)(?:function_calls|invoke|parameter)\b"
+)
 
 
 def _status_code(error: Exception) -> int | None:
@@ -165,6 +169,9 @@ class ChatCompletionsProvider(ToolChoiceModelProvider):
             reasoning_content=getattr(message, "reasoning_content", None),
             tool_calls=tool_calls,
             finish_reason=choice.finish_reason,
+            contains_tool_protocol=bool(
+                _DSML_TOOL_PROTOCOL.search(message.content or "")
+            ),
             **{
                 name: value if type(value) is int and value >= 0 else None
                 for name in ("prompt_tokens", "completion_tokens", "total_tokens",

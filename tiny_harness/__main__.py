@@ -237,8 +237,10 @@ def _run_repl(
             continue
 
         answer = session.submit(task)
-        print(f"\n助手> {answer}")
         console = console_provider() if console_provider is not None else None
+        if console is not None:
+            console.clear_live()
+        print(f"\n助手> {answer}")
         summary = console.summary(model=model) if console is not None else ""
         print(f"\n{summary}\n" if summary else "")
 
@@ -266,6 +268,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     console = None
 
+    def permission_prompt(tool_name, arguments):
+        if console is None:
+            return _ask_permission(tool_name, arguments)
+        with console.suspend_live():
+            return _ask_permission(tool_name, arguments)
+
     def event_logger_factory():
         nonlocal console
         console = ConsoleEventLogger(quiet=args.quiet, verbose=args.verbose)
@@ -282,7 +290,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             memory_enabled=args.memory,
         ),
         max_turns=args.max_turns,
-        permission_prompt=_ask_permission,
+        permission_prompt=permission_prompt,
         event_logger_factory=event_logger_factory,
         max_context_tokens=args.max_context_tokens,
         subagent_max_turns=args.subagent_max_turns,
@@ -305,15 +313,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
         answer = session.submit(args.task)
+        if console is not None:
+            console.clear_live()
         print(answer)
         if console is not None and (summary := console.summary(model=model)):
             print(f"\n{summary}")
         return 0
     except Exception as error:
+        if console is not None:
+            try:
+                console.clear_live()
+            except EventLogError:
+                pass  # Preserve the independent terminal fallback below.
         # Exception messages and tracebacks can include arguments or tool content.
         if isinstance(error, EventLogError) or console is None or not console.run_failure_reported:
             print(f"[任务已终止：{type(error).__name__}]", file=sys.stderr, flush=True)
         return 1
+    finally:
+        if console is not None:
+            try:
+                console.clear_live()
+            except EventLogError:
+                pass
 
 
 

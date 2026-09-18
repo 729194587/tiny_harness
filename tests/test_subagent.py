@@ -423,7 +423,7 @@ class SubagentTest(unittest.TestCase):
         child_tool_names = tool_names(provider.calls[1])
         self.assertIn("compact", child_tool_names)
         self.assertNotIn("task", child_tool_names)
-        self.assertEqual(provider.calls[3]["tools"], [])
+        self.assertEqual(provider.calls[3]["tools"], provider.calls[1]["tools"])
         summary_events = [
             event
             for event in logger.events

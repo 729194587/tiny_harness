@@ -333,7 +333,7 @@ class ToolRegistryTest(unittest.TestCase):
         self.assertEqual(write_result.tool_call_id, "write-1")
         self.assertEqual(write_result.content, "Wrote 5 bytes to example.txt")
         self.assertEqual(read_result.tool_call_id, "read-1")
-        self.assertEqual(read_result.content, "hello")
+        self.assertEqual(read_result.content, "[lines 1-1 of 1 | example.txt]\n\nhello")
 
     def test_dispatches_bash_in_workspace(self) -> None:
         command = f'"{sys.executable}" -c "from pathlib import Path; print(Path.cwd().name)"'

@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from tiny_harness.agent.messages import ModelResponse
 from tiny_harness.agent.subagent import SubagentExecutor
 from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter, CalibratedTokenMeter
 from tiny_harness.memory import MemoryRuntime, create_memory_runtime
-from tiny_harness.models.base import ModelProvider
+from tiny_harness.models.base import ModelProvider, ToolChoice
 from tiny_harness.runtime.context import CompactionConfig, CompactionRequest, ContextCompactor
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger
 from tiny_harness.runtime.hooks import FinalAnswerHook, ToolHooks
@@ -118,10 +119,13 @@ def initialize_run_state(
     context.memory.initialize(messages, active_request)
 
 
-ModelCompletion = Callable[
-    [str, list[dict[str, Any]], list[dict[str, Any]]],
-    ModelResponse,
-]
+class ModelCompletion(Protocol):
+    def __call__(
+        self, purpose: str, request_messages: list[dict[str, Any]],
+        request_tools: list[dict[str, Any]], *,
+        tool_choice: ToolChoice | None = None,
+        state: RecoveryState | None = None,
+    ) -> ModelResponse: ...
 
 
 def _validate_run_configuration(
@@ -147,6 +151,9 @@ def _completion_router(
         purpose: str,
         request_messages: list[dict[str, Any]],
         request_tools: list[dict[str, Any]],
+        *,
+        tool_choice: ToolChoice | None = None,
+        state: RecoveryState | None = None,
     ) -> ModelResponse:
         return recovery.complete(
             provider,
@@ -154,7 +161,8 @@ def _completion_router(
             request_tools,
             purpose=purpose,
             turn=current_turn(),
-            state=RecoveryState(),
+            state=state if state is not None else RecoveryState(),
+            tool_choice=tool_choice,
         )
 
     return complete_for
@@ -180,9 +188,7 @@ def _compactor(
         token_meter=token_meter,
         event_logger=event_logger,
         config=config,
-        summary_complete=lambda messages, schemas: complete_for(
-            "summary", messages, schemas
-        ),
+        summary_complete=partial(complete_for, "summary"),
     )
 
 

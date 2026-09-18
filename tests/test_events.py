@@ -445,7 +445,8 @@ class EventLifecycleTest(unittest.TestCase):
                     None,
                     [ToolCall("forbidden-1", "list_files", "{}")],
                     "tool_calls",
-                )
+                ),
+                ModelResponse("best available answer", None, [], "stop"),
             ]
         )
 

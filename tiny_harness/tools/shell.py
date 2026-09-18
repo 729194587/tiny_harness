@@ -26,7 +26,13 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
     return (
         ToolDefinition(
             name="bash",
-            description="Run a shell command with the workspace as the working directory.",
+            description=(
+                "General-purpose shell for tests, builds, Git, scripts, and operations not "
+                "covered by dedicated tools, with the workspace as the working directory. "
+                "For ordinary repository listing, search, and file reading, prefer "
+                "list_files, glob, grep, search_code, and read_file. "
+                "Shell commands may require interactive approval."
+            ),
             parameters={
                 "type": "object",
                 "properties": {"command": {"type": "string"}},

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import sys
+import unicodedata
 from collections import Counter
+from contextlib import contextmanager
 from collections.abc import Callable, Mapping
 from time import perf_counter
 from typing import Any, TextIO
@@ -82,15 +84,77 @@ class ConsoleRenderer:
         self._input_tokens = 0
         self._estimated_input_tokens = 0
         self._output_tokens = 0
+        self._cache_hit_tokens = 0
+        self._cache_miss_tokens = 0
         self._has_input_tokens = False
         self._has_output_tokens = False
         self._context_warning_shown = False
         self._run_finished = False
+        self._live_text = ""
+        self._live_style = ""
+        self._live_visible = False
+        self._suspended = False
+        self._persistent = False
+
+    def _is_live(self) -> bool:
+        stream = self.stream if self.stream is not None else sys.stderr
+        try:
+            return stream.isatty()
+        except (AttributeError, OSError, ValueError):
+            return False
+
+    def clear_live(self) -> None:
+        """Erase the current status before any persistent output or stdin prompt."""
+        if self._live_visible:
+            stream = self.stream if self.stream is not None else sys.stderr
+            try:
+                stream.write("\r\x1b[2K")
+                stream.flush()
+            except (OSError, ValueError) as exc:
+                raise EventLogError("Failed to clear console progress") from exc
+            self._live_visible = False
+
+    @contextmanager
+    def suspend_live(self):
+        self.clear_live()
+        self._suspended = True
+        try:
+            yield
+        finally:
+            self._suspended = False
+            if self._live_text:
+                self._write(self._live_text, style=self._live_style, error=True)
 
     def _write(self, text: str, *, style: str = "", error: bool = False) -> None:
         if self.quiet and not error:
             return
         stream = self.stream if self.stream is not None else sys.stderr
+        if self._is_live() and not self._persistent:
+            self._live_text, self._live_style = text, style
+            if self._suspended:
+                return
+            # Stay on one physical row, including on narrow/CJK terminals. Leave
+            # the last column unused to avoid terminal autowrap and scrollback.
+            try:
+                columns = os.get_terminal_size(stream.fileno()).columns
+            except (AttributeError, OSError, ValueError):
+                columns = 80
+            remaining = max(0, columns - 1)
+            clipped = ""
+            for char in " · ".join(line for line in text.splitlines() if line):
+                width = 0 if unicodedata.combining(char) else (2 if unicodedata.east_asian_width(char) in "WF" else 1)
+                if width > remaining:
+                    break
+                clipped += char
+                remaining -= width
+            rendered = f"{style}{clipped}{_RESET}" if style and _use_color(stream) else clipped
+            try:
+                stream.write("\r\x1b[2K" + rendered)
+                stream.flush()
+            except (OSError, ValueError) as exc:
+                raise EventLogError("Failed to write console progress") from exc
+            self._live_visible = True
+            return
         rendered = f"{style}{text}{_RESET}" if style and _use_color(stream) else text
         try:
             print(rendered, file=stream, flush=True)
@@ -114,6 +178,7 @@ class ConsoleRenderer:
         self._finished_at = None
         self._turns = self._tool_calls = self._compactions = 0
         self._input_tokens = self._estimated_input_tokens = self._output_tokens = 0
+        self._cache_hit_tokens = self._cache_miss_tokens = 0
         self._has_input_tokens = self._has_output_tokens = False
         self._context_warning_shown = self._run_finished = False
 
@@ -126,6 +191,12 @@ class ConsoleRenderer:
         # are neither another API request nor actual provider usage.
         if event_type not in (EventType.MODEL_REQUESTED, EventType.MODEL_RESPONDED):
             return
+        if event_type == EventType.MODEL_RESPONDED:
+            hit = data.get("prompt_cache_hit_tokens")
+            miss = data.get("prompt_cache_miss_tokens")
+            if type(hit) is int and type(miss) is int:
+                self._cache_hit_tokens += hit
+                self._cache_miss_tokens += miss
         for key in ("input_tokens", "prompt_tokens"):
             if isinstance(data.get(key), (int, float)):
                 self._input_tokens += int(data[key])
@@ -154,6 +225,29 @@ class ConsoleRenderer:
                     style=_RED if error else _DIM_GRAY, error=error)
 
     def emit(self, event_type: EventType, data: Mapping[str, Any] | None = None) -> None:
+        d = dict(data or {})
+        root_end = event_type in (EventType.RUN_FINISHED, EventType.RUN_FAILED) and d.get("agent_scope") != "subagent"
+        if event_type == EventType.RUN_STARTED and d.get("agent_scope") != "subagent":
+            self.clear_live()
+            self._live_text = ""
+        self._persistent = root_end and event_type == EventType.RUN_FAILED
+        if self._persistent:
+            self.clear_live()
+            self._tool_burst.clear()
+        try:
+            self._emit(event_type, d)
+            if self._is_live() and not self.verbose:
+                if event_type == EventType.MODEL_REQUESTED:
+                    self._write(f"正在请求模型 · 轮次 {_short(d.get('turn', '?'))} · 工具 {self._tool_calls} · 上下文 {_human_number(d.get('context_tokens'))}", style=_DIM_GRAY)
+                elif event_type == EventType.TOOL_STARTED:
+                    self._write(f"正在调用工具 · {_short(d.get('tool_name', 'tool'))} · 工具 {self._tool_calls}", style=_DIM_CYAN)
+        finally:
+            self._persistent = False
+            if root_end:
+                self.clear_live()
+                self._live_text = ""
+
+    def _emit(self, event_type: EventType, data: Mapping[str, Any] | None = None) -> None:
         d = dict(data or {})
         key = self._key(d)
         if event_type == EventType.RUN_STARTED and d.get("agent_scope") != "subagent":
@@ -263,9 +357,12 @@ class ConsoleRenderer:
         if not self._has_input_tokens and self._estimated_input_tokens:
             input_tokens += " (预估)"
         output_tokens = _human_number(self._output_tokens if self._has_output_tokens else None)
+        cache_total = self._cache_hit_tokens + self._cache_miss_tokens
+        cache = f"{self._cache_hit_tokens / cache_total:.1%} hit" if cache_total > 0 else "n/a"
         text = "\n".join(("────────────────", "", "Run summary", f"model: {_short(model)}",
                           f"turns: {self._turns}", f"tool calls: {self._tool_calls}",
                           f"tokens: {input_tokens} input / {output_tokens} output",
+                          f"cache: {cache}",
                           f"compactions: {self._compactions}",
                           f"duration: {_human_duration(max(0.0, duration))}"))
         target = stream if stream is not None else sys.stdout

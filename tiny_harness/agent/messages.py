@@ -34,6 +34,8 @@ class ModelResponse:
     total_tokens: int | None = None
     prompt_cache_hit_tokens: int | None = None
     prompt_cache_miss_tokens: int | None = None
+    # Provider-normalized signal; runtime code does not parse provider syntax.
+    contains_tool_protocol: bool = False
 
 
 class ModelProtocolError(RuntimeError):

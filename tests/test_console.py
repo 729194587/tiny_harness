@@ -367,8 +367,40 @@ class ConsoleV2Test(unittest.TestCase):
         self.assertEqual(
             console.summary(model="deepseek-v4-flash", stream=self.output),
             "────────────────\n\nRun summary\nmodel: deepseek-v4-flash\nturns: 8\n"
-            "tool calls: 1\ntokens: 62k input / 3k output\ncompactions: 1\nduration: 42s",
+            "tool calls: 1\ntokens: 62k input / 3k output\ncache: n/a\ncompactions: 1\nduration: 42s",
         )
+
+    def test_summary_cache_rate_uses_aggregate_tokens(self):
+        for verbose in (False, True):
+            with self.subTest(verbose=verbose):
+                console = ConsoleEventLogger(stream=self.output, verbose=verbose)
+                console.emit(EventType.RUN_STARTED)
+                for turn, hit, miss in ((1, 90, 10), (2, 100, 800)):
+                    console.emit(EventType.MODEL_REQUESTED, {"turn": turn})
+                    console.emit(EventType.MODEL_RESPONDED, {
+                        "turn": turn, "prompt_cache_hit_tokens": hit,
+                        "prompt_cache_miss_tokens": miss,
+                        "cache_hit_rate": hit / (hit + miss),
+                    })
+                console.emit(EventType.RUN_FINISHED, {"turns": 2})
+                summary = console.summary(model="test", stream=self.output)
+                self.assertIn("\ncache: 19.0% hit\n", summary)
+                self.assertEqual(summary.count("cache:"), 1)
+                self.assertNotIn("\x1b", summary)
+                console.emit(EventType.RUN_STARTED)
+                console.emit(EventType.RUN_FINISHED, {"turns": 0})
+                self.assertIn("\ncache: n/a\n", console.summary(model="test", stream=self.output))
+
+    def test_summary_cache_unavailable_or_zero(self):
+        for usage in ({}, {"cache_hit_rate": .91},
+                      {"prompt_cache_hit_tokens": 10},
+                      {"prompt_cache_miss_tokens": 10},
+                      {"prompt_cache_hit_tokens": 0, "prompt_cache_miss_tokens": 0}):
+            with self.subTest(usage=usage):
+                self.console.emit(EventType.RUN_STARTED)
+                self.console.emit(EventType.MODEL_RESPONDED, usage)
+                self.console.emit(EventType.RUN_FINISHED, {"turns": 1})
+                self.assertIn("\ncache: n/a\n", self.console.summary(model="test", stream=self.output))
 
     def test_verbose_preserves_every_event_name_without_raw_payloads(self):
         console = ConsoleEventLogger(verbose=True, stream=self.output)
@@ -413,7 +445,7 @@ class ConsoleV2Test(unittest.TestCase):
             console.emit(EventType.TOOL_CALLED, {"tool_call_id": "1", "tool_name": "read_file"})
             console.emit(EventType.TOOL_RESULT, {"tool_call_id": "1", "tool_name": "read_file", "outcome": "returned"})
             console.emit(EventType.MODEL_REQUESTED)
-        self.assertTrue(tty.getvalue().startswith("\x1b[2;36m"))
+        self.assertIn("\x1b[2;36m", tty.getvalue())
         self.assertNotIn("\x1b", self.output.getvalue())
 
     def test_console_io_failure_retains_event_log_error_contract(self):
@@ -454,6 +486,76 @@ class ConsoleV2Test(unittest.TestCase):
         with patch("builtins.input", return_value="no"), contextlib.redirect_stdout(self.output):
             _ask_permission("write_file", {"path": "a.py", "content": "SECRET" * 10000})
         self.assertNotIn("SECRET", self.output.getvalue())
+
+
+class LiveConsoleTests(unittest.TestCase):
+    def setUp(self):
+        self.output = io.StringIO()
+        self.tty = patch.object(self.output, "isatty", return_value=True)
+        self.tty.start()
+        self.addCleanup(self.tty.stop)
+        self.env = patch.dict(os.environ, {"NO_COLOR": ""})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.console = ConsoleEventLogger(stream=self.output)
+
+    def test_updates_replace_one_row_and_completion_erases_it(self):
+        self.console.emit(EventType.RUN_STARTED)
+        for turn in range(1, 21):
+            self.console.emit(EventType.MODEL_REQUESTED, {"turn": turn, "context_tokens": 12000})
+            self.console.emit(EventType.MODEL_RESPONDED, {"prompt_tokens": 12000, "cache_hit_rate": .91})
+        raw = self.output.getvalue()
+        self.assertNotIn("\n", raw)
+        self.assertEqual(raw.count("\r\x1b[2K"), 40)
+        self.assertIn("命中率 91.0%", raw)
+        self.assertNotIn("\x1b[2;90m", raw)
+        self.console.emit(EventType.RUN_FINISHED, {"turns": 20})
+        self.assertTrue(self.output.getvalue().endswith("\r\x1b[2K"))
+        self.assertFalse(self.console._live_visible)
+        print("助手> final", file=self.output)
+        print(self.console.summary(model="test", stream=self.output), file=self.output)
+        # Each erase replaces the current row; only the final answer/summary
+        # survives in the terminal after the last erase.
+        visible = self.output.getvalue().rsplit("\r\x1b[2K", 1)[1]
+        self.assertTrue(visible.startswith("助手> final\n"))
+        self.assertIn("turns: 20", visible)
+        self.assertIn("cache: n/a", visible)
+        self.assertNotIn("命中率", visible)
+
+    def test_permission_suspends_and_resumes_even_on_eof(self):
+        self.console.emit(EventType.MODEL_REQUESTED, {"turn": 1})
+        def read_prompt(prompt):
+            self.assertFalse(self.console._live_visible)
+            self.assertTrue(self.console._suspended)
+            self.assertIn("需要工具授权", self.output.getvalue())
+            raise EOFError
+        with contextlib.redirect_stdout(self.output), patch("builtins.input", side_effect=read_prompt):
+            with self.console.suspend_live():
+                self.assertFalse(_ask_permission("read_file", {"path": "a.py"}))
+        self.assertTrue(self.console._live_visible)
+        self.assertFalse(self.console._suspended)
+        self.assertIn("\r\x1b[2K\n需要工具授权", self.output.getvalue())
+
+    def test_fatal_error_is_persistent_in_normal_and_verbose_modes(self):
+        for verbose in (False, True):
+            self.output.seek(0)
+            self.output.truncate()
+            console = ConsoleEventLogger(stream=self.output, verbose=verbose)
+            console.emit(EventType.MODEL_REQUESTED, {"turn": 1})
+            console.emit(EventType.RUN_FAILED, {"error_type": "ValueError"})
+            visible = self.output.getvalue().rsplit("\r\x1b[2K", 1)[1]
+            self.assertIn("ValueError", visible)
+            self.assertTrue(visible.endswith("\n"))
+            self.assertTrue(console.run_failure_reported)
+            self.assertFalse(console._live_visible)
+
+    def test_narrow_terminal_does_not_wrap_cjk_status(self):
+        with patch.object(self.output, "fileno", return_value=2), \
+             patch("os.get_terminal_size", return_value=os.terminal_size((12, 24))):
+            self.console.emit(EventType.TOOL_STARTED, {"tool_name": "很长的工具名称"})
+        visible = self.output.getvalue().split("\x1b[2K")[-1]
+        self.assertLessEqual(len(visible) * 2, 11)
+        self.assertNotIn("\n", visible)
 
 
 if __name__ == "__main__":

@@ -509,7 +509,8 @@ class AgentLoopTest(unittest.TestCase):
                     None,
                     [ToolCall("forbidden-1", "list_files", "{}")],
                     "tool_calls",
-                )
+                ),
+                ModelResponse("best available answer", None, [], "stop"),
             ]
         )
         messages = [{"role": "user", "content": "inspect"}]
@@ -527,7 +528,55 @@ class AgentLoopTest(unittest.TestCase):
         self.assertFalse(any(item.get("tool_calls") for item in messages))
         self.assertEqual(messages[-1]["content"], "best available answer")
 
+    def test_finalization_rejects_invalid_answers_with_one_retry(self) -> None:
+        from tiny_harness.agent.turn import FINALIZATION_FAILURE, FINALIZATION_INSTRUCTION
+
+        invalid_answers = [
+            ModelResponse('<｜DSML｜function_calls><｜DSML｜invoke name="read_file">',
+                          None, [], "stop", contains_tool_protocol=True),
+            ModelResponse(" ", None, [], "stop"),
+            ModelResponse(None, None, [], "stop"),
+            ModelResponse("unsafe", None,
+                          [ToolCall("write", "write_file",
+                                    '{"path":"forbidden.txt","content":"bad"}')],
+                          "tool_calls"),
+        ]
+        for invalid in invalid_answers:
+            for recover in (True, False):
+                with self.subTest(invalid=invalid, recover=recover):
+                    provider = FakeProvider([
+                        invalid,
+                        ModelResponse("verified answer", None, [], "stop") if recover else invalid,
+                    ])
+                    messages = [{"role": "user", "content": "inspect"}]
+                    answer = agent_loop(provider, self.workspace, messages, max_turns=1)
+                    self.assertEqual(answer, "verified answer" if recover else FINALIZATION_FAILURE)
+                    self.assertEqual(len(provider.calls), 2)
+                    self.assertEqual(provider.calls[0], provider.calls[1])
+                    for call in provider.calls:
+                        self.assertEqual(call["tools"], [])
+                        self.assertEqual(call["messages"][-1],
+                                         {"role": "system", "content": FINALIZATION_INSTRUCTION})
+                        self.assertEqual(sum(m.get("content") == FINALIZATION_INSTRUCTION
+                                             for m in call["messages"]), 1)
+                    self.assertEqual(messages[-1], {"role": "assistant", "content": answer})
+                    self.assertNotIn("DSML", str(messages))
+                    self.assertFalse(any(m.get("tool_calls") for m in messages))
+                    self.assertFalse((self.workspace / "forbidden.txt").exists())
+
+    def test_short_run_finishes_before_near_budget_warning(self) -> None:
+        from tiny_harness.agent.turn import NEAR_BUDGET_MARKER
+
+        provider = FakeProvider([ModelResponse("done", None, [], "stop")])
+        messages = [{"role": "user", "content": "task"}]
+        self.assertEqual(agent_loop(provider, self.workspace, messages), "done")
+        self.assertFalse(any(m.get("name") == NEAR_BUDGET_MARKER for m in messages))
+        self.assertFalse(any(m.get("name") == NEAR_BUDGET_MARKER
+                             for m in provider.calls[0]["messages"]))
+
     def test_twenty_turn_budget_has_nineteen_tool_turns_then_finalization(self) -> None:
+        from tiny_harness.agent.turn import NEAR_BUDGET_INSTRUCTION, NEAR_BUDGET_MARKER
+
         responses = [
             ModelResponse(
                 None,
@@ -546,6 +595,13 @@ class AgentLoopTest(unittest.TestCase):
         self.assertEqual(len(provider.calls), 20)
         self.assertTrue(all(call["tools"] for call in provider.calls[:19]))
         self.assertEqual(provider.calls[19]["tools"], [])
+        warning = {"role": "system", "name": NEAR_BUDGET_MARKER,
+                   "content": NEAR_BUDGET_INSTRUCTION}
+        for turn, call in enumerate(provider.calls, start=1):
+            self.assertEqual(call["messages"].count(warning), int(turn >= 17))
+        # The first warning follows the fully closed previous tool batch.
+        self.assertEqual(provider.calls[16]["messages"][-1], warning)
+        self.assertEqual(provider.calls[16]["messages"][-2]["tool_call_id"], "call-16")
         for previous, current in zip(provider.calls[:18], provider.calls[1:19]):
             self.assertEqual(current["messages"][:len(previous["messages"])], previous["messages"])
             self.assertEqual(current["tools"], previous["tools"])

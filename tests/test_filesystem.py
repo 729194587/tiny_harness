@@ -19,12 +19,14 @@ class FilesystemToolsTest(unittest.TestCase):
         result = write_file(self.workspace, "src/example.txt", "hello 世界")
 
         self.assertEqual(result, "Wrote 12 bytes to src/example.txt")
-        self.assertEqual(read_file(self.workspace, "src/example.txt"), "hello 世界")
+        self.assertEqual(read_file(self.workspace, "src/example.txt"),
+                         "[lines 1-1 of 1 | src/example.txt]\n\nhello 世界")
         self.assertEqual(
             edit_file(self.workspace, "src/example.txt", "hello", "goodbye"),
             "Edited src/example.txt",
         )
-        self.assertEqual(read_file(self.workspace, "src/example.txt"), "goodbye 世界")
+        self.assertEqual(read_file(self.workspace, "src/example.txt"),
+                         "[lines 1-1 of 1 | src/example.txt]\n\ngoodbye 世界")
 
     def test_edit_rejects_non_unique_old_text(self) -> None:
         write_file(self.workspace, "example.txt", "same same")
@@ -35,7 +37,8 @@ class FilesystemToolsTest(unittest.TestCase):
         ):
             edit_file(self.workspace, "example.txt", "same", "new")
 
-        self.assertEqual(read_file(self.workspace, "example.txt"), "same same")
+        self.assertEqual(read_file(self.workspace, "example.txt"),
+                         "[lines 1-1 of 1 | example.txt]\n\nsame same")
 
     def test_edit_rejects_empty_or_missing_old_text(self) -> None:
         write_file(self.workspace, "example.txt", "content")
@@ -91,6 +94,28 @@ class FilesystemToolsTest(unittest.TestCase):
         (self.workspace / "empty").mkdir()
 
         self.assertEqual(list_files(self.workspace, "empty"), "(no files)")
+
+    def test_recursive_listing_and_patterns(self) -> None:
+        for path in ("main.py", "notes.txt", "src/module.py", "src/deep/test.py"):
+            write_file(self.workspace, path, "content")
+        self.assertEqual(list_files(self.workspace, pattern="*.py"), "main.py")
+        self.assertEqual(list_files(self.workspace, recursive=True),
+                         "main.py\nnotes.txt\nsrc/deep/test.py\nsrc/module.py")
+        self.assertEqual(list_files(self.workspace, recursive=True, pattern="*.py"),
+                         "main.py\nsrc/deep/test.py\nsrc/module.py")
+        self.assertEqual(list_files(self.workspace, recursive=True, pattern="src/**/*.py"),
+                         "src/deep/test.py\nsrc/module.py")
+        self.assertEqual(list_files(self.workspace, "src", recursive=True, pattern="*.py"),
+                         "src/deep/test.py\nsrc/module.py")
+        self.assertEqual(list_files(self.workspace, recursive=True, pattern="*.rs"), "(no files)")
+        for path in ("main.py", "missing"):
+            with self.assertRaises(NotADirectoryError):
+                list_files(self.workspace, path, recursive=True)
+        with self.assertRaises(ValueError):
+            list_files(self.workspace, "..", recursive=True)
+        for pattern in ("../*.py", str(self.root / "*.py")):
+            with self.assertRaises(ValueError):
+                list_files(self.workspace, recursive=True, pattern=pattern)
 
     def test_parent_traversal_is_rejected_by_every_file_tool(self) -> None:
         outside_file = self.root / "outside.txt"

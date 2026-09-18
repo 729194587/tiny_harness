@@ -126,7 +126,7 @@ class CallModelTest(unittest.TestCase):
             self.assertEqual(results[4]["content"], large)
             self.assertEqual(messages, original)
 
-    def test_session_preserves_full_read_artifact_across_submissions(self):
+    def test_session_preserves_bounded_read_navigation_across_submissions(self):
         content = "start\n" + "x" * 100_000 + "\nend"
         (self.workspace / "large.txt").write_text(content, encoding="utf-8")
         provider = FakeProvider([
@@ -140,13 +140,16 @@ class CallModelTest(unittest.TestCase):
         self.assertEqual(session.submit("read the file"), "done")
         self.assertEqual(session.submit("continue"), "done again")
         results = [item for item in session.messages if item["role"] == "tool"]
-        self.assertTrue(results[0]["content"].startswith("<persisted-tool-result>\n"))
         artifacts = list(self.workspace.glob(".tinyharness/context/tool-results/*.txt"))
-        self.assertEqual(len(artifacts), 1)
-        self.assertEqual(artifacts[0].read_text(encoding="utf-8"), content)
+        self.assertEqual(artifacts, [])
+        header = "[lines 1-1 of 3 | large.txt]"
+        self.assertIn(header, results[0]["content"])
+        self.assertIn("continue with start_line=2, start_column=1", results[0]["content"])
+        self.assertEqual((self.workspace / "large.txt").read_text(encoding="utf-8"), content)
         for call in provider.calls[1:]:
             result = next(item for item in call["messages"] if item["role"] == "tool")
-            self.assertLess(len(result["content"]), 3_000)
+            self.assertEqual(result["content"], results[0]["content"])
+            self.assertLessEqual(len(result["content"]), 30_000)
 
     def test_rejects_invalid_response_without_committing_it(self) -> None:
         response = ModelResponse(
@@ -232,7 +235,12 @@ class CallModelTest(unittest.TestCase):
                         self.assertEqual(schemas, [] if finalization else tools)
                         self.assertEqual(messages, original)
                         self.assertEqual(request[0], original[0])
-                        self.assertEqual(request[-1], original[-1])
+                        if finalization:
+                            self.assertEqual(request[:-1], original)
+                            self.assertEqual(request[-1]["role"], "system")
+                            self.assertIn("The tool-use phase has ended", request[-1]["content"])
+                        else:
+                            self.assertEqual(request[-1], original[-1])
 
     def test_main_turns_send_auto_and_finalization_sends_none(self) -> None:
         provider = ToolChoiceProvider(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterator
 
@@ -117,11 +118,22 @@ def grep_text(
     include: str = "**/*",
     case_sensitive: bool = True,
     max_results: int = DEFAULT_GREP_RESULTS,
+    regex: bool = False,
 ) -> str:
-    """Search UTF-8 text files for a literal string inside the workspace."""
+    """Search UTF-8 files for literal text or an explicitly requested regex."""
 
+    if not isinstance(query, str):
+        raise TypeError("query must be a string")
     if not query:
         raise ValueError("query must not be empty")
+    if not isinstance(regex, bool):
+        raise TypeError("regex must be a boolean")
+    expression = None
+    if regex:
+        try:
+            expression = re.compile(query, 0 if case_sensitive else re.IGNORECASE)
+        except re.error as error:
+            raise ValueError(f"Invalid regular expression: {error}") from error
     _validate_pattern(include)
     _validate_max_results(max_results)
 
@@ -143,7 +155,8 @@ def grep_text(
 
     for candidate, resolved in candidates:
         try:
-            if resolved.stat().st_size > MAX_SEARCH_FILE_BYTES:
+            # Explicit file searches must also work on large spilled outputs.
+            if root.is_dir() and resolved.stat().st_size > MAX_SEARCH_FILE_BYTES:
                 continue
         except OSError:
             continue
@@ -153,7 +166,7 @@ def grep_text(
             with resolved.open("r", encoding="utf-8") as handle:
                 for line_number, line in enumerate(handle, start=1):
                     haystack = line if case_sensitive else line.casefold()
-                    if needle not in haystack:
+                    if not (expression.search(line) if expression is not None else needle in haystack):
                         continue
                     text = line.rstrip("\r\n")
                     if len(text) > MAX_MATCH_LINE_CHARS:
@@ -264,7 +277,7 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
         ToolDefinition(
             name="search_code",
             description=(
-                "Search a workspace file or directory recursively for a case-sensitive "
+                "Repository code search: search a workspace file or directory recursively for a case-sensitive "
                 "literal single-line substring. Returns path:line:match and path-line-context. "
                 "Skips .git, directory symlinks, binary/non-UTF-8/unreadable files and files "
                 "over 2 MiB. Lines truncate at 500 characters; output at 50,000 characters."
@@ -287,7 +300,7 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
         ToolDefinition(
             name="glob",
             description=(
-                "Find files inside the workspace by a relative glob pattern, "
+                "Preferred file/path discovery inside the workspace by a relative glob pattern, "
                 "such as '**/*.py' or 'tests/**/test_*.py'."
             ),
             parameters={
@@ -314,8 +327,9 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
         ToolDefinition(
             name="grep",
             description=(
-                "Search UTF-8 text files inside the workspace for a literal "
-                "string. Use include to restrict files with a glob pattern."
+                "Preferred recursive text/symbol search in workspace files or directories: literal text (default) or "
+                "a Python regex with regex=true. Returns path:line:text. Directory "
+                "search is recursive by default; include is a relative glob such as '**/*.py'."
             ),
             parameters={
                 "type": "object",
@@ -324,6 +338,7 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
                     "path": {"type": "string"},
                     "include": {"type": "string"},
                     "case_sensitive": {"type": "boolean"},
+                    "regex": {"type": "boolean", "default": False},
                     "max_results": {
                         "type": "integer",
                         "minimum": 1,

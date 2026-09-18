@@ -80,6 +80,7 @@ def execute_tool_batch(
                 "content": retain_tool_result(
                     context.workspace, call, result.content,
                     turn=context.current_turn, event_logger=context.event_logger,
+                    config=context.compaction_config,
                 ),
             }
         )

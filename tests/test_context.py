@@ -684,7 +684,7 @@ class ContextCompactorTest(unittest.TestCase):
         self.assertTrue(prepared.summarized)
         self.assertLessEqual(prepared.after_tokens, 375)
         self.assertEqual(len(provider.calls), 1)
-        self.assertEqual(provider.calls[0]["tools"], [])
+        self.assertEqual(provider.calls[0]["tools"], TOOLS)
         self.assertLessEqual(
             context_token_count(provider.calls[0]["messages"], []),
             375,
@@ -739,6 +739,34 @@ class ContextCompactorTest(unittest.TestCase):
         with self.assertRaises(ContextLimitError):
             self.prepare(compactor, messages)
         self.assertEqual(provider.calls, [])
+
+    def test_summary_rejects_tool_protocol_in_normal_and_reactive_compaction(self):
+        for reactive in (False, True):
+            for response in (
+                ModelResponse("<｜DSML｜invoke name='write_file'>", None, [], "stop",
+                              contains_tool_protocol=True),
+                ModelResponse("not a summary", None,
+                              [ToolCall("write", "write_file", "{}")], "tool_calls"),
+            ):
+                with self.subTest(reactive=reactive, response=response):
+                    provider = FakeProvider([response])
+                    messages = (self.prefix
+                                + tool_block("old", "result", assistant_text="X" * 3_000)
+                                + tool_block("latest", "evidence"))
+                    original = copy.deepcopy(messages)
+                    compactor = self.compactor(provider, max_tokens=375)
+                    with self.assertRaises(ContextSummaryError):
+                        if reactive:
+                            compactor.reactive_compact(
+                                messages, "", failed_request_tokens=context_token_count(messages, TOOLS),
+                            )
+                        else:
+                            self.prepare(compactor, messages)
+                    self.assertEqual(messages, original)
+                    self.assertEqual(len(provider.calls), 1)
+                    self.assertEqual(provider.calls[0]["tools"], TOOLS)
+                    self.assertEqual(list(self.workspace.glob(
+                        ".tinyharness/context/transcripts/*.summary.txt")), [])
 
     def test_reactive_compaction_meets_explicit_shrink_margin(self):
         provider = FakeProvider([ModelResponse("REACTIVE_SUMMARY", None, [], "stop")])
@@ -892,14 +920,14 @@ class ContextAgentLoopTest(unittest.TestCase):
             messages,
             max_turns=1,
             # Leave room for the expanded built-in tool schemas after compaction.
-            max_context_tokens=2_250,
-            working_context_trigger_tokens=2_249, working_context_target_tokens=2_248,
+            max_context_tokens=2_500,
+            working_context_trigger_tokens=2_499, working_context_target_tokens=2_498,
             event_logger=logger,
         )
 
         self.assertEqual(answer, "done")
         self.assertEqual(len(provider.calls), 2)
-        self.assertEqual(provider.calls[0]["tools"], [])
+        self.assertTrue(provider.calls[0]["tools"])
         self.assertEqual(provider.calls[1]["tools"], [])
         self.assertTrue(
             any(
@@ -934,8 +962,8 @@ class ContextAgentLoopTest(unittest.TestCase):
                 self.workspace,
                 messages,
                 max_turns=1,
-                max_context_tokens=1_500,
-                working_context_trigger_tokens=1_499, working_context_target_tokens=1_498,
+                max_context_tokens=2_000,
+                working_context_trigger_tokens=1_999, working_context_target_tokens=1_998,
                 skill_catalog=discover_skills(self.workspace, sources=()),
             )
 
@@ -963,8 +991,8 @@ class ContextAgentLoopTest(unittest.TestCase):
             messages,
             max_turns=1,
             # Leave room for the expanded built-in tool schemas after compaction.
-            max_context_tokens=2_250,
-            working_context_trigger_tokens=2_249, working_context_target_tokens=2_248,
+            max_context_tokens=2_500,
+            working_context_trigger_tokens=2_499, working_context_target_tokens=2_498,
             event_logger=logger,
             recovery_policy=RecoveryPolicy(
                 max_retries=1,
@@ -1107,7 +1135,7 @@ class ContextAgentLoopTest(unittest.TestCase):
 
         self.assertEqual(answer, "done")
         self.assertEqual(len(provider.calls), 3)
-        self.assertNotIn("compact", [
+        self.assertIn("compact", [
             schema["function"]["name"] for schema in provider.calls[1]["tools"]
         ])
         self.assertIn("REACTIVE_SUMMARY", json.dumps(provider.calls[2]["messages"]))

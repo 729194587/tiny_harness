@@ -59,7 +59,7 @@ class ExecuteToolBatchTest(unittest.TestCase):
             [message["tool_call_id"] for message in messages],
             ["write-1", "read-1"],
         )
-        self.assertEqual(messages[-1]["content"], "A")
+        self.assertEqual(messages[-1]["content"], "[lines 1-1 of 1 | a.txt]\n\nA")
 
     def test_manual_compaction_runs_after_the_complete_batch(self) -> None:
         compactor = RecordingCompactor()

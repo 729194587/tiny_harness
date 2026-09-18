@@ -10,6 +10,7 @@ from tiny_harness.agent.context import (
     create_run_context,
 )
 from tiny_harness.agent.loop import agent_loop
+from tiny_harness.agent.turn import NEAR_BUDGET_MARKER
 from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter, CalibratedTokenMeter
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger
@@ -22,6 +23,7 @@ from tiny_harness.runtime.skills import discover_skills
 
 RUN_SCOPED_MARKERS = frozenset(
     {
+        NEAR_BUDGET_MARKER,
         "tinyharness_memory_catalog",
         "tinyharness_relevant_memory",
         "tinyharness_skill_catalog",

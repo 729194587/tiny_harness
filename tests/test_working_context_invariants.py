@@ -30,6 +30,7 @@ class WorkingContextInvariantTest(unittest.TestCase):
         self.requests = []
         self.retry_done = False
         self.provider = Mock()
+        self.provider.supports_tool_choice = True
         self.provider.complete.side_effect = self.complete
         self.logger = JsonlEventLogger(self.root / "events.jsonl")
         self.context = create_run_context(
@@ -51,6 +52,7 @@ class WorkingContextInvariantTest(unittest.TestCase):
     def complete(self, messages, tools, **kwargs):
         self.requests.append((copy.deepcopy(messages), copy.deepcopy(tools)))
         if messages[-1].get("content") == self.context.compactor.WORKING_SUMMARY_SYSTEM:
+            self.assertIsNone(kwargs.get("tool_choice"))
             return ModelResponse("Current task state", None, [], "stop")
         count = self.context.current_turn
         if count == 10 and not self.retry_done:

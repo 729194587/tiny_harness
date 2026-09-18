@@ -527,20 +527,9 @@ class ContextArtifacts:
         )
 
     def _existing_tool_result(self, call: ToolCall, content: str) -> Path | None:
-        """Reuse direct reads and identical artifacts; never infer shell syntax."""
+        """Reuse identical artifacts; never infer tool semantics."""
 
         directory = self._artifact_directory("tool-results")
-        if call.name == "read_file":
-            arguments = json.loads(call.arguments_json)
-            if isinstance(arguments, dict) and isinstance(arguments.get("path"), str):
-                path = (self.workspace / arguments["path"]).resolve()
-                if path.parent == directory and path.is_file():
-                    from tiny_harness.tools.filesystem import read_file
-
-                    # Full artifact reads now include navigation metadata.
-                    if (path.read_text(encoding="utf-8") == content
-                            or read_file(self.workspace, str(path)) == content):
-                        return path
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
         for path in directory.glob(f"*-{digest}-*.txt"):
             if path.is_symlink() or not path.is_file():
@@ -558,12 +547,13 @@ def retain_tool_result(
     *,
     turn: int,
     event_logger: EventLogger = NULL_EVENT_LOGGER,
+    config: CompactionConfig = CompactionConfig(),
 ) -> str:
     """Spill a completed result before history commit; storage failures keep it whole."""
 
-    config = CompactionConfig()
     if (
-        not isinstance(content, str)
+        call.name == "read_file"
+        or not isinstance(content, str)
         or len(content) <= config.large_result_chars
         or content.startswith("<persisted-tool-result>\n")
     ):
@@ -587,9 +577,8 @@ def retain_tool_result(
             path = created_paths[-1]
             outcome = "spilled"
         retained += (
-            "\nRecovery: use the Full output locator above with existing bash to "
-            "search or read a bounded line range (for example, sed -n '100,160p' PATH). "
-            "Reading the entire artifact with read_file returns a bounded preview again."
+            "\nRecovery: use grep with the Full output path to locate relevant lines, "
+            "then read_file with a bounded line range (start_line/end_line)."
         )
         metadata = {
             "artifact_path": artifacts._relative_artifact_path(path),

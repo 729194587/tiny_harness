@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tiny_harness.agent.messages import ModelResponse
+from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.agent.session import AgentSession
 from tiny_harness.agent.turn import TOOL_USE_EFFICIENCY_GUIDANCE
 
@@ -35,6 +35,30 @@ class RecordingEventLogger:
 
 
 class AgentSessionTest(unittest.TestCase):
+    def test_near_budget_warning_is_fresh_for_each_submission_and_clear(self) -> None:
+        from tiny_harness.agent.turn import NEAR_BUDGET_MARKER
+
+        # With five total turns, turn two starts the final three normal turns.
+        responses = [
+            ModelResponse(None, None, [ToolCall("list", "list_files", "{}")], "tool_calls"),
+            ModelResponse("done", None, [], "stop"),
+        ]
+        provider = FakeProvider(responses * 3)
+        session = AgentSession(provider, self.workspace, "system", max_turns=5)
+        for run in range(3):
+            if run == 2:
+                session.clear()
+            self.assertEqual(session.submit("inspect"), "done")
+            first, second = provider.calls[-2:]
+            self.assertFalse(any(m.get("name") == NEAR_BUDGET_MARKER
+                                 for m in first["messages"]))
+            self.assertEqual(sum(m.get("name") == NEAR_BUDGET_MARKER
+                                 for m in second["messages"]), 1)
+            self.assertTrue(second["tools"])
+            self.assertEqual(second["messages"][:len(first["messages"])], first["messages"])
+            self.assertFalse(any(m.get("name") == NEAR_BUDGET_MARKER
+                                 for m in session.messages))
+
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.workspace = Path(self.temporary_directory.name)

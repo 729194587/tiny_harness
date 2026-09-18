@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from typing import TYPE_CHECKING, Any
 
-from tiny_harness.agent.messages import ModelResponse, validate_model_response
+from tiny_harness.agent.messages import ModelProtocolError, ModelResponse, validate_model_response
 from tiny_harness.models.base import ModelErrorKind, ModelProviderError
 from tiny_harness.runtime.context import model_context_messages
 from tiny_harness.runtime.events import EventLogError, EventType
@@ -26,12 +26,29 @@ TOOL_USE_EFFICIENCY_GUIDANCE = (
 )
 
 
+NEAR_BUDGET_NORMAL_TURNS = 3
+NEAR_BUDGET_MARKER = "tinyharness_near_budget"
+NEAR_BUDGET_INSTRUCTION = (
+    "The execution budget is nearly exhausted.\n"
+    "Prioritize completing the user's request with the evidence already gathered.\n"
+    "Before using another tool, consider whether the missing information would "
+    "materially change the answer. Do not broaden the investigation unless necessary."
+)
+
+
 FINALIZATION_INSTRUCTION = (
     "The execution turn budget is exhausted.\n"
-    "No further tool use is available.\n"
-    "Using the evidence already gathered, provide the best possible final answer "
-    "to the user's request now.\n"
-    "Briefly state any important limitation if the investigation is incomplete."
+    "The tool-use phase has ended.\n"
+    "Answer the user's original request now using only the evidence already gathered.\n"
+    "Do not request, invoke, or describe additional tool calls.\n"
+    "Do not emit tool-call syntax or protocol markup.\n"
+    "If some detail remains unverified, state that limitation explicitly instead "
+    "of continuing investigation."
+)
+
+FINALIZATION_FAILURE = (
+    "工具使用回合预算已耗尽，模型未能生成有效的最终回答。"
+    "本次任务已停止，尚未确认的结果无法验证。"
 )
 
 
@@ -57,8 +74,7 @@ def model_request_inputs(
         )
         insert_at += 1
     if finalization:
-        request_messages.insert(
-            insert_at,
+        request_messages.append(
             {"role": "system", "content": FINALIZATION_INSTRUCTION},
         )
     return request_messages, ([] if finalization else context.tools)
@@ -130,6 +146,7 @@ def call_model(
     )
 
     recovery_state = RecoveryState()
+    finalization_retries = 0
     while True:
         try:
             response = context.recovery_executor.complete(
@@ -156,7 +173,6 @@ def call_model(
                     "none" if finalization else ("auto" if request_tools else None)
                 ),
             )
-            break
         except ModelProviderError as error:
             if (
                 error.kind is not ModelErrorKind.CONTEXT_LENGTH
@@ -193,10 +209,30 @@ def call_model(
                     "recovery": "reactive_compact",
                 },
             )
+            continue
 
-    context.last_finish_reason = response.finish_reason
-    validate_model_response(response)
-    context.token_meter.observe(
-        messages, request_messages, request_tools, response.prompt_tokens
-    )
-    return response
+        context.last_finish_reason = response.finish_reason
+        validate_model_response(response)
+        context.token_meter.observe(
+            messages, request_messages, request_tools, response.prompt_tokens
+        )
+        if finalization and (
+            response.tool_calls or response.contains_tool_protocol
+            or not (response.content or "").strip()
+        ):
+            if finalization_retries == 1:
+                return ModelResponse(FINALIZATION_FAILURE, None, [], "stop")
+            finalization_retries += 1
+            context.event_logger.emit(
+                EventType.MODEL_RETRY_SCHEDULED,
+                {
+                    "purpose": "main", "turn": context.current_turn,
+                    "attempt": recovery_state.attempt, "delay_ms": 0,
+                    "error_kind": "invalid_final_answer",
+                    "recovery": "finalization",
+                },
+            )
+            continue
+        if response.contains_tool_protocol:
+            raise ModelProtocolError("Model response contains tool protocol markup")
+        return response

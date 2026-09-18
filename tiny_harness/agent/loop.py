@@ -10,9 +10,15 @@ from tiny_harness.agent.context import (
     initialize_run_state,
     run_started_data,
 )
-from tiny_harness.agent.messages import ModelResponse, assistant_message_from_response
+from tiny_harness.agent.messages import assistant_message_from_response
 from tiny_harness.agent.tool_batch import execute_tool_batch
-from tiny_harness.agent.turn import call_model, prepare_model_request_inputs
+from tiny_harness.agent.turn import (
+    NEAR_BUDGET_INSTRUCTION,
+    NEAR_BUDGET_MARKER,
+    NEAR_BUDGET_NORMAL_TURNS,
+    call_model,
+    prepare_model_request_inputs,
+)
 from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.context import CompactionConfig, prepare_context
@@ -52,6 +58,14 @@ def agent_loop(
         for turn in range(1, context.max_turns + 1):
             context.current_turn = turn
             finalization = turn == context.max_turns
+            # Includes this turn; the last budgeted turn is answer-only.
+            # Equality makes this a one-time signal without additional run state.
+            if context.max_turns - turn == NEAR_BUDGET_NORMAL_TURNS:
+                messages.append({
+                    "role": "system",
+                    "name": NEAR_BUDGET_MARKER,
+                    "content": NEAR_BUDGET_INSTRUCTION,
+                })
             context.token_meter.reconcile(messages, context.tools)
             prepared = prepare_context(
                 messages,
@@ -93,13 +107,6 @@ def agent_loop(
                 finalization=finalization,
                 prepared_request=(request_messages, request_tools),
             )
-            if finalization and response.tool_calls:
-                response = ModelResponse(
-                    content=response.content,
-                    reasoning_content=response.reasoning_content,
-                    tool_calls=[],
-                    finish_reason="stop",
-                )
             assistant_message = assistant_message_from_response(response)
 
             if not response.tool_calls:

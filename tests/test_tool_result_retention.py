@@ -1,8 +1,10 @@
 import copy
 import hashlib
 import json
+import re
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -92,17 +94,125 @@ class ToolResultRetentionTest(unittest.TestCase):
         self.assertEqual(self.artifacts(), original_artifacts)
         self.assertEqual(self.logger.emit.call_args.args[1]["outcome"], "reused")
 
-    def test_direct_artifact_read_reuses_original_locator_without_nesting(self):
+    def test_direct_artifact_read_is_bounded_without_nesting(self):
         self.retain()
         artifact = self.artifacts()[0]
         call = ToolCall("read", "read_file", json.dumps({"path": str(artifact)}))
         messages = []
+        self.logger.reset_mock()
         execute_tool_batch(messages, [call], self.context())
         self.assertEqual(self.artifacts(), [artifact])
-        self.assertIn("Full output: " + artifact.relative_to(self.workspace).as_posix(),
+        self.assertIn(artifact.relative_to(self.workspace).as_posix(),
                       messages[0]["content"])
-        self.assertLess(len(messages[0]["content"]), 3000)
-        self.assertEqual(self.logger.emit.call_args.args[1]["outcome"], "reused")
+        self.assertLessEqual(len(messages[0]["content"]), 30_000)
+        self.assertIn("continue with start_line=", messages[0]["content"])
+        self.assertNotIn(EventType.TOOL_RESULT_RETAINED,
+                         [c.args[0] for c in self.logger.emit.call_args_list])
+
+    def test_file_navigation_survives_projection_without_spill(self):
+        from tiny_harness.tools.filesystem import read_file
+        from tiny_harness.runtime.context import model_context_messages
+
+        (self.workspace / "large.py").write_text("evidence\n" * 40_000, encoding="utf-8")
+        call = ToolCall("read", "read_file", '{"path":"large.py","start_line":700,"end_line":10000}')
+        content = read_file(self.workspace, "large.py", 700, 10000)
+        self.assertTrue(content.startswith("[lines 700-"))
+        self.assertIn("of 40000 | large.py]", content)
+        self.assertLessEqual(len(content), 30_000)
+        retained = self.retain(content, call)
+        self.assertEqual(content, retained)
+        self.assertEqual(self.artifacts(), [])
+        messages = [assistant_message_from_response(ModelResponse(None, None, [call], "tool_calls")),
+                    {"role": "tool", "tool_call_id": call.id, "content": content}]
+        self.assertEqual(content, model_context_messages(messages)[-1]["content"])
+        self.assertEqual(messages[-1]["content"], content)
+
+    def test_current_run_threshold_and_preview_budget_are_honored(self):
+        context = self.context()
+        context.compaction_config = replace(context.compaction_config,
+                                            large_result_chars=100, result_preview_chars=21)
+        self.runner.run.return_value = "H" * 11 + "middle" * 30 + "T" * 10
+        messages = []
+        execute_tool_batch(messages, [self.call], context)
+        self.assertIn("Head:\n" + "H" * 11 + "\n", messages[0]["content"])
+        self.assertIn("Tail:\n" + "T" * 10 + "\n", messages[0]["content"])
+        self.assertNotIn("middle", messages[0]["content"].split("Head:\n")[1].split("\n")[0])
+        self.assertEqual(self.artifacts()[0].read_bytes().decode(), self.runner.run.return_value)
+        self.runner.run.return_value = "x" * 100
+        execute_tool_batch(messages, [self.call], context)
+        self.assertEqual(messages[-1]["content"], "x" * 100)
+
+    def test_large_artifact_search_and_targeted_recovery(self):
+        from tiny_harness.tools.search import grep_text, MAX_SEARCH_FILE_BYTES
+        from tiny_harness.tools.filesystem import read_file
+
+        original = "prefix\r\n" + "ordinary line\n" * (MAX_SEARCH_FILE_BYTES // 10)
+        original += "Traceback: hidden evidence\n" + "after\n" * 800
+        retained = self.retain(original)
+        artifact, = self.artifacts()
+        self.assertEqual(artifact.read_bytes().decode("utf-8"), original)
+        self.assertNotIn("Traceback", retained)
+        matches = grep_text(self.workspace, "Traceback", str(artifact))
+        number = int(matches.split(":", 2)[1])
+        recovered = read_file(self.workspace, str(artifact), number, number)
+        self.assertIn("Traceback: hidden evidence", recovered)
+        self.assertEqual(self.artifacts(), [artifact])
+
+    def test_bounded_read_continuation_recovers_lines_and_oversized_single_lines(self):
+        from tiny_harness.tools.filesystem import read_file, MAX_READ_OUTPUT_CHARS
+
+        for original in ("normal line\n" * 9000,
+                         "begin\n" + "超长内容" * 20_000 + "\nlast"):
+            path = self.workspace / "read.txt"
+            path.write_text(original, encoding="utf-8", newline="")
+            line = column = 1
+            pieces = []
+            while True:
+                result = read_file(self.workspace, "read.txt", line, start_column=column)
+                self.assertLessEqual(len(result), MAX_READ_OUTPUT_CHARS)
+                body = result.split("\n\n", 1)[1]
+                match = re.search(r"\n\n\[Read bounded; continue with start_line=(\d+), start_column=(\d+)", body)
+                if match is None:
+                    pieces.append(body)
+                    break
+                pieces.append(body[:match.start()])
+                next_position = tuple(map(int, match.groups()))
+                self.assertGreater(next_position, (line, column))
+                line, column = next_position
+            self.assertEqual("".join(pieces), original)
+        self.assertEqual(self.artifacts(), [])
+
+    def test_invalid_start_columns_are_rejected(self):
+        from tiny_harness.tools.filesystem import read_file
+
+        for column in (0, -1, True, 1.5, "2"):
+            with self.subTest(column=column), self.assertRaises((TypeError, ValueError)):
+                read_file(self.workspace, "anything", start_column=column)
+
+    def test_spilled_history_can_be_archived_without_losing_original_artifact(self):
+        retained = self.retain()
+        artifact, = self.artifacts()
+        context = self.context(max_context_tokens=125_000)
+        context.compactor.config = replace(context.compactor.config, max_messages=2)
+        messages = [
+            {"role": "user", "content": "old task"},
+            assistant_message_from_response(ModelResponse(None, None, [self.call], "tool_calls")),
+            {"role": "tool", "tool_call_id": self.call.id, "content": retained},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": "new task"},
+            assistant_message_from_response(ModelResponse(
+                None, None, [ToolCall("latest", "list_files", "{}")], "tool_calls")),
+            {"role": "tool", "tool_call_id": "latest", "content": "small"},
+        ]
+        compacted, removed, written = context.compactor.snip_compact(messages)
+        self.assertGreater(removed, 0)
+        self.assertTrue(written)
+        self.assertFalse(any(m.get("tool_call_id") == self.call.id for m in compacted))
+        self.assertEqual(artifact.read_bytes().decode("utf-8"), self.content)
+        transcript, = self.workspace.glob(".tinyharness/context/transcripts/*.jsonl")
+        archived = [json.loads(line) for line in transcript.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(archived, messages)
+        validate_active_request(compacted, "new task")
 
     def test_persistence_failure_keeps_raw_success_and_batch_continues(self):
         context = self.context()

@@ -86,9 +86,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("todo_write", positional[2])
         self.assertIn("compact", positional[2])
         self.assertEqual(session_class.call_args.kwargs["max_turns"], 7)
-        self.assertIs(
-            session_class.call_args.kwargs["permission_prompt"], _ask_permission
-        )
+        self.assertTrue(callable(session_class.call_args.kwargs["permission_prompt"]))
         self.assertEqual(
             session_class.call_args.kwargs["max_context_tokens"],
             DEFAULT_MAX_CONTEXT_TOKENS,
