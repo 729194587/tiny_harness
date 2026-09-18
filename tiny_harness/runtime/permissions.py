@@ -255,7 +255,6 @@ class DefaultPermissionPolicy:
             "todo_write",
             "task",
             "load_skill",
-            "compact",
             "run_tests",
             "glob",
             "grep",

@@ -382,7 +382,7 @@ class SubagentTest(unittest.TestCase):
             any(event["data"].get("agent_scope") == "subagent" for event in selected_events)
         )
 
-    def test_child_has_independent_compaction_with_scoped_events(self) -> None:
+    def test_child_has_independent_reactive_compaction_with_scoped_events(self) -> None:
         provider = ScriptedProvider(
             [
                 ModelResponse(
@@ -392,7 +392,7 @@ class SubagentTest(unittest.TestCase):
                     "tool_calls",
                 ),
                 ModelResponse(
-                    None,
+                    "OLDER_CHILD_EVIDENCE" * 600,
                     None,
                     [ToolCall("child-list", "list_files", '{"path":"."}')],
                     "tool_calls",
@@ -400,9 +400,10 @@ class SubagentTest(unittest.TestCase):
                 ModelResponse(
                     None,
                     None,
-                    [ToolCall("child-compact", "compact", "{}")],
+                    [ToolCall("child-latest", "list_files", '{"path":"."}')],
                     "tool_calls",
                 ),
+                ModelProviderError(ModelErrorKind.CONTEXT_LENGTH),
                 ModelResponse("CHILD_SUMMARY", None, [], "stop"),
                 ModelResponse("child done", None, [], "stop"),
                 ModelResponse("parent done", None, [], "stop"),
@@ -421,15 +422,16 @@ class SubagentTest(unittest.TestCase):
 
         self.assertEqual(answer, "parent done")
         child_tool_names = tool_names(provider.calls[1])
-        self.assertIn("compact", child_tool_names)
+        self.assertNotIn("compact", child_tool_names)
         self.assertNotIn("task", child_tool_names)
-        self.assertEqual(provider.calls[3]["tools"], provider.calls[1]["tools"])
+        self.assertEqual(provider.calls[4]["tools"], provider.calls[1]["tools"])
         summary_events = [
             event
             for event in logger.events
             if event["event_type"].startswith("context_summary_")
         ]
         self.assertEqual(len(summary_events), 2)
+        self.assertTrue(all(event["data"]["reason"] == "reactive" for event in summary_events))
         self.assertTrue(
             all(
                 event["data"].get("agent_scope") == "subagent"

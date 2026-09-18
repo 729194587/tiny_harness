@@ -121,7 +121,6 @@ Expected: all discovery tests pass.
 - Modify: `tiny_harness/tools/shell.py`
 - Modify: `tiny_harness/tools/task.py`
 - Modify: `tiny_harness/tools/skill.py`
-- Modify: `tiny_harness/tools/compact.py`
 - Modify: `tiny_harness/tools/todo.py`
 - Create: `tiny_harness/tools/testing.py`
 - Modify: `tests/test_registry.py`

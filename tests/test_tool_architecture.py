@@ -178,7 +178,6 @@ class ToolDiscoveryTest(unittest.TestCase):
                 todo_manager=TodoManager(),
                 subagent_runner=None,
                 skill_catalog=discover_skills(workspace, sources=()),
-                compaction_request=None,
                 test_runner=None,
             )
 
@@ -211,7 +210,6 @@ class ToolDiscoveryTest(unittest.TestCase):
                 todo_manager=TodoManager(),
                 subagent_runner=None,
                 skill_catalog=None,
-                compaction_request=None,
                 test_runner=None,
             )
 

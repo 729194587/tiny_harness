@@ -22,7 +22,7 @@ Use current code and tests as the authority when README descriptions differ.
 - `tiny_harness/runtime/`: context preparation/artifacts, permission decisions,
   hooks, events/console, recovery, skills, todos, and test runner.
 - `tiny_harness/tools/`: `ToolDefinition`, discovery, registry/dispatch, and
-  filesystem, search, shell, todo, task, skill, compact, and testing adapters.
+  filesystem, search, shell, todo, task, skill, and testing adapters.
 - `tiny_harness/models/`: synchronous `ModelProvider.complete(messages, tools)`
   contract, normalized provider errors, and the Chat Completions SDK adapter.
 - `tiny_harness/skills/`: bundled `<name>/SKILL.md` instruction assets.
@@ -116,8 +116,8 @@ Use current code and tests as the authority when README descriptions differ.
   of tools or other compaction paths.
 - Budgets include serialized messages and tool schemas. Preserve complete
   call/result blocks, the active request, and protected state. Commit prepared
-  canonical history only after validation; apply manual `compact` after the
-  entire tool batch closes. Preserve token-meter invalidation on history rewrites.
+  canonical history only after validation. Preserve token-meter invalidation on
+  history rewrites.
 
 ### Permissions and memory
 

@@ -31,7 +31,7 @@ class ToolErgonomicsTest(unittest.TestCase):
     def test_repository_tool_descriptions_expose_affordances(self):
         registry = discover_tools(SimpleNamespace(
             workspace=self.workspace, todo_manager=TodoManager(), subagent_runner=None,
-            skill_catalog=None, compaction_request=None, test_runner=None,
+            skill_catalog=None, test_runner=None,
         ))
         descriptions = {s["function"]["name"]: s["function"]["description"]
                         for s in registry.model_schemas()}
@@ -168,7 +168,7 @@ class ToolErgonomicsTest(unittest.TestCase):
     def test_discovery_schemas_dispatch_and_boundaries(self):
         registry = discover_tools(SimpleNamespace(
             workspace=self.workspace, todo_manager=TodoManager(), subagent_runner=None,
-            skill_catalog=None, compaction_request=None, test_runner=None,
+            skill_catalog=None, test_runner=None,
         ))
         schemas = {s["function"]["name"]: s["function"]["parameters"]
                    for s in registry.model_schemas()}
@@ -203,7 +203,7 @@ class ToolErgonomicsTest(unittest.TestCase):
             write_file(self.workspace, path, "content")
         registry = discover_tools(SimpleNamespace(
             workspace=self.workspace, todo_manager=TodoManager(), subagent_runner=None,
-            skill_catalog=None, compaction_request=None, test_runner=None,
+            skill_catalog=None, test_runner=None,
         ))
         schema = registry.lookup("list_files").parameters
         self.assertIs(schema["properties"]["recursive"]["default"], False)

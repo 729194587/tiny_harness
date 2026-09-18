@@ -137,7 +137,6 @@ class SubprocessTestRunnerTest(unittest.TestCase):
                     todo_manager=TodoManager(),
                     subagent_runner=None,
                     skill_catalog=discover_skills(self.workspace),
-                    compaction_request=None,
                     test_runner=runner,
                 )
             )

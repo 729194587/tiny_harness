@@ -10,7 +10,6 @@ from types import SimpleNamespace
 from tiny_harness.agent.messages import ToolCall
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER
 from tiny_harness.runtime.permissions import PermissionDecision
-from tiny_harness.runtime.context import CompactionRequest
 from tiny_harness.runtime.skills import discover_skills
 from tiny_harness.runtime.todos import TodoManager
 from tiny_harness.tools.discovery import discover_tools
@@ -45,7 +44,6 @@ class ToolRegistryTest(unittest.TestCase):
             "todo_manager": self.todo_manager,
             "subagent_runner": lambda prompt, call_id: "child summary",
             "skill_catalog": discover_skills(self.workspace),
-            "compaction_request": None,
             "test_runner": None,
         }
         capabilities.update(overrides)
@@ -104,14 +102,6 @@ class ToolRegistryTest(unittest.TestCase):
             ).model_schemas()
         ]
         self.assertNotIn("task", child_names)
-
-        compact_names = [
-            schema["function"]["name"]
-            for schema in self.make_registry(
-                compaction_request=CompactionRequest()
-            ).model_schemas()
-        ]
-        self.assertIn("compact", compact_names)
 
         manifest = (
             self.workspace / ".tinyharness" / "skills" / "review" / "SKILL.md"
@@ -211,27 +201,6 @@ class ToolRegistryTest(unittest.TestCase):
         self.assertEqual(
             missing_catalog.content,
             "Error: ValueError: Unknown tool: load_skill",
-        )
-
-    def test_dispatches_compact_only_with_run_scoped_request(self) -> None:
-        manager = CompactionRequest()
-
-        result = self.call(
-            "compact-1",
-            "compact",
-            {},
-            registry=self.make_registry(compaction_request=manager),
-        )
-
-        self.assertEqual(
-            result.content,
-            "Compaction requested after this tool batch.",
-        )
-
-        missing_manager = self.call("compact-2", "compact", {})
-        self.assertEqual(
-            missing_manager.content,
-            "Error: ValueError: Unknown tool: compact",
         )
 
     def test_dispatches_task_through_injected_runner(self) -> None:

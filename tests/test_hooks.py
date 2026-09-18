@@ -29,7 +29,6 @@ def dispatch(workspace, call, **options):
             todo_manager=TodoManager(),
             subagent_runner=None,
             skill_catalog=discover_skills(workspace),
-            compaction_request=None,
             test_runner=None,
         )
     )

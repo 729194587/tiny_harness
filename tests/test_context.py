@@ -1,7 +1,5 @@
-import contextlib
 import copy
 import hashlib
-import io
 import json
 import tempfile
 import unittest
@@ -23,7 +21,6 @@ from tiny_harness.runtime.context import (
     prepare_context,
     validate_active_request,
 )
-from tiny_harness.runtime.hooks import HookBlock, ToolHooks
 from tiny_harness.runtime.recovery import RecoveryPolicy
 from tiny_harness.runtime.skills import discover_skills
 
@@ -836,7 +833,7 @@ class ContextAgentLoopTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def test_budget_enables_compact_tool(self):
+    def test_configured_budget_does_not_expose_compact_tool(self):
         provider = FakeProvider([ModelResponse("done", None, [], "stop")])
 
         agent_loop(
@@ -847,7 +844,7 @@ class ContextAgentLoopTest(unittest.TestCase):
         )
 
         names = [schema["function"]["name"] for schema in provider.calls[0]["tools"]]
-        self.assertIn("compact", names)
+        self.assertNotIn("compact", names)
 
     def test_automatic_summary_does_not_consume_main_turn(self):
         provider = FakeProvider(
@@ -962,89 +959,6 @@ class ContextAgentLoopTest(unittest.TestCase):
             [("summary", 1), ("summary", 2), ("main", 1)],
         )
 
-    def test_manual_compact_runs_after_all_tools_in_batch(self):
-        provider = FakeProvider(
-            [
-                ModelResponse(
-                    None,
-                    None,
-                    [
-                        ToolCall(
-                            "write-1",
-                            "write_file",
-                            '{"path":"done.txt","content":"DONE"}',
-                        ),
-                        ToolCall("compact-1", "compact", "{}"),
-                    ],
-                    "tool_calls",
-                ),
-                ModelResponse("BATCH_SUMMARY", None, [], "stop"),
-                ModelResponse("finished", None, [], "stop"),
-            ]
-        )
-        messages = (
-            [{"role": "user", "content": "earlier task"}]
-            + tool_block("previous", "PREVIOUS_EVIDENCE")
-            + [{"role": "assistant", "content": "earlier answer"}]
-            + [{"role": "user", "content": "write then compact"}]
-        )
-
-        answer = agent_loop(
-            provider,
-            self.workspace,
-            messages,
-            max_context_tokens=25_000,
-        )
-
-        self.assertEqual(answer, "finished")
-        self.assertEqual(
-            (self.workspace / "done.txt").read_text(encoding="utf-8"),
-            "DONE",
-        )
-        summary_input = json.dumps(provider.calls[1]["messages"])
-        self.assertIn("PREVIOUS_EVIDENCE", summary_input)
-        self.assertNotIn("write-1", summary_input)
-        self.assertNotIn("compact-1", summary_input)
-        next_request = provider.calls[2]["messages"]
-        self.assertEqual(
-            [message["tool_call_id"] for message in next_request[-2:]],
-            ["write-1", "compact-1"],
-        )
-
-    def test_blocked_compact_does_not_call_summary_model(self):
-        provider = FakeProvider(
-            [
-                ModelResponse(
-                    None,
-                    None,
-                    [ToolCall("compact-1", "compact", "{}")],
-                    "tool_calls",
-                ),
-                ModelResponse("continued", None, [], "stop"),
-            ]
-        )
-        hooks = ToolHooks()
-        hooks.register_pre(
-            lambda context: (
-                HookBlock("compaction blocked")
-                if context.tool_name == "compact"
-                else None
-            )
-        )
-
-        with contextlib.redirect_stdout(io.StringIO()):
-            answer = agent_loop(
-                provider,
-                self.workspace,
-                [{"role": "user", "content": "task"}],
-                max_context_tokens=25_000,
-                tool_hooks=hooks,
-            )
-
-        self.assertEqual(answer, "continued")
-        self.assertEqual(len(provider.calls), 2)
-        self.assertIn("compaction blocked", provider.calls[1]["messages"][-1]["content"])
-
     def test_unconfigured_budget_preserves_default_runtime_tools(self):
         provider = FakeProvider([ModelResponse("done", None, [], "stop")])
         agent_loop(provider, self.workspace, [])
@@ -1084,7 +998,7 @@ class ContextAgentLoopTest(unittest.TestCase):
 
         self.assertEqual(answer, "done")
         self.assertEqual(len(provider.calls), 3)
-        self.assertIn("compact", [
+        self.assertNotIn("compact", [
             schema["function"]["name"] for schema in provider.calls[1]["tools"]
         ])
         self.assertIn("REACTIVE_SUMMARY", json.dumps(provider.calls[2]["messages"]))

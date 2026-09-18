@@ -146,7 +146,7 @@ class SubagentExecutorTest(unittest.TestCase):
                     self.assertIs(getattr(child, name), getattr(parent, name))
                 for other in [parent] + [c for c in children if c is not child]:
                     for name in ("tool_registry", "todo_manager", "recovery_executor", "memory",
-                                 "permission_rejections", "compactor", "compaction_request", "token_meter"):
+                                 "permission_rejections", "compactor", "token_meter"):
                         self.assertIsNot(getattr(child, name), getattr(other, name))
                 self.assertIs(child.token_meter.heuristic, parent.token_meter.heuristic)
             self.assertIs(parent.token_meter, config.token_meter)

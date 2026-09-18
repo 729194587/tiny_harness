@@ -84,7 +84,8 @@ class CliTest(unittest.TestCase):
         self.assertEqual(positional[1], self.workspace.resolve())
         self.assertIn(str(self.workspace.resolve()), positional[2])
         self.assertIn("todo_write", positional[2])
-        self.assertIn("compact", positional[2])
+        self.assertNotIn("Use compact", positional[2])
+        self.assertIn("Treat TinyHarness context summaries", positional[2])
         self.assertEqual(session_class.call_args.kwargs["max_turns"], 7)
         self.assertTrue(callable(session_class.call_args.kwargs["permission_prompt"]))
         self.assertEqual(

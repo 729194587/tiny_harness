@@ -13,7 +13,7 @@ from tiny_harness.agent.subagent import SubagentExecutor
 from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter, CalibratedTokenMeter
 from tiny_harness.memory import MemoryRuntime, create_memory_runtime
 from tiny_harness.models.base import ModelProvider, ToolChoice
-from tiny_harness.runtime.context import CompactionConfig, CompactionRequest, ContextCompactor
+from tiny_harness.runtime.context import CompactionConfig, ContextCompactor
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger
 from tiny_harness.runtime.hooks import FinalAnswerHook, ToolHooks
 from tiny_harness.runtime.permissions import (
@@ -68,7 +68,6 @@ class AgentRunContext:
     skill_catalog: SkillCatalog
     memory: MemoryRuntime
     compactor: ContextCompactor | None
-    compaction_request: CompactionRequest | None
     subagent_runner: SubagentRunner | None
     final_answer_hook: FinalAnswerHook | None
     test_runner: TestRunner | None
@@ -289,9 +288,6 @@ def build_run_context(config: RunConfig) -> AgentRunContext:
         discover_skills(config.workspace) if config.skill_catalog is None else config.skill_catalog
     )
     todo_manager = TodoManager()
-    compaction_request = (
-        CompactionRequest() if config.max_context_tokens is not None else None
-    )
 
     token_meter = (config.token_meter if isinstance(config.token_meter, CalibratedTokenMeter)
                    else CalibratedTokenMeter(config.token_meter))
@@ -335,7 +331,6 @@ def build_run_context(config: RunConfig) -> AgentRunContext:
         skill_catalog=active_skill_catalog,
         memory=memory,
         compactor=None,
-        compaction_request=compaction_request,
         subagent_runner=subagent,
         final_answer_hook=memory.final_answer_hook,
         test_runner=config.test_runner,

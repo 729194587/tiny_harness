@@ -87,19 +87,6 @@ class PreparedContext:
     summarized_tool_call_ids: tuple[str, ...] = ()
 
 
-class CompactionRequest:
-    """仅由成功执行的 compact 工具设置、作用于当前 run 的信号。"""
-
-    def __init__(self) -> None:
-        self.revision = 0
-
-    def request(self) -> str:
-        """请求在当前完整工具调用批次结束后执行压缩。"""
-
-        self.revision += 1
-        return "Compaction requested after this tool batch."
-
-
 def context_token_count(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
@@ -964,21 +951,11 @@ class ContextCompactor(ContextArtifacts):
         base_prefix = [message for message in prefix if not _is_generated_marker(message)]
         # Working checkpoints retain raw evidence within the recent-tail budget.
         tail_blocks = source_blocks if reason == "working" else blocks
-        if reason == "manual":
-            required_ids = {
-                id(block) for block in _required_latest_blocks(blocks)
-            }
-            protected = {
-                index
-                for index, block in enumerate(blocks)
-                if id(block) in required_ids
-            }
-        else:
-            protected = _protected_recent_indices(
-                tail_blocks,
-                self.recent_tail_budget if recent_tail_budget is None else recent_tail_budget,
-                self.token_meter,
-            )
+        protected = _protected_recent_indices(
+            tail_blocks,
+            self.recent_tail_budget if recent_tail_budget is None else recent_tail_budget,
+            self.token_meter,
+        )
         latest_context = _flatten(
             [],
             [tail_blocks[index] for index in sorted(protected)],

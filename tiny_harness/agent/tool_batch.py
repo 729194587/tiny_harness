@@ -12,45 +12,18 @@ if TYPE_CHECKING:
     from tiny_harness.agent.context import AgentRunContext
 
 
-def _apply_manual_compaction(
-    messages: list[dict[str, Any]],
-    previous_revision: int,
-    context: AgentRunContext,
-) -> None:
-    """仅在完整工具批次闭合后处理成功提交的 compact 请求。"""
-
-    if (
-        context.compactor is None
-        or context.compaction_request is None
-        or context.compaction_request.revision == previous_revision
-    ):
-        return
-
-    prepared = context.compactor.compact_history(
-        messages,
-        context.todo_manager.render(),
-        reason="manual",
-    )
-    messages[:] = prepared.messages
-
-
 def execute_tool_batch(
     messages: list[dict[str, Any]],
     calls: list[ToolCall],
     context: AgentRunContext,
 ) -> None:
-    """顺序执行全部工具调用，追加结果后再进行批次边界维护。
+    """顺序执行全部工具调用并追加结果。
 
     正常返回时保证 assistant/tool 协议闭合。致命异常保留已有历史和副作用，
     不补造结果或重放调用；AgentSession 会禁止继续提交，直到显式 clear。
     """
 
     validate_tool_call_batch(calls)
-    compact_revision = (
-        context.compaction_request.revision
-        if context.compaction_request is not None
-        else 0
-    )
 
     for call in calls:
         emit_tool_called(
@@ -84,5 +57,3 @@ def execute_tool_batch(
                 ),
             }
         )
-
-    _apply_manual_compaction(messages, compact_revision, context)

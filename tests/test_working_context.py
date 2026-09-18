@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from tiny_harness.agent.context import create_run_context, run_started_data
+from tiny_harness.agent.loop import agent_loop
 from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.agent.session import AgentSession
 from tiny_harness.agent.turn import (
@@ -73,6 +74,22 @@ class WorkingContextTest(unittest.TestCase):
         # About 30k of history; the latest complete batch is about 6k.
         return messages
 
+
+    def test_agent_turn_triggers_working_checkpoint_without_compact_tool(self):
+        messages = self.checkpoint_history()
+        self.provider.complete.side_effect = [
+            ModelResponse("CHECKPOINT", None, [], "stop"),
+            ModelResponse("done", None, [], "stop"),
+        ]
+
+        self.assertEqual(agent_loop(messages, self.context, "task"), "done")
+        self.assertEqual(self.provider.complete.call_count, 2)
+        for call in self.provider.complete.call_args_list:
+            self.assertNotIn("compact", [s["function"]["name"] for s in call.args[1]])
+        events = [call.args[1] for call in self.logger.emit.call_args_list
+                  if call.args[0] == EventType.CONTEXT_COMPACTED]
+        self.assertEqual([event["reason"] for event in events], ["working"])
+        self.assertTrue(any(m.get("name") == "tinyharness_context_summary" for m in messages))
 
     def test_checkpoint_uses_full_original_source_and_rebuilds_request(self):
         messages = self.checkpoint_history()
