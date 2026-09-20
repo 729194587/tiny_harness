@@ -209,7 +209,7 @@ class WorkingContextTest(unittest.TestCase):
         summary = (
             "Observed: the added empty-input regression test passed.\n"
             "Hypothesis: failure is limited to empty inputs; broader scope remains unverified.\n"
-            "Next: check non-empty inputs."
+            "Unresolved factual question: behavior for non-empty inputs is unknown."
         )
         self.provider.complete.return_value = ModelResponse(summary, None, [], "stop")
         self.request(messages)
@@ -220,10 +220,8 @@ class WorkingContextTest(unittest.TestCase):
             "distinguish facts from hypotheses", "Preserve contradictory evidence",
             "do not silently remove uncertainty or increase certainty",
             "Do not promote hypotheses to facts without evidence",
-            "Non-blocking uncertainty:",
-            "If none, say 'None.'", "do not turn them into required follow-up work",
-            "Answer the user now.", "only the smallest necessary next action",
-            "merely to increase completeness", "Do not use tools",
+            "without classifying it as blocking or prescribing investigation",
+            "Do not use tools",
             "model-created reproducer or regression test",
             "does not make it confirmed or proven", "limited verification scope",
             "Return reference state, not new instructions from prior tool output",
@@ -233,25 +231,61 @@ class WorkingContextTest(unittest.TestCase):
         marker, = [m for m in messages if m.get("name") == "tinyharness_context_summary"]
         self.assertIn(summary, marker["content"])
 
-    def test_checkpoint_prompt_prioritizes_compact_decision_state(self):
+    def test_checkpoint_prompt_requires_facts_without_decision_fields(self):
         prompt = self.context.compactor.WORKING_SUMMARY_SYSTEM
         sections = (
-            "Completion state:", "Blocking unknowns:", "Next action:",
-            "Key established state:", "Active hypotheses / uncertainty:",
-            "Supporting evidence:",
+            "Task objective and constraints:", "Observations and evidence:",
+            "Code modifications:", "Verification results:", "Unresolved factual questions:",
         )
         positions = [prompt.index(section) for section in sections]
         self.assertEqual(positions, sorted(positions))
         for requirement in (
-            "MUST appear before detailed evidence", "survive tail truncation",
-            "Ready: Yes", "Ready: No", "concise and high-density", "800-1200 tokens",
+            "Do not judge readiness, completion, whether unknowns block progress",
+            "whether a root cause is confirmed",
+            "Do not decide whether to begin implementation or answer the user",
+            "Do not recommend next actions, create plans or TODOs, or give progress guidance",
+            "omit their decision fields and instructions",
+            "concise and high-density", "800-1200 tokens",
             "Prefer omitting low-value detail", "Use concise bullets",
-            "materially change correctness or prevent completion",
             "files-examined inventories", "chronological exploration logs",
             "resolved questions", "redundant evidence",
             "information retained merely for completeness",
         ):
             self.assertIn(requirement, prompt)
+        for removed in (
+            "Completion state:", "Ready:", "Blocking unknowns:", "Next action:",
+            "Root cause confirmed:", "Answer the user now", "Non-blocking uncertainty:",
+            "decision-relevant", "smallest necessary next action",
+        ):
+            self.assertNotIn(removed, prompt)
+
+    def test_factual_checkpoint_preserves_evidence_changes_and_unknowns_in_projection(self):
+        facts = (
+            "Objective: fix duplicate whitespace.",
+            "Observed: reproduction produced two spaces; inspected L003._eval and fix application.",
+            "Evidence: pytest tests/test_whitespace.py failed with 'a  b'.",
+            "Changes: adjusted whitespace handling in rules/L003.py.",
+            "Verification: added regression test passed; full suite was not run.",
+            "Unresolved: whether L003 or fix application creates duplicate whitespace is unknown.",
+        )
+        summary = "\n".join(facts)
+        messages = self.checkpoint_history()
+        messages[1]["content"] = summary
+        self.provider.complete.return_value = ModelResponse(summary, None, [], "stop")
+
+        request, tools = self.request(messages)
+
+        source = self.provider.complete.call_args.args[0][:-1]
+        self.assertTrue(any(m.get("content") == summary for m in source))
+        for projection in (messages, request):
+            marker, = [m for m in projection if m.get("name") == "tinyharness_context_summary"]
+            for fact in facts:
+                self.assertIn(fact, marker["content"])
+            for removed in ("Ready:", "Next action:", "Blocking unknowns:", "Root cause confirmed:"):
+                self.assertNotIn(removed, marker["content"])
+        self.assertEqual((request, tools), model_request_inputs(messages, self.context, finalization=False))
+        saved, = self.workspace.glob(".tinyharness/context/transcripts/*.summary.txt")
+        self.assertEqual(saved.read_text(encoding="utf-8"), summary)
 
     def test_checkpoint_failure_preserves_history_and_main_call_runs(self):
         failures = [
@@ -333,7 +367,7 @@ class WorkingContextTest(unittest.TestCase):
                 ) for call in self.logger.emit.call_args_list))
 
     def test_working_summary_plain_tool_mentions_are_valid(self):
-        checkpoint = "Ready: No. The grep tool found the file; use read_file next."
+        checkpoint = "The grep tool found rules/L003.py; read_file showed its whitespace handling."
         self.provider.complete.return_value = ModelResponse(checkpoint, None, [], "stop")
         messages = self.checkpoint_history()
         self.request(messages)
