@@ -27,6 +27,7 @@ TOOL_USE_EFFICIENCY_GUIDANCE = (
 
 
 NEAR_BUDGET_NORMAL_TURNS = 3
+WORKING_CHECKPOINT_MIN_REMAINING_TURNS = 3
 NEAR_BUDGET_MARKER = "tinyharness_near_budget"
 NEAR_BUDGET_INSTRUCTION = (
     "The execution budget is nearly exhausted.\n"
@@ -94,6 +95,20 @@ def prepare_model_request_inputs(
     if context.compactor is not None:
         before_tokens = context.token_meter.estimate_request(messages, request_messages, request_tools)
         if before_tokens >= context.compactor.config.working_context_trigger_tokens:
+            remaining_turns = context.max_turns - context.current_turn
+            if remaining_turns <= WORKING_CHECKPOINT_MIN_REMAINING_TURNS:
+                context.event_logger.emit(
+                    EventType.CONTEXT_COMPACTION_SKIPPED,
+                    {
+                        "reason": "working",
+                        "skip_reason": "insufficient_remaining_execution_horizon",
+                        "turn": context.current_turn,
+                        "remaining_turns": remaining_turns,
+                        "context_tokens": before_tokens,
+                    },
+                )
+                return request_messages, request_tools
+
             def measure_compacted(candidate: list[dict[str, Any]]) -> int:
                 projected, tools = model_request_inputs(
                     candidate, context, finalization=finalization,

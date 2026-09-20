@@ -91,6 +91,75 @@ class WorkingContextTest(unittest.TestCase):
         self.assertEqual([event["reason"] for event in events], ["working"])
         self.assertTrue(any(m.get("name") == "tinyharness_context_summary" for m in messages))
 
+    def test_working_checkpoint_remaining_turn_boundary(self):
+        for remaining in (4, 3, 2, 1, 0):
+            with self.subTest(remaining=remaining):
+                self.provider.reset_mock()
+                self.logger.reset_mock()
+                self.context.current_turn = self.context.max_turns - remaining
+                messages = self.checkpoint_history()
+                original = copy.deepcopy(messages)
+                finalization = remaining == 0
+                expected = model_request_inputs(messages, self.context, finalization=finalization)
+                tokens = self.context.token_meter.estimate_request(messages, *expected)
+                self.assertGreaterEqual(tokens, 20_000)
+
+                request = prepare_model_request_inputs(
+                    messages, self.context, finalization=finalization,
+                )
+
+                skipped = [c.args[1] for c in self.logger.emit.call_args_list
+                           if c.args[0] == EventType.CONTEXT_COMPACTION_SKIPPED]
+                if remaining > 3:
+                    self.provider.complete.assert_called_once()
+                    self.assertNotEqual(messages, original)
+                    self.assertEqual(skipped, [])
+                else:
+                    self.provider.complete.assert_not_called()
+                    self.assertEqual(messages, original)
+                    self.assertEqual(request, expected)
+                    self.assertEqual(skipped, [{
+                        "reason": "working",
+                        "skip_reason": "insufficient_remaining_execution_horizon",
+                        "turn": self.context.current_turn,
+                        "remaining_turns": remaining,
+                        "context_tokens": tokens,
+                    }])
+                    self.assertFalse(any(c.args[0] in (
+                        EventType.CONTEXT_SUMMARY_REQUESTED, EventType.CONTEXT_COMPACTED,
+                    ) for c in self.logger.emit.call_args_list))
+
+    def test_near_terminal_below_threshold_does_not_emit_skip(self):
+        self.context.current_turn = self.context.max_turns
+        self.request(history(1, size=100))
+        self.provider.complete.assert_not_called()
+        self.assertFalse(any(c.args[0] == EventType.CONTEXT_COMPACTION_SKIPPED
+                             for c in self.logger.emit.call_args_list))
+
+    def test_near_terminal_skip_preserves_reactive_compaction(self):
+        self.context.current_turn = self.context.max_turns
+        messages = self.checkpoint_history()
+        self.provider.complete.side_effect = [
+            ModelProviderError(ModelErrorKind.CONTEXT_LENGTH),
+            ModelResponse("recovered checkpoint", None, [], "stop"),
+            ModelResponse("done", None, [], "stop"),
+        ]
+        with patch.object(self.context.compactor, "reactive_compact",
+                          wraps=self.context.compactor.reactive_compact) as reactive:
+            self.assertEqual(call_model(messages, self.context, finalization=True).content, "done")
+        reactive.assert_called_once()
+        self.assertEqual(self.provider.complete.call_count, 3)
+        reasons = [c.args[1]["reason"] for c in self.logger.emit.call_args_list
+                   if c.args[0] == EventType.CONTEXT_COMPACTED]
+        self.assertEqual(reasons, ["reactive"])
+
+    def test_near_terminal_skip_event_failure_is_fatal(self):
+        self.context.current_turn = self.context.max_turns
+        self.logger.emit.side_effect = EventLogError("unavailable")
+        with self.assertRaises(EventLogError):
+            self.request(self.checkpoint_history())
+        self.provider.complete.assert_not_called()
+
     def test_checkpoint_uses_full_original_source_and_rebuilds_request(self):
         messages = self.checkpoint_history()
         original = copy.deepcopy(messages)
