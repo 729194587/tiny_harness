@@ -106,8 +106,6 @@ class SubagentExecutorTest(unittest.TestCase):
                 shell_runner=Mock(), test_runner=FakeTestRunner(),
                 memory_enabled=True, token_meter=CalibratedTokenMeter(),
                 max_context_tokens=25_000,
-                working_context_trigger_tokens=18_000,
-                working_context_target_tokens=12_000,
                 event_logger=RecordingEventLogger(),
                 tool_trace=ToolTraceConfig(enabled=True, result_preview_chars=37),
             )

@@ -92,8 +92,6 @@ class CliTest(unittest.TestCase):
             session_class.call_args.kwargs["max_context_tokens"],
             DEFAULT_MAX_CONTEXT_TOKENS,
         )
-        self.assertEqual(session_class.call_args.kwargs["working_context_trigger_tokens"], 20_000)
-        self.assertEqual(session_class.call_args.kwargs["working_context_target_tokens"], 14_000)
         self.assertEqual(
             session_class.call_args.kwargs["subagent_max_turns"],
             DEFAULT_SUBAGENT_MAX_TURNS,
@@ -105,24 +103,10 @@ class CliTest(unittest.TestCase):
         self.assertFalse(session_class.call_args.kwargs["memory_enabled"])
         session_class.return_value.submit.assert_called_once_with("create a file")
 
-    def test_working_context_configuration_is_forwarded(self):
-        with (
-            patch.dict(os.environ, {"TINYHARNESS_API_KEY": "test-key"}),
-            patch("tiny_harness.__main__.ChatCompletionsProvider"),
-            patch("tiny_harness.__main__.AgentSession") as session,
-            contextlib.redirect_stdout(io.StringIO()),
-        ):
-            self.assertEqual(main([
-                "task", "--workspace", str(self.workspace),
-                "--working-context-trigger-tokens", "18000",
-                "--working-context-target-tokens", "12000",
-            ]), 0)
-        self.assertEqual(session.call_args.kwargs["working_context_trigger_tokens"], 18_000)
-        self.assertEqual(session.call_args.kwargs["working_context_target_tokens"], 12_000)
-
     def test_removed_flags_are_rejected(self) -> None:
         for flag in ("--task-state", "--task-state-reflection", "--task-state-reflection-interval",
-                     "--working-memory", "--progress"):
+                     "--working-memory", "--progress", "--working-context-trigger-tokens",
+                     "--working-context-target-tokens"):
             with self.subTest(flag=flag), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as error:
                     main(["task", flag])

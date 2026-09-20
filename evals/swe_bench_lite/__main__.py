@@ -13,7 +13,6 @@ from tiny_harness.__main__ import (
     DEFAULT_BASE_URL,
     DEFAULT_MAX_CONTEXT_TOKENS,
     DEFAULT_MODEL,
-    add_working_context_arguments,
 )
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
 
@@ -56,7 +55,6 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--results-root", type=Path, default=DEFAULT_RESULTS_ROOT)
         command.add_argument("--run-id")
     run = subparsers.choices["run"]
-    add_working_context_arguments(run)
     run.add_argument("--max-turns", type=int, default=20)
     run.add_argument("--subagent-max-turns", type=int, default=10)
     context_group = run.add_mutually_exclusive_group()
@@ -208,8 +206,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_turns=args.max_turns,
         subagent_max_turns=args.subagent_max_turns,
         max_context_tokens=args.max_context_tokens,
-        working_context_trigger_tokens=args.working_context_trigger_tokens,
-        working_context_target_tokens=args.working_context_target_tokens,
     )
     print(run_dir)
     return 0

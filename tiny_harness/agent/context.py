@@ -91,8 +91,6 @@ def run_started_data(context: AgentRunContext) -> dict[str, Any]:
     data: dict[str, Any] = {
         "max_turns": context.max_turns,
         "max_model_retries": context.recovery_policy.max_retries,
-        "working_context_trigger_tokens": context.compaction_config.working_context_trigger_tokens,
-        "working_context_target_tokens": context.compaction_config.working_context_target_tokens,
     }
     if context.allow_subagent:
         data["subagent_max_turns"] = context.subagent_max_turns
@@ -200,8 +198,6 @@ class RunConfig:
     permission_prompt: PermissionPrompt | None = None
     event_logger: EventLogger = NULL_EVENT_LOGGER
     max_context_tokens: int | None = None
-    working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens
-    working_context_target_tokens: int = CompactionConfig.working_context_target_tokens
     token_meter: TokenMeter = DEFAULT_TOKEN_METER
     tool_hooks: ToolHooks | None = None
     subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS
@@ -224,8 +220,6 @@ def create_run_context(
     permission_prompt: PermissionPrompt | None = None,
     event_logger: EventLogger = NULL_EVENT_LOGGER,
     max_context_tokens: int | None = None,
-    working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens,
-    working_context_target_tokens: int = CompactionConfig.working_context_target_tokens,
     token_meter: TokenMeter = DEFAULT_TOKEN_METER,
     tool_hooks: ToolHooks | None = None,
     subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS,
@@ -248,8 +242,6 @@ def create_run_context(
         permission_prompt=permission_prompt,
         event_logger=event_logger,
         max_context_tokens=max_context_tokens,
-        working_context_trigger_tokens=working_context_trigger_tokens,
-        working_context_target_tokens=working_context_target_tokens,
         token_meter=token_meter,
         tool_hooks=tool_hooks,
         subagent_max_turns=subagent_max_turns,
@@ -272,13 +264,7 @@ def build_run_context(config: RunConfig) -> AgentRunContext:
         max_context_tokens=config.max_context_tokens,
         subagent_max_turns=config.subagent_max_turns,
     )
-    compaction_config = CompactionConfig(
-        working_context_trigger_tokens=config.working_context_trigger_tokens,
-        working_context_target_tokens=config.working_context_target_tokens,
-    )
-    if config.max_context_tokens is not None and config.working_context_trigger_tokens >= config.max_context_tokens:
-        raise ValueError("working context requires target < trigger < max_context_tokens")
-
+    compaction_config = CompactionConfig()
     if (
         config.skill_catalog is not None
         and config.skill_catalog.workspace != config.workspace.resolve()

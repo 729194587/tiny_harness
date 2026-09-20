@@ -451,11 +451,11 @@ class ContextCompactorTest(unittest.TestCase):
         )
         summary_messages = (
             self.prefix
-            + [{"role": "assistant", "content": "OLD_ASSISTANT_" + "Y" * 3_000}]
+            + [{"role": "assistant", "content": "OLD_ASSISTANT_" + "Y" * 20_000}]
             + tool_block("latest", "LATEST")
         )
         summarized = self.prepare(
-            self.compactor(summary_provider, max_tokens=875),
+            self.compactor(summary_provider, max_tokens=2_000),
             summary_messages,
         )
 
@@ -504,12 +504,12 @@ class ContextCompactorTest(unittest.TestCase):
         )
         messages = (
             self.prefix
-            + [{"role": "assistant", "content": sentinel + "X" * 3_000}]
+            + [{"role": "assistant", "content": sentinel + "X" * 20_000}]
             + tool_block("latest", "LATEST_EVIDENCE")
         )
 
         prepared = self.prepare(
-            self.compactor(provider, max_tokens=500),
+            self.compactor(provider, max_tokens=2_000),
             messages,
         )
 
@@ -544,7 +544,7 @@ class ContextCompactorTest(unittest.TestCase):
         )
         messages = (
             self.prefix
-            + tool_block("old", "OLD_RESULT", assistant_text="X" * 4_000)
+            + tool_block("old", "OLD_RESULT", assistant_text="X" * 20_000)
             + [{"role": "assistant", "content": "old answer"}]
             + [{"role": "user", "content": "CURRENT_TASK"}]
             + latest
@@ -553,7 +553,7 @@ class ContextCompactorTest(unittest.TestCase):
             self.workspace,
             provider,
             TOOLS,
-            450,
+            2_000,
         )
 
         prepared = self.prepare(compactor, messages)
@@ -570,7 +570,7 @@ class ContextCompactorTest(unittest.TestCase):
         provider = FakeProvider([ModelResponse("PRIOR_SUMMARY", None, [], "stop")])
         messages = (
             self.prefix
-            + [{"role": "assistant", "content": "X" * 4_000}]
+            + [{"role": "assistant", "content": "X" * 20_000}]
             + tool_block("prior-tool", "RECENT_EVIDENCE")
             + [{"role": "assistant", "content": "prior answer"}]
             + [{"role": "user", "content": "FOLLOW_UP_TASK"}]
@@ -579,7 +579,7 @@ class ContextCompactorTest(unittest.TestCase):
             self.workspace,
             provider,
             TOOLS,
-            450,
+            2_000,
         )
 
         prepared = self.prepare(compactor, messages)
@@ -616,25 +616,25 @@ class ContextCompactorTest(unittest.TestCase):
         provider = FakeProvider([ModelResponse("FACTUAL_SUMMARY", None, [], "stop")])
         messages = (
             self.prefix
-            + tool_block("old", "old", assistant_text="X" * 3_000)
+            + tool_block("old", "old", assistant_text="X" * 20_000)
             + tool_block("latest", "LATEST_EVIDENCE")
         )
         compactor = ContextCompactor(
             self.workspace,
             provider,
             TOOLS,
-            375,
+            2_000,
         )
 
         prepared = self.prepare(compactor, messages, "[>] CURRENT_TODO")
 
         self.assertTrue(prepared.summarized)
-        self.assertLessEqual(prepared.after_tokens, 375)
+        self.assertLessEqual(prepared.after_tokens, 2_000)
         self.assertEqual(len(provider.calls), 1)
         self.assertEqual(provider.calls[0]["tools"], TOOLS)
         self.assertLessEqual(
             context_token_count(provider.calls[0]["messages"], []),
-            375,
+            2_000,
         )
         compacted_json = json.dumps(prepared.messages, ensure_ascii=False)
         self.assertIn("ORIGINAL_TASK", compacted_json)
@@ -650,14 +650,14 @@ class ContextCompactorTest(unittest.TestCase):
         provider = FakeProvider([ModelResponse(None, None, [], "length")])
         messages = (
             self.prefix
-            + tool_block("old", "result", assistant_text="X" * 3_000)
+            + tool_block("old", "result", assistant_text="X" * 20_000)
             + tool_block("latest", "evidence")
         )
         compactor = ContextCompactor(
             self.workspace,
             provider,
             TOOLS,
-            375,
+            2_000,
         )
         original = copy.deepcopy(messages)
 
@@ -698,10 +698,10 @@ class ContextCompactorTest(unittest.TestCase):
                 with self.subTest(reactive=reactive, response=response):
                     provider = FakeProvider([response])
                     messages = (self.prefix
-                                + tool_block("old", "result", assistant_text="X" * 3_000)
+                                + tool_block("old", "result", assistant_text="X" * 20_000)
                                 + tool_block("latest", "evidence"))
                     original = copy.deepcopy(messages)
-                    compactor = self.compactor(provider, max_tokens=375)
+                    compactor = self.compactor(provider, max_tokens=2_000)
                     with self.assertRaises(ContextSummaryError):
                         if reactive:
                             compactor.reactive_compact(
@@ -867,7 +867,6 @@ class ContextAgentLoopTest(unittest.TestCase):
             max_turns=1,
             # Leave room for the expanded built-in tool schemas after compaction.
             max_context_tokens=2_500,
-            working_context_trigger_tokens=2_499, working_context_target_tokens=2_498,
             event_logger=logger,
         )
 
@@ -897,7 +896,7 @@ class ContextAgentLoopTest(unittest.TestCase):
         )
         messages = [
             {"role": "user", "content": "ORIGINAL_TASK"},
-            *tool_block("old", "old", assistant_text="X" * 10_000),
+            *tool_block("old", "old", assistant_text="X" * 20_000),
             *tool_block("latest", "LATEST_EVIDENCE"),
         ]
         original = copy.deepcopy(messages)
@@ -908,8 +907,7 @@ class ContextAgentLoopTest(unittest.TestCase):
                 self.workspace,
                 messages,
                 max_turns=1,
-                max_context_tokens=2_000,
-                working_context_trigger_tokens=1_999, working_context_target_tokens=1_998,
+                max_context_tokens=4_000,
                 skill_catalog=discover_skills(self.workspace, sources=()),
             )
 
@@ -938,7 +936,6 @@ class ContextAgentLoopTest(unittest.TestCase):
             max_turns=1,
             # Leave room for the expanded built-in tool schemas after compaction.
             max_context_tokens=2_500,
-            working_context_trigger_tokens=2_499, working_context_target_tokens=2_498,
             event_logger=logger,
             recovery_policy=RecoveryPolicy(
                 max_retries=1,

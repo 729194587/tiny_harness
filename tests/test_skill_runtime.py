@@ -300,7 +300,6 @@ class SkillRuntimeTest(unittest.TestCase):
             self.workspace,
             [{"role": "user", "content": "task"}],
             max_context_tokens=5_000,
-            working_context_trigger_tokens=4_999, working_context_target_tokens=4_998,
         )
 
         self.assertEqual(answer, "done")

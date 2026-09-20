@@ -18,7 +18,6 @@ class EventType(str, Enum):
     CONTEXT_PREPARED = "context_prepared"
     CONTEXT_TRIMMED = "context_trimmed"
     CONTEXT_COMPACTED = "context_compacted"
-    CONTEXT_COMPACTION_SKIPPED = "context_compaction_skipped"
     CONTEXT_SUMMARY_REQUESTED = "context_summary_requested"
     CONTEXT_SUMMARY_RESPONDED = "context_summary_responded"
     MODEL_REQUESTED = "model_requested"

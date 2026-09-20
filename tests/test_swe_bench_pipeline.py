@@ -236,7 +236,8 @@ class SweCliContextBudgetTest(unittest.TestCase):
 class SweRemovedFlagsTest(unittest.TestCase):
     def test_cli_removes_legacy_flags(self):
         for flag in ("--task-state", "--task-state-reflection", "--task-state-reflection-interval",
-                     "--working-memory", "--progress", "--coding-environment"):
+                     "--working-memory", "--progress", "--coding-environment",
+                     "--working-context-trigger-tokens", "--working-context-target-tokens"):
             with self.subTest(flag=flag), patch("sys.stderr"):
                 with self.assertRaises(SystemExit) as error:
                     _parser().parse_args(["run", flag])
@@ -244,23 +245,6 @@ class SweRemovedFlagsTest(unittest.TestCase):
 
 
 class SweExperimentMetadataTest(unittest.TestCase):
-    def test_cli_forwards_working_context_defaults_and_overrides(self):
-        for flags, expected in [
-            ([], (20_000, 14_000)),
-            (["--working-context-trigger-tokens", "18000",
-              "--working-context-target-tokens", "12000"], (18_000, 12_000)),
-        ]:
-            with (
-                self.subTest(flags=flags),
-                patch.dict(os.environ, {"TINYHARNESS_API_KEY": "test-key"}),
-                patch("evals.swe_bench_lite.__main__.ChatCompletionsProvider"),
-                patch("evals.swe_bench_lite.__main__.run_selected_smoke", return_value=Path("run")) as run,
-            ):
-                self.assertEqual(main(["run"] + flags), 0)
-            self.assertEqual(tuple(run.call_args.kwargs[name] for name in (
-                "working_context_trigger_tokens", "working_context_target_tokens",
-            )), expected)
-
     def test_task_and_run_configuration_match_for_all_outcomes(self):
         from functools import partial
         from evals.swe_bench_lite.calibration import CalibrationResult
@@ -270,15 +254,11 @@ class SweExperimentMetadataTest(unittest.TestCase):
                 with self.subTest(enabled=enabled, outcome=outcome), tempfile.TemporaryDirectory() as temporary:
                     options = ({
                         "max_turns": 7, "subagent_max_turns": 3, "max_context_tokens": None,
-                        "working_context_trigger_tokens": 18000,
-                        "working_context_target_tokens": 12000,
                     } if enabled else {})
                     expected = {
                         "max_turns": 7 if enabled else 20,
                         "subagent_max_turns": 3 if enabled else 10,
                         "max_context_tokens": None if enabled else 125000,
-                        "working_context_trigger_tokens": 18000 if enabled else 20000,
-                        "working_context_target_tokens": 12000 if enabled else 14000,
                     }
                     calibrated = CalibrationResult(
                         task().instance_id,
@@ -309,7 +289,7 @@ class SweExperimentMetadataTest(unittest.TestCase):
                     self.assertEqual(task_metadata["status"], outcome)
                     self.assertEqual(run_metadata["tasks"][0]["status"], outcome)
                     for agent_options in observed:
-                        for name in ("working_context_trigger_tokens", "working_context_target_tokens"):
+                        for name in expected:
                             self.assertEqual(agent_options[name], expected[name])
                     for metadata in (run_metadata, task_metadata, run_metadata["tasks"][0]):
                         self.assertEqual({key: metadata[key] for key in expected}, expected)

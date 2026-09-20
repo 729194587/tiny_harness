@@ -344,7 +344,6 @@ class ToolHooksTest(unittest.TestCase):
             messages,
             tool_hooks=hooks,
             max_context_tokens=2_500,
-            working_context_trigger_tokens=2_499, working_context_target_tokens=2_498,
         )
 
         self.assertEqual(answer, "done")

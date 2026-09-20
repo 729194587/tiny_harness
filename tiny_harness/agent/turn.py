@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import copy
 from typing import TYPE_CHECKING, Any
 
 from tiny_harness.agent.messages import ModelProtocolError, ModelResponse, validate_model_response
 from tiny_harness.models.base import ModelErrorKind, ModelProviderError
 from tiny_harness.runtime.context import model_context_messages
-from tiny_harness.runtime.events import EventLogError, EventType
+from tiny_harness.runtime.events import EventType
 from tiny_harness.runtime.recovery import RecoveryState
 
 if TYPE_CHECKING:
@@ -27,7 +26,6 @@ TOOL_USE_EFFICIENCY_GUIDANCE = (
 
 
 NEAR_BUDGET_NORMAL_TURNS = 3
-WORKING_CHECKPOINT_MIN_REMAINING_TURNS = 3
 NEAR_BUDGET_MARKER = "tinyharness_near_budget"
 NEAR_BUDGET_INSTRUCTION = (
     "The execution budget is nearly exhausted.\n"
@@ -81,67 +79,6 @@ def model_request_inputs(
     return request_messages, ([] if finalization else context.tools)
 
 
-def prepare_model_request_inputs(
-    messages: list[dict[str, Any]],
-    context: AgentRunContext,
-    *,
-    finalization: bool,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Apply working pressure once, after all request-only projections."""
-
-    request_messages, request_tools = model_request_inputs(
-        messages, context, finalization=finalization,
-    )
-    if context.compactor is not None:
-        before_tokens = context.token_meter.estimate_request(messages, request_messages, request_tools)
-        if before_tokens >= context.compactor.config.working_context_trigger_tokens:
-            remaining_turns = context.max_turns - context.current_turn
-            if remaining_turns <= WORKING_CHECKPOINT_MIN_REMAINING_TURNS:
-                context.event_logger.emit(
-                    EventType.CONTEXT_COMPACTION_SKIPPED,
-                    {
-                        "reason": "working",
-                        "skip_reason": "insufficient_remaining_execution_horizon",
-                        "turn": context.current_turn,
-                        "remaining_turns": remaining_turns,
-                        "context_tokens": before_tokens,
-                    },
-                )
-                return request_messages, request_tools
-
-            def measure_compacted(candidate: list[dict[str, Any]]) -> int:
-                projected, tools = model_request_inputs(
-                    candidate, context, finalization=finalization,
-                )
-                return context.token_meter.estimate(projected, tools)
-
-            try:
-                prepared = context.compactor.compact_history(
-                    messages, context.todo_manager.render(), reason="working",
-                    max_tokens=context.compactor.config.working_context_target_tokens,
-                    recent_tail_budget=max(
-                        1, context.compactor.config.working_context_target_tokens // 3,
-                    ),
-                    summary_source_messages=copy.deepcopy(messages),
-                    summary_request_messages=request_messages,
-                    summary_request_tools=request_tools,
-                    turn=context.current_turn,
-                    before_tokens=before_tokens,
-                    measure_compacted=measure_compacted,
-                )
-            except EventLogError:
-                raise
-            except Exception:
-                pass
-            else:
-                messages[:] = prepared.messages
-                request_messages, request_tools = model_request_inputs(
-                    messages, context, finalization=finalization,
-                )
-                context.token_meter.estimate_request(messages, request_messages, request_tools)
-    return request_messages, request_tools
-
-
 def call_model(
     messages: list[dict[str, Any]],
     context: AgentRunContext,
@@ -157,7 +94,7 @@ def call_model(
 
     request_messages, request_tools = (
         prepared_request if prepared_request is not None
-        else prepare_model_request_inputs(messages, context, finalization=finalization)
+        else model_request_inputs(messages, context, finalization=finalization)
     )
 
     recovery_state = RecoveryState()

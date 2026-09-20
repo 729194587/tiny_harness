@@ -188,6 +188,5 @@ class ProvenanceTest(unittest.TestCase):
             metadata = json.loads((output / "metadata.json").read_text())
             self.assertEqual(metadata["status"], "FAILED")
             for key in ("model_name_or_path", "max_turns", "max_context_tokens",
-                        "working_context_trigger_tokens", "working_context_target_tokens",
                         "tinyharness_git_dirty"):
                 self.assertIn(key, metadata)

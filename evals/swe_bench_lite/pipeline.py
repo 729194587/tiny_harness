@@ -14,7 +14,6 @@ from tiny_harness.__main__ import DEFAULT_MAX_CONTEXT_TOKENS
 from tiny_harness.agent.loop import run_agent
 from tiny_harness.models.base import ModelProvider
 from tiny_harness.runtime.events import JsonlEventLogger
-from tiny_harness.runtime.context import CompactionConfig
 from tiny_harness.runtime.permissions import PermissionDecision
 from tiny_harness.runtime.tool_trace import ToolTraceConfig
 
@@ -53,16 +52,12 @@ def _experiment_config(
     max_turns: int,
     subagent_max_turns: int,
     max_context_tokens: int | None,
-    working_context_trigger_tokens: int,
-    working_context_target_tokens: int,
 ) -> dict[str, Any]:
     """Use identical configuration fields in task and run metadata."""
     return {
         "max_turns": max_turns,
         "subagent_max_turns": subagent_max_turns,
         "max_context_tokens": max_context_tokens,
-        "working_context_trigger_tokens": working_context_trigger_tokens,
-        "working_context_target_tokens": working_context_target_tokens,
         "memory_enabled": False,
         "workspace_mutation_observation_enabled": True,
     }
@@ -91,8 +86,6 @@ def rollout_task(
     max_turns: int = 20,
     subagent_max_turns: int = 10,
     max_context_tokens: int | None = DEFAULT_MAX_CONTEXT_TOKENS,
-    working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens,
-    working_context_target_tokens: int = CompactionConfig.working_context_target_tokens,
     environment_factory: Callable[..., DockerTaskEnvironment] = DockerTaskEnvironment,
     agent_entrypoint: Callable[..., str] = run_agent,
 ) -> RolloutResult:
@@ -109,7 +102,6 @@ def rollout_task(
     started_at = datetime.now(timezone.utc).isoformat()
     experiment_config = _experiment_config(
         max_turns, subagent_max_turns, max_context_tokens,
-        working_context_trigger_tokens, working_context_target_tokens,
     )
     experiment_config.update(provenance)
     (output_dir / "metadata.json").write_text(json.dumps({
@@ -131,8 +123,6 @@ def rollout_task(
                     max_turns=max_turns,
                     subagent_max_turns=subagent_max_turns,
                     max_context_tokens=max_context_tokens,
-                    working_context_trigger_tokens=working_context_trigger_tokens,
-                    working_context_target_tokens=working_context_target_tokens,
                     permission_policy=ContainerPermissionPolicy(),
                     event_logger=WorkspaceMutationLogger(JsonlEventLogger(events_path), environment.workspace),
                     tool_trace=ToolTraceConfig(enabled=True, result_preview_chars=200),
@@ -215,8 +205,6 @@ def run_selected_smoke(
     max_turns: int = 20,
     subagent_max_turns: int = 10,
     max_context_tokens: int | None = DEFAULT_MAX_CONTEXT_TOKENS,
-    working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens,
-    working_context_target_tokens: int = CompactionConfig.working_context_target_tokens,
     calibrator: Callable[..., CalibrationResult] = calibrate_task,
     rollout: Callable[..., RolloutResult] = rollout_task,
 ) -> Path:
@@ -225,7 +213,6 @@ def run_selected_smoke(
     active_run_id = run_id or new_run_id("smoke")
     experiment_config = _experiment_config(
         max_turns, subagent_max_turns, max_context_tokens,
-        working_context_trigger_tokens, working_context_target_tokens,
     )
     experiment_config.update(source_metadata())
     experiment_config["model_name_or_path"] = model_name_or_path
@@ -272,8 +259,6 @@ def run_selected_smoke(
                 max_turns=max_turns,
                 subagent_max_turns=subagent_max_turns,
                 max_context_tokens=max_context_tokens,
-                working_context_trigger_tokens=working_context_trigger_tokens,
-                working_context_target_tokens=working_context_target_tokens,
             )
         except (KeyboardInterrupt, SystemExit):
             raise

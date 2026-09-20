@@ -17,7 +17,6 @@ from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger
 from tiny_harness.runtime.permissions import PermissionPrompt
 from tiny_harness.runtime.tool_trace import ToolTraceConfig
 from tiny_harness.runtime.recovery import RecoveryPolicy
-from tiny_harness.runtime.context import CompactionConfig
 from tiny_harness.runtime.skills import discover_skills
 
 
@@ -52,8 +51,6 @@ class AgentSession:
         max_turns: int = 20,
         permission_prompt: PermissionPrompt | None = None,
         max_context_tokens: int | None = None,
-        working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens,
-        working_context_target_tokens: int = CompactionConfig.working_context_target_tokens,
         token_meter: TokenMeter = DEFAULT_TOKEN_METER,
         subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS,
         recovery_policy: RecoveryPolicy = RecoveryPolicy(),
@@ -75,8 +72,6 @@ class AgentSession:
         self.max_turns = max_turns
         self.permission_prompt = permission_prompt
         self.max_context_tokens = max_context_tokens
-        self.working_context_trigger_tokens = working_context_trigger_tokens
-        self.working_context_target_tokens = working_context_target_tokens
         self.token_meter = CalibratedTokenMeter(token_meter)
         self.subagent_max_turns = subagent_max_turns
         self.recovery_policy = recovery_policy
@@ -114,8 +109,6 @@ class AgentSession:
             permission_prompt=self.permission_prompt,
             event_logger=self.event_logger_factory(),
             max_context_tokens=self.max_context_tokens,
-            working_context_trigger_tokens=self.working_context_trigger_tokens,
-            working_context_target_tokens=self.working_context_target_tokens,
             token_meter=self.token_meter,
             subagent_max_turns=self.subagent_max_turns,
             recovery_policy=self.recovery_policy,

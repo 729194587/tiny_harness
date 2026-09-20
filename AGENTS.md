@@ -41,7 +41,7 @@ Use current code and tests as the authority when README descriptions differ.
 - `run_agent()` in `agent/loop.py` is the configuration/composition entry point
   for callers without a Session; it delegates to the same core loop.
 - A turn runs `prepare_context()` for canonical history, then
-  `agent/turn.py:prepare_model_request_inputs()` for request projection/pruning.
+  `agent/turn.py:model_request_inputs()` for request-only projection.
   It passes that prepared request to `call_model()`, validates the response,
   then commits a tool batch or returns a final answer.
 - `call_model()` uses `RecoveryExecutor`; transient retries stay within the same
@@ -87,33 +87,26 @@ Use current code and tests as the authority when README descriptions differ.
   and failure state, but never undoes workspace side effects.
 - Run-scoped markers must not accumulate across successful Session submissions.
 
-### Working Context and history
+### Context pressure and history
 
 - Canonical history is runtime-owned state, not the exact model request or an
   immutable transcript. `model_context_messages()` copies it and bounds large
   `read_file` results without artifacts or canonical edits, even without a budget.
   Runtime guidance is also a request-only projection.
-- Keep the two pressure levels distinct. Working trigger/target default to
-  20,000/14,000 tokens and measure the fully projected request plus tool schemas.
-  `max_context_tokens` is the hard budget underlying automatic soft/target limits
-  and reactive context-length recovery; it is not the working trigger.
-  Require `0 < target < trigger < max_context_tokens` when the hard budget is set.
-  `prepare_context()` runs first and may persist, archive, or summarize history.
-  With `max_context_tokens=None`, no compactor exists: both working pruning and
-  hard-budget compaction are disabled, but request projection still applies.
-- Working pruning persists eligible old tool-result bodies and substitutes
-  bounded previews with artifact references in canonical history and the request.
-  It does not summarize or remove assistant messages.
-  Recent-history protection is token-budget based. Skip already persisted results
-  and non-reducing candidates. Stop at target or eligibility exhaustion; recent
-  protection may leave the request above target and must not be weakened for it.
-- Prune once before logical-request recovery. Transient retries reuse the prepared
-  request; context-length recovery can compact once and rebuild the projection
-  without making another working-pruning decision in that logical request.
-- Commit pruning only after persistence, measurement, and event emission succeed.
-  Delete artifacts from rejected candidates or a failed pruning attempt; retain
-  existing and successfully committed artifacts. This is not general rollback
-  of tools or other compaction paths.
+- Normal requests have no proactive working checkpoint, fixed working threshold,
+  or near-terminal checkpoint skip. `max_context_tokens` controls hard protection:
+  `prepare_context()` compacts above 80% of that budget, targeting 55%. It first
+  persists tool results; only insufficient reduction invokes a history summary.
+  Protected history can require falling back to the 80% limit.
+  With `max_context_tokens=None`, no compactor exists; request projection remains.
+- Automatic and reactive summaries use the same factual-only contract: preserve
+  objectives, observations, inspected code, modifications, verification, evidence,
+  and unresolved factual questions. Do not judge readiness, blocking status,
+  root-cause confirmation, completion, or next actions.
+- Transient retries reuse the prepared request. Context-length recovery can
+  compact once per logical request, targeting at most 75% of the failed request
+  and respecting the hard budget. Keep complete recent evidence and the active
+  request; fail explicitly if required context cannot fit.
 - Budgets include serialized messages and tool schemas. Preserve complete
   call/result blocks, the active request, and protected state. Commit prepared
   canonical history only after validation. Preserve token-meter invalidation on
@@ -141,10 +134,8 @@ Use current code and tests as the authority when README descriptions differ.
   CLI progress uses stderr; one-shot final-answer text uses stdout.
 - Reuse `EventType`, `ScopedEventLogger`, and `CompositeEventLogger`.
   Console and ordered JSONL logging must work together without changing payloads.
-- Working-pruning attempts at/above trigger emit `CONTEXT_COMPACTED` with
-  `reason="working"`, `turn`, `before_tokens`, `after_tokens`, `pruned_results`,
-  `pruned_batches`, `target_reached`, and `blocked_by_recent_protection`, including
-  zero-change attempts. Never include tool-result bodies in these events.
+- Pressure compaction emits `CONTEXT_COMPACTED` with `reason="automatic"` or
+  `reason="reactive"`. Never include tool-result bodies in these events.
 - `context/attribution.py` supplies read-only `MODEL_REQUESTED.context_attribution`
   estimates by message/projection category and tool-result name. Use these to
   explain request growth, not to select pruning or change policy. They describe
@@ -200,7 +191,7 @@ python -m pytest tests/test_agent_loop.py tests/test_tool_batch.py tests/test_ba
 python -m pytest tests/test_context.py tests/test_recovery.py tests/test_subagent.py -q
 python -m pytest tests/test_console.py tests/test_cli.py tests/test_events.py -q
 python -m pytest tests/test_skills.py tests/test_skill_runtime.py tests/test_memory_runtime.py -q
-python -m pytest tests/test_working_context.py tests/test_context_attribution.py -q
+python -m pytest tests/test_context_policy.py tests/test_context_invariants.py tests/test_context_attribution.py -q
 python -m pytest tests/test_swe_bench_report.py tests/test_swe_bench_pipeline.py -q
 ```
 

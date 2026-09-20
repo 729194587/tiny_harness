@@ -1,4 +1,4 @@
-"""Scripted full-loop regressions for working pressure, without external models."""
+"""Scripted full-loop regressions for context continuity and pressure."""
 
 import copy
 import json
@@ -12,17 +12,17 @@ from tiny_harness.agent.context import create_run_context
 from tiny_harness.agent.loop import agent_loop
 from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.models.base import ModelErrorKind, ModelProviderError
-from tiny_harness.runtime.context import CompactionConfig, context_token_count
+from tiny_harness.runtime.context import context_token_count
 from tiny_harness.runtime.events import JsonlEventLogger
 from tiny_harness.runtime.permissions import PermissionDecision
 from tiny_harness.runtime.recovery import RecoveryPolicy
 from tiny_harness.runtime.skills import discover_skills
 from tiny_harness.tools.definition import ToolDefinition
 from tiny_harness.tools.registry import ToolRegistry
-from test_working_context import history, pruned_ids
+from test_context_policy import history
 
 
-class WorkingContextInvariantTest(unittest.TestCase):
+class ContextInvariantTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -51,9 +51,6 @@ class WorkingContextInvariantTest(unittest.TestCase):
 
     def complete(self, messages, tools, **kwargs):
         self.requests.append((copy.deepcopy(messages), copy.deepcopy(tools)))
-        if messages[-1].get("content") == self.context.compactor.WORKING_SUMMARY_SYSTEM:
-            self.assertIsNone(kwargs.get("tool_choice"))
-            return ModelResponse("Current task state", None, [], "stop")
         count = self.context.current_turn
         if count == 10 and not self.retry_done:
             self.retry_done = True
@@ -68,37 +65,27 @@ class WorkingContextInvariantTest(unittest.TestCase):
     def artifacts(self):
         return list(self.root.glob(".tinyharness/context/tool-results/*.txt"))
 
-    def test_repeated_checkpoints_preserve_prefix_between_pressure_cycles(self):
+    def test_normal_turns_preserve_history_above_old_working_threshold(self):
         messages = [{"role": "user", "content": "task"}]
         self.assertEqual(agent_loop(messages, self.context, "task"), "done")
-        working = [e["data"] for e in self.events()
-                   if e["event_type"] == "context_compacted" and e["data"]["reason"] == "working"]
-        self.assertGreaterEqual(len(working), 2)
-        for event in working:
-            self.assertEqual(event["strategy"], "llm_task_state_checkpoint")
-            self.assertGreaterEqual(event["before_tokens"], 20_000)
-            self.assertLess(event["after_tokens"], 14_000)
-            self.assertIsInstance(event["turn"], int)
-        checkpoints = 0
+        self.assertGreater(context_token_count(messages, self.context.tools), 20_000)
+        self.assertLess(context_token_count(messages, self.context.tools), self.context.compactor.soft_limit)
+        self.assertFalse(any(e["event_type"] in (
+            "context_compacted", "context_summary_requested", "context_compaction_skipped",
+        ) for e in self.events()))
         for previous, current in zip(self.requests, self.requests[1:]):
             prior, tools = previous
             request, schemas = current
             self.assertEqual(tools, schemas)
-            self.assertFalse(pruned_ids(request))
-            if prior[-1].get("content") == self.context.compactor.WORKING_SUMMARY_SYSTEM:
-                checkpoints += 1
-                self.assertEqual(sum(m.get("name") == "tinyharness_context_summary" for m in request), 1)
-            else:
-                self.assertEqual(request[:len(prior)], prior)
-        self.assertEqual(checkpoints, len(working))
+            self.assertEqual(request[:len(prior)], prior)
         self.assertTrue(self.retry_done)
         self.assertEqual(self.artifacts(), [])
+        self.assertFalse(list(self.root.glob(".tinyharness/context/transcripts/*")))
         report = analyze_run(self.root)
         self.assertEqual(report["turns"], 24)
-        self.assertEqual(report["working_context_prune_events"], checkpoints)
+        self.assertEqual(report["working_context_prune_events"], 0)
 
-
-    def test_hard_pressure_can_replace_working_protected_results(self):
+    def test_hard_pressure_persists_large_results(self):
         messages = history(3, size=200_000)
         protected = {m["tool_call_id"] for m in messages if m.get("role") == "tool"}
         self.provider.complete.side_effect = None
@@ -130,15 +117,9 @@ class WorkingContextInvariantTest(unittest.TestCase):
                          requested["context_attribution"]["categories"]["historical_tool_results"]["estimated_tokens"])
 
 
-    def test_configuration_relationships(self):
-        for hard, trigger, target in (
-            (20_000, 20_000, 14_000), (19_999, 20_000, 14_000),
-            (125_000, 20_000, 20_000),
-        ):
-            with self.subTest(hard=hard, trigger=trigger, target=target):
-                with self.assertRaises(ValueError):
-                    create_run_context(Mock(), self.root, max_context_tokens=hard,
-                                       working_context_trigger_tokens=trigger,
-                                       working_context_target_tokens=target)
-        self.assertEqual(CompactionConfig().working_context_trigger_tokens, 20_000)
+    def test_hard_budget_no_longer_requires_working_threshold_relationship(self):
+        for hard in (2_000, 14_000, 20_000, 125_000):
+            with self.subTest(hard=hard):
+                context = create_run_context(Mock(), self.root, max_context_tokens=hard)
+                self.assertEqual(context.compactor.max_tokens, hard)
         self.assertIsNone(create_run_context(Mock(), self.root, max_context_tokens=None).compactor)

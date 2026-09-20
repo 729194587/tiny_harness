@@ -17,11 +17,11 @@ from tiny_harness.agent.turn import (
     NEAR_BUDGET_MARKER,
     NEAR_BUDGET_NORMAL_TURNS,
     call_model,
-    prepare_model_request_inputs,
+    model_request_inputs,
 )
 from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter
 from tiny_harness.models.base import ModelProvider
-from tiny_harness.runtime.context import CompactionConfig, prepare_context
+from tiny_harness.runtime.context import prepare_context
 from tiny_harness.runtime.events import (
     NULL_EVENT_LOGGER,
     EventLogError,
@@ -77,7 +77,7 @@ def agent_loop(
                 # 只有四层处理和最终验证全部成功后，才提交canonical history。
                 messages[:] = prepared.messages
 
-            request_messages, request_tools = prepare_model_request_inputs(
+            request_messages, request_tools = model_request_inputs(
                 messages,
                 context,
                 finalization=finalization,
@@ -162,8 +162,6 @@ def run_agent(
     permission_prompt: PermissionPrompt | None = None,
     event_logger: EventLogger = NULL_EVENT_LOGGER,
     max_context_tokens: int | None = None,
-    working_context_trigger_tokens: int = CompactionConfig.working_context_trigger_tokens,
-    working_context_target_tokens: int = CompactionConfig.working_context_target_tokens,
     token_meter: TokenMeter = DEFAULT_TOKEN_METER,
     tool_hooks: ToolHooks | None = None,
     subagent_max_turns: int = DEFAULT_SUBAGENT_MAX_TURNS,
@@ -186,8 +184,6 @@ def run_agent(
         permission_prompt=permission_prompt,
         event_logger=event_logger,
         max_context_tokens=max_context_tokens,
-        working_context_trigger_tokens=working_context_trigger_tokens,
-        working_context_target_tokens=working_context_target_tokens,
         token_meter=token_meter,
         tool_hooks=tool_hooks,
         subagent_max_turns=subagent_max_turns,

@@ -11,7 +11,7 @@ from tiny_harness.agent.context import create_run_context
 from tiny_harness.agent.loop import agent_loop
 from tiny_harness.agent.messages import ModelResponse, ToolCall, assistant_message_from_response
 from tiny_harness.agent.tool_batch import execute_tool_batch
-from tiny_harness.agent.turn import prepare_model_request_inputs
+from tiny_harness.agent.turn import model_request_inputs
 from tiny_harness.runtime.context import prepare_context, validate_active_request
 from tiny_harness.runtime.events import EventType
 
@@ -36,7 +36,7 @@ class TodoCacheTest(unittest.TestCase):
         prepared = prepare_context(messages, self.context.compactor,
                                    self.context.todo_manager.render(), "task")
         messages[:] = prepared.messages
-        return copy.deepcopy(prepare_model_request_inputs(messages, self.context, finalization=False))
+        return copy.deepcopy(model_request_inputs(messages, self.context, finalization=False))
 
     def update(self, messages, index, status):
         response = todo_response(index, status)
@@ -72,10 +72,11 @@ class TodoCacheTest(unittest.TestCase):
         self.assertEqual(self.context.todo_manager.render(), "No todos.")
         self.assertEqual(sum(c.args[0] == EventType.TODO_UPDATED for c in self.logger.emit.call_args_list), 4)
 
-    def test_working_checkpoint_snapshots_todos_then_updates_remain_append_only(self):
+    def test_pressure_compaction_snapshots_todos_then_updates_remain_append_only(self):
         messages = [{"role": "user", "content": "task"}]
         self.update(messages, "before", "in_progress")
-        # Balanced older evidence crosses the real working threshold.
+        # Non-tool history exceeds the hard budget's soft limit and needs a summary.
+        messages.append({"role": "assistant", "content": "investigation " * 110_000})
         for index in range(8):
             call = ToolCall(f"evidence-{index}", "bash", "{}")
             messages.append(assistant_message_from_response(ModelResponse(None, "diagnosis", [call], "tool_calls")))

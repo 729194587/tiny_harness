@@ -12,7 +12,7 @@ from tiny_harness.agent.context import create_run_context
 from tiny_harness.agent.loop import run_agent
 from tiny_harness.agent.messages import ModelResponse, ToolCall, assistant_message_from_response
 from tiny_harness.agent.tool_batch import execute_tool_batch
-from tiny_harness.agent.turn import prepare_model_request_inputs
+from tiny_harness.agent.turn import model_request_inputs
 from tiny_harness.models.base import ModelErrorKind, ModelProviderError
 from tiny_harness.runtime.context import (
     CompactionConfig, ContextArtifacts, retain_tool_result, validate_active_request,
@@ -190,7 +190,7 @@ class ToolResultRetentionTest(unittest.TestCase):
             with self.subTest(column=column), self.assertRaises((TypeError, ValueError)):
                 read_file(self.workspace, "anything", start_column=column)
 
-    def test_spilled_history_leaves_working_checkpoint_without_losing_original_artifact(self):
+    def test_pressure_summary_preserves_original_spilled_artifact(self):
         retained = self.retain()
         artifact, = self.artifacts()
         context = self.context(max_context_tokens=125_000)
@@ -208,12 +208,13 @@ class ToolResultRetentionTest(unittest.TestCase):
             {"role": "tool", "tool_call_id": "latest", "content": "small"},
         ]
         original = copy.deepcopy(messages)
-        request, _ = prepare_model_request_inputs(messages, context, finalization=False)
+        prepared = context.compactor.compact_history(messages, "No todos.", reason="automatic")
+        messages[:] = prepared.messages
+        request, _ = model_request_inputs(messages, context, finalization=False)
         context.provider.complete.assert_called_once()
         checkpoint, = [c.args[1] for c in self.logger.emit.call_args_list
                        if c.args[0] == EventType.CONTEXT_COMPACTED]
-        self.assertEqual(checkpoint["reason"], "working")
-        self.assertEqual(checkpoint["strategy"], "llm_task_state_checkpoint")
+        self.assertEqual(checkpoint["reason"], "automatic")
         self.assertTrue(any(m.get("name") == "tinyharness_context_summary" for m in messages))
         for active in (messages, request):
             self.assertFalse(any(m.get("tool_call_id") == self.call.id for m in active))

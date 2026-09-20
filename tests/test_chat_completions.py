@@ -54,7 +54,7 @@ class ChatCompletionsProviderTest(unittest.TestCase):
         router("summary", [], tools)
         with tempfile.TemporaryDirectory() as directory:
             compactor = ContextCompactor(Path(directory), provider, tools, 10_000)
-            compactor._summary_complete([], compactor._summary_tools())
+            compactor._summary_complete([], compactor.tools)
         for request in completions.calls:
             self.assertEqual(request["tools"], tools)
             self.assertNotIn("tool_choice", request)
