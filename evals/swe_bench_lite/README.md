@@ -1,4 +1,54 @@
-# Single-run finalize
+# SWE-bench Lite evaluation
+
+The evaluation pipeline separates environment calibration, model rollout, and
+patch grading. Calibration runs the baseline and reference patch through the
+official evaluator: expected failing tests must fail on baseline and pass with
+the reference patch, while regression tests must pass in both. See
+[calibration.py](calibration.py) and its
+[tests](../../tests/test_swe_batch_calibration.py).
+
+From the repository root, install the evaluation extra and make Docker available:
+
+```powershell
+python -m pip install -e ".[swe-bench]"
+python -m evals.swe_bench_lite calibrate --all-selected
+python -m evals.swe_bench_lite run --help
+```
+
+`selected_tasks.jsonl` supplies the default smoke selection; `dev.jsonl` supplies
+the candidate pool for `calibrate --all-candidates`. These checked-in selections
+are not a published benchmark score or a record of every historical experiment.
+Model rollout requires the provider configuration described in the
+[root README](../../README.md).
+
+## Inspect existing runs
+
+These commands read existing event artifacts without Docker or a model API call:
+
+```powershell
+python -m evals.swe_bench_lite report <run-directory>
+python -m evals.swe_bench_lite compare <run-a> <run-b>
+```
+
+The JSON reports cover logical turns, retries, token/cache usage, tool batching,
+context compaction, request attribution, and workspace mutation observations.
+Comparison is B minus A; unknown values remain null. Aggregate cache hit rate is
+summed hits divided by summed hits plus misses, not an average of request rates.
+It should not be compared across systems without matching workloads and usage
+accounting. See [report.py](report.py) and
+[request attribution](../../docs/context-attribution.md).
+
+Workspace observation hashes content at tool boundaries, excluding `.git` and
+`.tinyharness`. It can detect shell writes, but cannot see changes restored within
+one tool or reliably attribute background writes. Missing observations leave the
+first mutation unknown; a tool's return alone proves neither a write nor a passing
+test. See [observability.py](observability.py).
+
+Long stretches of reads before the first mutation are useful evidence when
+investigating over-exploration. Counts alone do not establish that the agent had
+enough evidence, or that a summary caused a failure; that requires inspecting the
+trajectory and controlled comparisons.
+## Single-run finalize
 
 ```bash
 python -m evals.swe_bench_lite finalize <run-directory>
