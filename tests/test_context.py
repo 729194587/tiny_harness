@@ -769,15 +769,18 @@ class ContextCompactorTest(unittest.TestCase):
             except OSError as error:
                 self.skipTest(f"Creating symlinks is unavailable: {error}")
 
-            messages = self.prefix + tool_block("large", "A" * 2_000)
-            with self.assertRaises(ContextArtifactError):
-                self.prepare(
-                    self.compactor(
-                        max_tokens=1_250,
-                        large_result_chars=100,
-                    ),
-                    messages,
-                )
+            messages = self.prefix + tool_block("large", "A" * 8_000)
+            original = copy.deepcopy(messages)
+            provider = FakeProvider()
+            compactor = self.compactor(provider, max_tokens=1_250)
+            # Artifact persistence is pressure-driven, even for large results.
+            self.assertGreater(context_token_count(messages, TOOLS), compactor.soft_limit)
+            with self.assertRaisesRegex(ContextArtifactError, "escapes workspace"):
+                self.prepare(compactor, messages)
+
+            self.assertEqual(messages, original)
+            self.assertEqual(list(Path(outside_name).iterdir()), [])
+            self.assertEqual(provider.calls, [])
 
     def test_tool_result_file_symlink_is_never_followed(self):
         content = "SENSITIVE" * 100

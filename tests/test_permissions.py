@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from tiny_harness.runtime.permissions import (
     DEFAULT_PERMISSION_POLICY,
@@ -42,7 +43,6 @@ class PermissionTest(unittest.TestCase):
         commands = (
             'find . -name "*.py" -type f | sort',
             'rg --files -g "*.py"',
-            "dir /s /b *.py",
             "git status --short",
             "git diff -- README.md",
             "cd",
@@ -59,6 +59,20 @@ class PermissionTest(unittest.TestCase):
                     ),
                     PermissionDecision.ALLOW,
                 )
+
+    def test_windows_dir_switches_require_approval_on_posix(self) -> None:
+        for platform, expected in (
+            ("nt", PermissionDecision.ALLOW),
+            ("posix", PermissionDecision.ASK),
+        ):
+            with self.subTest(platform=platform):
+                with patch("tiny_harness.runtime.permissions.os.name", platform):
+                    self.assertIs(
+                        DEFAULT_PERMISSION_POLICY.decide(
+                            "bash", {"command": "dir /s /b *.py"},
+                        ),
+                        expected,
+                    )
 
     def test_default_policy_asks_for_mutating_or_ambiguous_bash(self) -> None:
         commands = (
