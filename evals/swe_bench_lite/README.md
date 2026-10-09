@@ -36,11 +36,9 @@ The default smoke IDs are `marshmallow-code__marshmallow-1343`,
 `sqlfluff__sqlfluff-1517`. Keep this selection unchanged when creating a separate
 development set; pass the new JSONL file with `--selected`.
 
-Local, Git-ignored `evals/results/` files may exist in an author's checkout.
-They are not public evidence. The checkout reviewed for this documentation had
-a single-task Marshmallow rollout and evaluator artifacts, but no complete
-15-task bundle; the old rollout metadata also lacked source-commit provenance.
-These files cannot establish a reproducible historical aggregate result.
+Local, Git-ignored `evals/results/` files are not public evidence. The complete
+historical 15-task selection, calibration records, and grading evidence remain
+unpublished; no historical aggregate score can be verified or inferred from them.
 
 To restore historical evidence, supply the exact selection JSONL (including
 base commits and evaluator fields), calibration records, run/task metadata,
@@ -138,6 +136,7 @@ Long stretches of reads before the first mutation are useful evidence when
 investigating over-exploration. Counts alone do not establish that the agent had
 enough evidence, or that a summary caused a failure; that requires inspecting the
 trajectory and controlled comparisons.
+
 ## Single-run finalize
 
 ```bash
@@ -145,25 +144,32 @@ python -m evals.swe_bench_lite finalize <run-directory>
 python -m evals.swe_bench_lite finalize <run-directory> --dataset <dataset.jsonl>
 ```
 
-输入为包含 `predictions.jsonl` 和 rollout `events.jsonl` 的单任务 run
-目录。数据集默认取 run metadata 的 `selected_tasks_path`，旧 run 未记录时
-使用 bundled `selected_tasks.jsonl`；迁移目录后可用 `--dataset` 覆盖。
-metadata 中的相对路径以 run 目录为基准。
+The input is a single-task run directory containing `predictions.jsonl` and
+rollout `events.jsonl`. The dataset defaults to `selected_tasks_path` in run
+metadata, falling back to bundled `selected_tasks.jsonl` for older runs without
+that field. Use `--dataset` after relocation. Relative paths in metadata resolve
+against the run directory.
 
-命令复用现有 official evaluator，因此首次评测需要 SWE-bench harness 和
-Docker 环境；不会调用 rollout 模型。它检查 run 内及上一级 results 目录的
-`official_evaluation/*`，仅复用关联当前 predictions、退出成功且有明确 grader
-结论的结果。新结果记录 predictions SHA-256；旧结果无摘要时要求 predictions
-修改时间不晚于评测 metadata。修改或移动历史 artifacts 后可能需要重新评测。
+The command uses the existing official evaluator, so initial grading requires
+the SWE-bench harness and Docker; it does not call the rollout model. It checks
+`official_evaluation/*` within the run and its parent results directory, reusing
+only results tied to the current predictions with a successful exit and an
+explicit grader verdict. New results record the predictions SHA-256; older
+results without a checksum require predictions to be no newer than evaluation
+metadata. Editing or moving historical artifacts may require regrading.
 
-输出 `summary.json`、`summary.md`，终端打印与 Markdown 相同的核心结果。
-`Resolved` 和 `Unresolved` 表示有效评测结论，退出码均为 0；评测异常、非零
-退出码、缺失或冲突的 grader 结论为 `Evaluation Error`，退出码 2。
-输入不合法（例如多个 instance）直接报错，不启动评测。
+It writes `summary.json` and `summary.md` and prints the same core results as the
+Markdown summary. `Resolved` and `Unresolved` are valid verdicts, both with exit
+code 0. Evaluation exceptions, nonzero evaluator exits, and missing or conflicting
+grader verdicts produce `Evaluation Error` with exit code 2. Invalid input, such
+as multiple instances, fails without starting evaluation.
 
-metrics 复用 offline report：逻辑 turns 去除重试重复，usage 包含辅助模型调用，
-overall cache hit rate 为累计 hit / (累计 hit + 累计 miss)，不是逐请求比例的平均。
-缺失字段用 JSON null / “未知” 表示，部分 usage 的观测总量和覆盖数保留在 JSON。
-checkpoint 仅统计 `llm_task_state_checkpoint` 事件，普通历史结果清理不计入。
-summary cache hit rate 来自 `purpose="summary"` 的模型响应。
-workspace mutation 缺少完整观测时保持未知，不从文件工具返回值推断。
+Metrics reuse the offline report: logical turns exclude duplicate retries, usage
+includes auxiliary model calls, and overall cache hit rate is summed hits divided
+by summed hits plus misses, not an average of request rates. Missing fields use
+JSON null or the display label `未知` (unknown); JSON retains observed totals and
+coverage counts for partial usage. Checkpoints count only
+`llm_task_state_checkpoint` events, excluding ordinary history-result pruning.
+Summary cache hit rate comes from model responses with `purpose="summary"`.
+Workspace mutation remains unknown without complete observations and is not
+inferred from file-tool return values.

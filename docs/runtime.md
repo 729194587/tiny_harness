@@ -1,5 +1,7 @@
 # Runtime notes
 
+[English](runtime.md) | [简体中文](runtime.zh-CN.md)
+
 These notes describe the current runtime. For the motivation and experiments,
 start with the [project homepage](../README.md).
 
