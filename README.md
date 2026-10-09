@@ -2,53 +2,22 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-TinyHarness is a small, synchronous coding-agent runtime for Chat Completions
-providers. The aim is to keep it small enough to understand, instrument, and
-change.
+TinyHarness is a synchronous Coding Agent Runtime built on the Chat Completions API. It supports tool calling, permission checks, hooks, context compaction and recovery, skills, optional persistent memory, todos, and synchronous subagents.
 
-This is a place to test runtime ideas against real coding tasks and SWE-bench:
-add a mechanism, inspect what happened, compare runs, then revise or remove it.
-The interesting part is how the design changes under that scrutiny.
+The project uses coding tasks and SWE-bench Lite Dev to evaluate runtime design. Console output and JSONL logs share the same event stream, making it possible to inspect agent execution. See the [runtime documentation](docs/runtime.md) for architecture details.
 
-The runtime implements sequential tool calling, permission checks and hooks,
-context compaction and recovery, skills, opt-in persistent memory, todos, and
-synchronous subagents. A shared event stream supports console progress and JSONL
-analysis. See the [runtime boundaries](docs/runtime.md) for the architecture.
+The [offline regression tests](tests) use scripted providers, mocks, and temporary workspaces. [GitHub Actions](.github/workflows/ci.yml) runs the tests and CLI checks on Python 3.10 and 3.12.
 
-The [offline regression suite](tests) exercises these mechanisms with scripted
-providers, mocks, and temporary workspaces. [CI](.github/workflows/ci.yml) runs it
-on Python 3.10 and 3.12, plus CLI help checks, without API keys or Docker. This
-verifies runtime behavior; it does not measure an external model's coding ability.
-The [evaluation evidence](#evaluation) below separates checked-in task inputs
-from benchmark results that are not yet published.
+## Design and trade-offs
 
-## Questions shaping the runtime
+- **Context and Prefix Cache.** Rewriting message history can reduce prefix cache reuse. TinyHarness therefore keeps the history mostly append-only and compacts it when context pressure reaches a threshold. Proactive checkpoints were later removed. See the [cache strategy changes](https://github.com/729194587/tiny_harness/commit/df1fd53dfd5655ff2a94e91f37570c7b630d62f1) and [checkpoint removal](https://github.com/729194587/tiny_harness/commit/9a7635b5ebba3a921ce74f51523f18fad6075ef5).
+- **Summary reliability.** The agent continues working from the summary produced by compaction. To avoid promoting unverified hypotheses to facts, the summarization rules were revised to retain factual information only. Pressure-driven compaction and error recovery share these [rules](tiny_harness/runtime/context.py).
+- **Evaluation and execution traces.** SWE-bench Lite Dev checks baseline and reference-patch test results before running the agent. Event logs record turns, cache usage, context changes, and workspace modifications for trace analysis. See the [evaluation workflow](evals/swe_bench_lite/README.md).
+- **Over-exploration.** The agent sometimes repeatedly reads files and searches, using up turns without producing a patch. The [request attribution notes](docs/context-attribution.md) can help analyze this behavior. It remains an open problem.
 
-- **Does less context mean lower cost?** Rewriting history can sacrifice prefix
-  cache reuse. The design moved toward append-mostly history and compaction under
-  actual context pressure, eventually removing proactive checkpoints.
-  See the [cache-oriented changes](https://github.com/729194587/tiny_harness/commit/df1fd53dfd5655ff2a94e91f37570c7b630d62f1)
-  and [checkpoint removal](https://github.com/729194587/tiny_harness/commit/9a7635b5ebba3a921ce74f51523f18fad6075ef5).
-- **What does a summary change besides token count?** A summary becomes the
-  agent's working evidence; turning a hypothesis into a fact can steer later
-  decisions. The contract evolved to preserve uncertainty and then became
-  factual-only. Pressure and recovery summaries retain that
-  [contract](tiny_harness/runtime/context.py), without claiming that summaries
-  alone explain any particular failed task.
-- **Can we trust the measurement?** Evaluation checks the environment against
-  baseline and reference patches before model rollout. Event reports connect
-  turns, cache usage, context changes, and workspace mutations so failures can be
-  investigated beyond a score. Start with the
-  [evaluation workflow](evals/swe_bench_lite/README.md).
-- **When is there enough evidence to act?** Repeated reads and searches can use
-  up a turn budget without producing a patch. Over-exploration remains an open
-  problem; removing proactive compaction does not solve it. The
-  [request attribution notes](docs/context-attribution.md) explain what we can
-  measure, and what those measurements cannot establish.
+## Quick start
 
-## Try it
-
-From a checkout, with Python 3.10+ and a provider API key (PowerShell):
+Requires Python 3.10+ and an API key for a model provider. From the repository root (PowerShell):
 
 ```powershell
 python -m pip install -e .
@@ -58,7 +27,7 @@ $env:TINYHARNESS_BASE_URL = "https://api.deepseek.com"
 python -m tiny_harness "Inspect this project and explain its test setup" --workspace .
 ```
 
-Or in Bash:
+Bash:
 
 ```bash
 python -m pip install -e .
@@ -68,10 +37,9 @@ export TINYHARNESS_BASE_URL="https://api.deepseek.com"
 python -m tiny_harness "Inspect this project and explain its test setup" --workspace .
 ```
 
-Set the model and base URL for your Chat Completions provider. Omit the task to
-start an interactive session; use `--help` for options.
+Set the model name and base URL for your Chat Completions provider. Omit the task argument to start an interactive session; see `--help` for other options.
 
-To verify the checkout offline after installation (PowerShell or Bash):
+Offline tests:
 
 ```bash
 python -m pip install pytest
@@ -81,23 +49,14 @@ python -m tiny_harness --help
 
 ## Evaluation
 
-The SWE-bench Lite Dev pipeline calibrates baseline and reference-patch tests,
-runs the agent on calibrated tasks, then grades generated patches with the
-official evaluator. Its [candidate pool](evals/swe_bench_lite/dev.jsonl) and
-[four-task smoke selection](evals/swe_bench_lite/selected_tasks.jsonl) are checked
-in. The smoke selection is a development check, not a full-benchmark score.
+The SWE-bench Lite Dev evaluation pipeline first checks baseline and reference-patch test results, then runs the agent on the tasks, and finally grades generated patches with the official evaluator.
 
-No complete historical 15-task selection or graded experiment bundle is checked
-in, so this README makes no resolve-rate, cache-improvement, or ranking claim.
-The [evidence inventory and reproduction guide](evals/swe_bench_lite/README.md#evidence-and-provenance)
-explain what is available and how to retain task selection, source revision,
-configuration, official verdicts, and token/cache/context/tool metrics together.
-Existing `report` and `compare` commands analyze saved events offline;
-`finalize` adds official grading and a summary for a single-task run.
+The repository includes a [candidate task pool](evals/swe_bench_lite/dev.jsonl) and a [four-task smoke selection](evals/swe_bench_lite/selected_tasks.jsonl) for development and pipeline verification. The [evidence inventory and reproduction guide](evals/swe_bench_lite/README.md#evidence-and-provenance) lists the task selection, source revision, configuration, official grading results, and token, cache, context, and tool metrics needed for experiments.
 
-## Read further
+`report` and `compare` analyze saved execution events offline; `finalize` produces official grading results and a summary for a single-task run.
 
-The [agent loop](tiny_harness/agent/loop.py) is the implementation entry point.
-[Runtime notes](docs/runtime.md) cover execution boundaries, tools, context,
-skills, memory, and CLI configuration. [Working on TinyHarness](AGENTS.md)
-covers contribution rules and focused tests.
+## Further reading
+
+- [Agent Loop](tiny_harness/agent/loop.py): implementation entry point for the execution loop.
+- [Runtime documentation](docs/runtime.md): execution boundaries, tools, context, skills, memory, and CLI configuration.
+- [Working on TinyHarness](AGENTS.md): contribution guidelines and test commands.
