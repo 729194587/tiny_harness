@@ -1,5 +1,7 @@
 # TinyHarness
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 TinyHarness is a small, synchronous coding-agent runtime for Chat Completions
 providers. The aim is to keep it small enough to understand, instrument, and
 change.
