@@ -2,18 +2,16 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-TinyHarness 是一个基于 Chat Completions API 的同步 Coding Agent Runtime，支持工具调用、权限控制、Hooks、Context 压缩与恢复、Skills、可选的持久化 Memory、Todos 和同步 Subagents。
+TinyHarness 是一个基于 Chat Completions API 的轻量级同步 Coding Agent Runtime，支持工具执行与权限控制、Context 管理、Skills、可选的持久化 Memory 和 Subagents。
 
-项目使用编码任务和 SWE-bench Lite Dev 检验 Runtime 的设计。终端输出和 JSONL 日志基于同一套事件记录，方便查看 Agent 的执行过程。架构细节见 [Runtime 说明](docs/runtime.zh-CN.md)。
-
-[离线回归测试](tests)使用预设响应的 Provider、Mock 和临时工作区。[GitHub Actions](.github/workflows/ci.yml) 在 Python 3.10 和 3.12 下运行测试及 CLI 检查。
+项目通过编码任务和 SWE-bench Lite Dev 检验 Runtime 的设计。终端输出与 JSONL 日志共享同一套事件记录，便于查看 Agent 的执行过程。架构细节见 [Runtime 说明](docs/runtime.zh-CN.md)。
 
 ## 设计与取舍
 
-- **Context 与 Prefix Cache。** 重写历史消息会影响 Prefix Cache 复用，因此 TinyHarness 以追加为主维护消息历史，在上下文达到压力阈值时进行压缩。后续移除了主动检查点机制。相关提交见 [Cache 策略调整](https://github.com/729194587/tiny_harness/commit/df1fd53dfd5655ff2a94e91f37570c7b630d62f1)和[移除检查点](https://github.com/729194587/tiny_harness/commit/9a7635b5ebba3a921ce74f51523f18fad6075ef5)。
-- **摘要可靠性。** Agent 会根据压缩后的摘要继续执行任务。为避免未经验证的假设被写成事实，摘要规则逐步调整为只记录事实；压力压缩和错误恢复共用这套[规则](docs/runtime.zh-CN.md#context-与恢复)。
-- **评测与运行记录。** SWE-bench Lite Dev 会在 Agent 执行前校验基线和参考补丁的测试结果。事件日志记录执行轮次、Cache 使用、Context 变化和工作区修改，用于分析运行轨迹。详见[评测流程](evals/swe_bench_lite/README.md)。
-- **过度探索。** Agent 有时会反复读取文件和搜索，消耗轮次却没有生成补丁。相关行为可以结合[运行轨迹与工作区观测说明](evals/swe_bench_lite/README.md#inspect-existing-runs)分析，这仍是一个待解决的问题。
+- **Context 与 Prefix Cache。** TinyHarness 以追加为主维护消息历史，仅在上下文达到压力阈值时进行压缩，以减少对 Prefix Cache 复用的影响。参见 [Cache 策略调整](https://github.com/729194587/tiny_harness/commit/df1fd53dfd5655ff2a94e91f37570c7b630d62f1)。
+- **摘要可靠性。** Context 压缩可能丢失信息，也可能使未经验证的假设影响后续执行。摘要以事实为主，并保留不确定性。详见 [Context 与恢复](docs/runtime.zh-CN.md#context-与恢复)。
+- **评测与运行记录。** SWE-bench Lite Dev 在 Agent 执行前校验基线和参考补丁的测试结果。事件日志记录执行轮次、Cache 使用、Context 变化和工作区修改，便于分析运行轨迹。详见 [评测流程](evals/swe_bench_lite/README.md)。
+- **过度探索。** Agent 有时会反复搜索或读取文件，消耗轮次却没有生成补丁。这仍是一个待解决的问题，参见 [运行轨迹分析](evals/swe_bench_lite/README.md#inspect-existing-runs)。
 
 ## 快速开始
 
@@ -22,7 +20,7 @@ TinyHarness 是一个基于 Chat Completions API 的同步 Coding Agent Runtime�
 ```powershell
 python -m pip install -e .
 Copy-Item .env.example .env
-# 编辑 .env，填写 API Key，并按服务商设置模型和 Base URL
+# 编辑 .env，填写 API Key，并按需调整模型和 Base URL
 python -m tiny_harness "Inspect this project and explain its test setup" --workspace .
 ```
 
@@ -31,29 +29,17 @@ Bash：
 ```bash
 python -m pip install -e .
 cp .env.example .env
-# 编辑 .env，填写 API Key，并按服务商设置模型和 Base URL
+# 编辑 .env，填写 API Key，并按需调整模型和 Base URL
 python -m tiny_harness "Inspect this project and explain its test setup" --workspace .
 ```
 
-CLI 仅加载启动时当前目录中的 `.env`，不会向上查找，也不会自动加载 `--workspace` 目录中的配置。已有进程环境变量优先于 `.env`，仍可使用原有环境变量配置方式。未配置模型或 Base URL 时，默认使用 `deepseek-v4-flash` 和 `https://api.deepseek.com`。`.env` 已被 Git 忽略，请勿提交 API Key。
-
 省略任务参数即可进入交互会话，其他选项见 `--help`。
-
-离线测试：
-
-```bash
-python -m pip install pytest
-python -m pytest -q
-python -m tiny_harness --help
-```
 
 ## 评测
 
-SWE-bench Lite Dev 评测流程先校验基线和参考补丁的测试结果，再让 Agent 执行任务，最后使用官方评测器为生成的补丁评分。
+TinyHarness 使用 SWE-bench Lite Dev 评估 Agent 行为，流程包括环境校准、Agent 执行和官方补丁评分。
 
-仓库提供候选任务池和四任务冒烟测试集，用于开发和验证评测流程。[证据清单与复现指南](evals/swe_bench_lite/README.md#evidence-and-provenance)提供原始数据入口，并列出实验所需的任务选择、源码版本、配置、官方评分结果及 Token、Cache、Context、Tool 指标。
-
-`report` 和 `compare` 可离线分析已保存的运行事件；`finalize` 可为单任务运行生成官方评分与汇总。
+仓库提供候选任务池和四任务 Smoke 测试集，用于开发和评测流程验证，不代表公开基准成绩。任务选择、运行指标、复现方式及证据限制见 [评测文档](evals/swe_bench_lite/README.md)。
 
 ## 进一步阅读
 
