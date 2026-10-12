@@ -25,6 +25,7 @@ class RaisingPolicy:
 class PermissionTest(unittest.TestCase):
     def test_default_policy_allows_non_shell_tools(self) -> None:
         for tool_name in (
+            "code_outline",
             "read_file",
             "write_file",
             "edit_file",

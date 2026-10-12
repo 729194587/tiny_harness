@@ -343,7 +343,8 @@ class ToolHooksTest(unittest.TestCase):
             self.workspace,
             messages,
             tool_hooks=hooks,
-            max_context_tokens=2_500,
+            # Leave room for all discovered schemas; this tests hooks, not pressure.
+            max_context_tokens=5_000,
         )
 
         self.assertEqual(answer, "done")

@@ -869,7 +869,7 @@ class ContextAgentLoopTest(unittest.TestCase):
             messages,
             max_turns=1,
             # Leave room for the expanded built-in tool schemas after compaction.
-            max_context_tokens=2_500,
+            max_context_tokens=3_000,
             event_logger=logger,
         )
 
@@ -938,7 +938,7 @@ class ContextAgentLoopTest(unittest.TestCase):
             messages,
             max_turns=1,
             # Leave room for the expanded built-in tool schemas after compaction.
-            max_context_tokens=2_500,
+            max_context_tokens=3_000,
             event_logger=logger,
             recovery_policy=RecoveryPolicy(
                 max_retries=1,

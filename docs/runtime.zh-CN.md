@@ -49,6 +49,22 @@ Provider 瞬时错误的重试仍属于同一逻辑轮次。最后一个允许�
 [工具架构方案](superpowers/plans/2026-09-04-tool-architecture-phase-1.md)记录了最初的设计；
 以当前代码为准。
 
+`code_outline(path, max_symbols=200)` 使用标准库 AST 解析工作区内的 `.py` 文件，
+不导入或执行源码。按源码顺序返回类、函数、异步函数和方法，以缩进表示定义嵌套层级，
+并提供从 1 开始、包含首尾的起止行号。起始行指向 `class`/`def`，不含装饰器。
+适合先定位定义，再用 `read_file` 按行读取。输入上限为 2 MiB；输出默认最多 200 个符号，
+可配置至 500 个，且最多 30,000 字符，超限有截断提示。无定义、语法错误和无效路径均有明确反馈。
+该工具经过共享分发与工作区路径校验，默认权限策略允许调用；仅支持 Python 源码，
+不做符号解析、索引或调用图分析。
+
+`search_code` 新增可选 `include` 文件 glob，与 `grep` 一样相对于 `path` 匹配：
+`**/*.py` 包含所有深度，`*.py` 仅直接子文件，`src/**/*.py` 选择子树。
+原调用的结果格式和截断限制保持不变。两种递归内容搜索均跳过 `.git`、`.venv`、`venv`、
+`node_modules`、`__pycache__`、`.pytest_cache`、`.mypy_cache`、`.ruff_cache`、`.tox`、`.nox`
+及目录符号链接。显式将 `path` 指向被忽略的目录或文件即可搜索；仅设置 `include` 不覆盖忽略规则。
+显式文件路径不受 `include` 筛选，但始终受工作区安全边界约束。
+文件发现工具 `glob` 和 `list_files` 的行为不变。
+
 `task` 同步运行子 Agent，使用全新的消息，共享工作区和 Provider。子 Agent 继承策略与能力，
 但拥有独立的轮次、恢复、Context 和 Todo 状态，不能再创建子 Agent，且跳过 Memory 提取。
 父 Agent 将子 Agent 的最终文本作为工具输出接收。`todo_write` 更新本次运行的任务状态，

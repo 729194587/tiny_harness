@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import re
+from fnmatch import fnmatch
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterator
 
@@ -23,11 +25,54 @@ MAX_MATCH_LINE_CHARS = 500
 
 MAX_CONTEXT_LINES = 10
 MAX_SEARCH_OUTPUT_CHARS = 50_000
+IGNORED_SEARCH_DIRECTORIES = frozenset({
+    ".git", ".venv", "venv", "node_modules", "__pycache__",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox",
+})
+
+
+def _search_files(workspace: Path, root: Path, pattern: str) -> Iterator[tuple[Path, Path]]:
+    """Prune generated directories below the explicit search root before traversal."""
+    pattern_parts = Path(pattern).parts
+
+    def matches(relative: Path) -> bool:
+        parts = relative.parts
+
+        @lru_cache(maxsize=None)
+        def match(i: int, j: int) -> bool:
+            if j == len(pattern_parts):
+                return i == len(parts)
+            if pattern_parts[j] == "**":
+                return match(i, j + 1) or (i < len(parts) and match(i + 1, j))
+            return i < len(parts) and fnmatch(parts[i], pattern_parts[j]) and match(i + 1, j + 1)
+
+        return match(0, 0)
+
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        dirs[:] = sorted(name for name in dirs
+                         if name not in IGNORED_SEARCH_DIRECTORIES
+                         and not (Path(directory) / name).is_symlink())
+        for name in sorted(files):
+            candidate = Path(directory) / name
+            if not matches(candidate.relative_to(root)):
+                continue
+            try:
+                resolved = _resolve_path(workspace, str(candidate))
+                # Do not let file symlinks silently reintroduce ignored subtrees.
+                relative = resolved.relative_to(root) if resolved.is_relative_to(root) else resolved.relative_to(workspace)
+                if any(part in IGNORED_SEARCH_DIRECTORIES for part in relative.parts[:-1]):
+                    continue
+                if resolved.is_file():
+                    yield candidate, resolved
+            except (OSError, ValueError, RuntimeError):
+                continue
 
 
 def _validate_pattern(pattern: str) -> None:
     """Reject empty, absolute, or parent-traversing glob patterns."""
 
+    if not isinstance(pattern, str):
+        raise TypeError("pattern must be a string")
     if not pattern:
         raise ValueError("pattern must not be empty")
     parsed = Path(pattern)
@@ -143,7 +188,7 @@ def grep_text(
         candidates = ((root, root),)
     elif root.is_dir():
         candidates = sorted(
-            _matching_files(workspace, root, include),
+            _search_files(workspace, root, include),
             key=_matching_file_sort_key,
         )
     else:
@@ -197,6 +242,7 @@ def search_code(
     path: str | None = None,
     max_results: int = 20,
     context_lines: int = 2,
+    include: str = "**/*",
 ) -> str:
     """Return bounded literal, case-sensitive line matches with context."""
     if not isinstance(query, str):
@@ -204,6 +250,7 @@ def search_code(
     if not query or "\n" in query or "\r" in query:
         raise ValueError("query must be a nonempty single-line string")
     _validate_max_results(max_results)
+    _validate_pattern(include)
     if isinstance(context_lines, bool) or not isinstance(context_lines, int):
         raise TypeError("context_lines must be an integer")
     if not 0 <= context_lines <= MAX_CONTEXT_LINES:
@@ -213,30 +260,18 @@ def search_code(
     if not root.exists():
         raise ValueError(f"Search path does not exist: {path}")
 
-    def candidates() -> Iterator[Path]:
+    def candidates() -> Iterator[tuple[Path, Path]]:
         if root.is_file():
-            yield root
+            yield root, root
         elif root.is_dir():
-            for directory, dirs, files in os.walk(root, followlinks=False):
-                dirs[:] = sorted(
-                    name for name in dirs
-                    if name != ".git" and not (Path(directory) / name).is_symlink()
-                )
-                for name in sorted(files):
-                    yield Path(directory) / name
+            yield from _search_files(workspace, root, include)
 
     blocks: list[str] = []
     count = 0
     size = 0
-    for candidate in candidates():
+    for candidate, resolved in candidates():
         try:
-            resolved = _resolve_path(workspace, str(candidate))
             if not resolved.is_file():
-                continue
-            if any(
-                ".git" in item.relative_to(workspace).parts
-                for item in (candidate, resolved)
-            ):
                 continue
             with resolved.open("rb") as stream:
                 data = stream.read(MAX_SEARCH_FILE_BYTES + 1)
@@ -279,7 +314,10 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
             description=(
                 "Repository code search: search a workspace file or directory recursively for a case-sensitive "
                 "literal single-line substring. Returns path:line:match and path-line-context. "
-                "Skips .git, directory symlinks, binary/non-UTF-8/unreadable files and files "
+                "Optional include is a relative file glob (default '**/*'). Skips generated "
+                "directories (.git, .venv, venv, node_modules, __pycache__, tool caches) "
+                "below path; explicitly set path to search an ignored directory or file. "
+                "Explicit files bypass include. Skips directory symlinks, binary/non-UTF-8/unreadable files and files "
                 "over 2 MiB. Lines truncate at 500 characters; output at 50,000 characters."
             ),
             parameters={
@@ -287,6 +325,7 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
                 "properties": {
                     "query": {"type": "string", "minLength": 1},
                     "path": {"type": ["string", "null"], "default": None},
+                    "include": {"type": "string", "default": "**/*"},
                     "max_results": {"type": "integer", "minimum": 1,
                                     "maximum": MAX_RESULTS, "default": 20},
                     "context_lines": {"type": "integer", "minimum": 0,
@@ -329,7 +368,9 @@ def build_tools(context: AgentRunContext) -> tuple[ToolDefinition, ...]:
             description=(
                 "Preferred recursive text/symbol search in workspace files or directories: literal text (default) or "
                 "a Python regex with regex=true. Returns path:line:text. Directory "
-                "search is recursive by default; include is a relative glob such as '**/*.py'."
+                "search is recursive by default; include is a relative glob such as '**/*.py'. "
+                "Skips generated directories and directory symlinks below path; set path "
+                "explicitly to search an ignored directory or file. Explicit files bypass include."
             ),
             parameters={
                 "type": "object",

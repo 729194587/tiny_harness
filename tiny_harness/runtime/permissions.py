@@ -259,6 +259,7 @@ class DefaultPermissionPolicy:
             "glob",
             "grep",
             "search_code",
+            "code_outline",
         }
     )
 

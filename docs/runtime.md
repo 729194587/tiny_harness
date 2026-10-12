@@ -60,6 +60,27 @@ entry-point plugins. New tool names require explicit permission-policy review.
 The [tool architecture plan](superpowers/plans/2026-09-04-tool-architecture-phase-1.md)
 records the original design; current code is authoritative.
 
+`code_outline(path, max_symbols=200)` reads a workspace `.py` file with the standard
+library AST parser, without importing or executing it. It returns classes,
+functions, async functions and methods in source order, indented by enclosing
+definitions, with inclusive 1-based start/end lines. Starts refer to `class`/`def`,
+excluding decorators. Use it to locate definitions before a ranged `read_file`.
+Input is limited to 2 MiB; output to 500 symbols (configurable up to that limit)
+and 30,000 characters, with truncation notices. Empty outlines, syntax errors and
+invalid paths receive explicit feedback. It uses shared dispatch and workspace
+path checks, and is allowed by the default permission policy. Only Python source
+is supported; there is no symbol resolution, index or call graph.
+
+`search_code` accepts an optional `include` file glob, relative to `path`, like
+`grep`: `**/*.py` includes all depths, `*.py` only direct children, and
+`src/**/*.py` a subtree. Existing calls retain their result format and limits.
+Both recursive content searches prune `.git`, `.venv`, `venv`, `node_modules`,
+`__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox` and `.nox`,
+and skip directory symlinks. Set `path` explicitly to an ignored directory or
+file to search it; `include` alone does not override exclusions. Explicit files
+bypass `include`. Workspace boundary checks still apply. File discovery via
+`glob` and `list_files` is unchanged.
+
 `task` runs a synchronous child with fresh messages and a shared workspace and
 provider. Children inherit policies and capabilities, have independent turn,
 recovery, context, and Todo state, cannot spawn nested children, and skip memory

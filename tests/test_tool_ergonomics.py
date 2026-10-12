@@ -114,8 +114,8 @@ class ToolErgonomicsTest(unittest.TestCase):
         git.mkdir()
         (git / "config").write_text("needle")
         self.assertEqual(search_code(self.workspace, "needle", context_lines=0), "a.py:2:needle.*")
-        self.assertEqual(search_code(self.workspace, "needle", ".git/config"), "(no matches)")
-        self.assertEqual(search_code(self.workspace, "needle", ".git"), "(no matches)")
+        self.assertEqual(search_code(self.workspace, "needle", ".git/config"), ".git/config:1:needle")
+        self.assertEqual(search_code(self.workspace, "needle", ".git"), ".git/config:1:needle")
         with patch.object(Path, "open", side_effect=PermissionError("unreadable")):
             self.assertEqual(search_code(self.workspace, "needle"), "(no matches)")
 
@@ -175,7 +175,7 @@ class ToolErgonomicsTest(unittest.TestCase):
         self.assertEqual(set(schemas["read_file"]["properties"]),
                          {"path", "start_line", "end_line", "start_column"})
         self.assertEqual(set(schemas["search_code"]["properties"]),
-                         {"query", "path", "max_results", "context_lines"})
+                         {"query", "path", "max_results", "context_lines", "include"})
         self.assertIn("recursive", schemas["list_files"]["properties"])
         self.assertIn("pattern", schemas["list_files"]["properties"])
         self.assertIn("regex", schemas["grep"]["properties"])
