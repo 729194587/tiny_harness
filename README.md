@@ -21,9 +21,8 @@ Requires Python 3.10+ and an API key for a model provider. From the repository r
 
 ```powershell
 python -m pip install -e .
-$env:TINYHARNESS_API_KEY = "..."
-$env:TINYHARNESS_MODEL = "deepseek-v4-flash"
-$env:TINYHARNESS_BASE_URL = "https://api.deepseek.com"
+Copy-Item .env.example .env
+# Edit .env: enter your API key and set your provider model and base URL
 python -m tiny_harness "Inspect this project and explain its test setup" --workspace .
 ```
 
@@ -31,13 +30,14 @@ Bash:
 
 ```bash
 python -m pip install -e .
-export TINYHARNESS_API_KEY="..."
-export TINYHARNESS_MODEL="deepseek-v4-flash"
-export TINYHARNESS_BASE_URL="https://api.deepseek.com"
+cp .env.example .env
+# Edit .env: enter your API key and set your provider model and base URL
 python -m tiny_harness "Inspect this project and explain its test setup" --workspace .
 ```
 
-Set the model name and base URL for your Chat Completions provider. Omit the task argument to start an interactive session; see `--help` for other options.
+The CLI loads only `.env` in the current launch directory; it does not search parent directories or automatically load configuration from `--workspace`. Existing process environment variables take precedence, so environment-only configuration still works. If omitted, model and base URL default to `deepseek-v4-flash` and `https://api.deepseek.com`. Git ignores `.env`; do not commit API keys.
+
+Omit the task argument to start an interactive session; see `--help` for other options.
 
 Offline tests:
 

@@ -8,6 +8,8 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
 from tiny_harness.agent.context import DEFAULT_SUBAGENT_MAX_TURNS
 from tiny_harness.agent.session import AgentSession
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
@@ -228,6 +230,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
 
+    load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
     api_key = os.getenv("TINYHARNESS_API_KEY")
     if not api_key:
         parser.error("必须设置 TINYHARNESS_API_KEY")

@@ -21,9 +21,8 @@ TinyHarness 是一个基于 Chat Completions API 的同步 Coding Agent Runtime�
 
 ```powershell
 python -m pip install -e .
-$env:TINYHARNESS_API_KEY = "..."
-$env:TINYHARNESS_MODEL = "deepseek-v4-flash"
-$env:TINYHARNESS_BASE_URL = "https://api.deepseek.com"
+Copy-Item .env.example .env
+# 编辑 .env，填写 API Key，并按服务商设置模型和 Base URL
 python -m tiny_harness "Inspect this project and explain its test setup" --workspace .
 ```
 
@@ -31,13 +30,14 @@ Bash：
 
 ```bash
 python -m pip install -e .
-export TINYHARNESS_API_KEY="..."
-export TINYHARNESS_MODEL="deepseek-v4-flash"
-export TINYHARNESS_BASE_URL="https://api.deepseek.com"
+cp .env.example .env
+# 编辑 .env，填写 API Key，并按服务商设置模型和 Base URL
 python -m tiny_harness "Inspect this project and explain its test setup" --workspace .
 ```
 
-按所用的 Chat Completions 服务设置模型名称和 Base URL。省略任务参数即可进入交互会话，其他选项见 `--help`。
+CLI 仅加载启动时当前目录中的 `.env`，不会向上查找，也不会自动加载 `--workspace` 目录中的配置。已有进程环境变量优先于 `.env`，仍可使用原有环境变量配置方式。未配置模型或 Base URL 时，默认使用 `deepseek-v4-flash` 和 `https://api.deepseek.com`。`.env` 已被 Git 忽略，请勿提交 API Key。
+
+省略任务参数即可进入交互会话，其他选项见 `--help`。
 
 离线测试：
 

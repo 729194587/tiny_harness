@@ -25,9 +25,61 @@ class CliTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.workspace = Path(self.temporary_directory.name)
+        # Isolate CLI dotenv loading from any developer configuration.
+        cwd_patch = patch("tiny_harness.__main__.Path.cwd", return_value=self.workspace)
+        cwd_patch.start()
+        self.addCleanup(cwd_patch.stop)
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
+
+    @patch("tiny_harness.__main__.AgentSession")
+    @patch("tiny_harness.__main__.ChatCompletionsProvider")
+    def test_dotenv_configuration_and_environment_precedence(self, provider_class, session_class):
+        session_class.return_value.submit.return_value = "done"
+        (self.workspace / ".env").write_text(
+            'TINYHARNESS_API_KEY="file-secret"\n'
+            'TINYHARNESS_MODEL=file-model\n'
+            'TINYHARNESS_BASE_URL=https://file.example.test\n', encoding="utf-8")
+        target = self.workspace / "target"
+        target.mkdir()
+        (target / ".env").write_text("TINYHARNESS_API_KEY=wrong-workspace-key\n", encoding="utf-8")
+        for environment, expected in (
+            ({}, {"api_key": "file-secret", "model": "file-model", "base_url": "https://file.example.test"}),
+            ({"TINYHARNESS_API_KEY": "process-secret", "TINYHARNESS_MODEL": "process-model",
+              "TINYHARNESS_BASE_URL": "https://process.example.test"},
+             {"api_key": "process-secret", "model": "process-model", "base_url": "https://process.example.test"}),
+        ):
+            with self.subTest(environment=bool(environment)), patch.dict(os.environ, environment, clear=True), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                provider_class.reset_mock()
+                self.assertEqual(main(["task", "--workspace", str(target)]), 0)
+                provider_class.assert_called_once_with(**expected)
+
+    @patch("tiny_harness.__main__.AgentSession")
+    @patch("tiny_harness.__main__.ChatCompletionsProvider")
+    def test_dotenv_with_only_api_key_keeps_defaults(self, provider_class, session_class):
+        session_class.return_value.submit.return_value = "done"
+        (self.workspace / ".env").write_text("TINYHARNESS_API_KEY=file-secret\n", encoding="utf-8")
+        with patch.dict(os.environ, {}, clear=True), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["task", "--workspace", str(self.workspace)]), 0)
+        provider_class.assert_called_once_with(
+            api_key="file-secret", model=DEFAULT_MODEL, base_url=DEFAULT_BASE_URL)
+
+    @patch("tiny_harness.__main__.ChatCompletionsProvider")
+    def test_dotenv_does_not_search_parent_or_workspace(self, provider_class):
+        startup = self.workspace / "startup"
+        startup.mkdir()
+        target = self.workspace / "target"
+        target.mkdir()
+        for directory in (self.workspace, target):
+            (directory / ".env").write_text("TINYHARNESS_API_KEY=must-not-load\n", encoding="utf-8")
+        with patch("tiny_harness.__main__.Path.cwd", return_value=startup), \
+                patch.dict(os.environ, {}, clear=True), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                main(["task", "--workspace", str(target)])
+        self.assertEqual(error.exception.code, 2)
+        provider_class.assert_not_called()
 
     def test_cli_provider_request_includes_shared_efficiency_guidance(self):
         requests = []
