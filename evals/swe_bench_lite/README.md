@@ -1,5 +1,9 @@
 # SWE-bench Lite evaluation
 
+For the separate 30-task Verified P1 preparation subset and model-free smoke
+entry point, see [Verified preparation](verified/README.md). The Dev selection
+and commands below remain unchanged.
+
 The evaluation pipeline separates environment calibration, model rollout, and
 patch grading. Calibration runs the baseline and reference patch through the
 official evaluator: expected failing tests must fail on baseline and pass with
