@@ -1,0 +1,2 @@
+# Preserve byte-level fingerprints for the fixed Verified selection and evidence.
+evals/swe_bench_lite/verified/*.json* text eol=lf
