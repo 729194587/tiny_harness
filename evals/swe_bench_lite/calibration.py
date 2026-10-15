@@ -90,6 +90,7 @@ def _run_phase(
     label: str,
     environment_factory: Callable[[SweTask], DockerTaskEnvironment],
     grader: CalibrationGrader,
+    official_script: bool = False,
 ) -> Mapping[str, Any]:
     log_path = output_dir / f"{label}.log"
     with environment_factory(task) as environment:
@@ -104,7 +105,15 @@ def _run_phase(
                 check=True,
             )
         script_path = private_dir / "eval.sh"
-        script_path.write_text(bundle.eval_script, encoding="utf-8", newline="\n")
+        # The official harness augments the script with the test command's exit
+        # marker. Use that same TestSpec projection for reference calibration.
+        script = bundle.eval_script
+        if official_script:
+            from swebench.harness.utils import make_test_spec
+            record = bundle.official_record()
+            record["image"] = task.image
+            script = make_test_spec(record).eval_script
+        script_path.write_text(script, encoding="utf-8", newline="\n")
         completed = environment.exec("bash .tinyharness/eval.sh", check=False)
         log_path.write_text(
             completed.stdout + completed.stderr,
@@ -121,6 +130,7 @@ def calibrate_task(
     *,
     environment_factory: Callable[[SweTask], DockerTaskEnvironment] = DockerTaskEnvironment,
     grader: CalibrationGrader = official_log_grader,
+    official_script: bool = False,
 ) -> CalibrationResult:
     """Admit a task only when clean and gold oracle behavior both reproduce."""
 
@@ -129,9 +139,9 @@ def calibrate_task(
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
         baseline = _run_phase(
-            task, bundle, output_dir, "baseline", environment_factory, grader
+            task, bundle, output_dir, "baseline", environment_factory, grader, official_script
         )
-        gold = _run_phase(task, bundle, output_dir, "gold", environment_factory, grader)
+        gold = _run_phase(task, bundle, output_dir, "gold", environment_factory, grader, official_script)
         result = CalibrationResult(
             instance_id=task.instance_id,
             status=CALIBRATION_FAILED,

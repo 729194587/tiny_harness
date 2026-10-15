@@ -12,6 +12,21 @@ from tiny_harness.context.attribution import request_attribution
 
 
 class ReportTest(unittest.TestCase):
+    def test_tool_names_include_child_and_failed_calls(self):
+        root = self.write("names", [
+            ("tool_called", {"turn": 1, "tool_name": "code_outline"}),
+            ("tool_called", {"turn": 1, "tool_name": "grep", "parent_tool_call_id": "child"}),
+            ("tool_result", {"tool_name": "grep", "outcome": "error"}),
+            ("tool_called", {"turn": 2, "tool_name": "glob"}),
+            ("tool_called", {"turn": 2, "tool_name": "search_code"}),
+        ])
+        result = analyze_run(root)
+        self.assertEqual(result["tool_calls_by_name"], {
+            "code_outline": 1, "grep": 1, "glob": 1, "search_code": 1,
+        })
+        self.assertEqual(result["tool_calls"], 4)
+        self.assertEqual(result["search_tool_calls"], 3)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

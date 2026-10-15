@@ -18,6 +18,7 @@ def analyze_run(run_dir: Path) -> dict:
         raise ValueError(f"No events.jsonl artifacts in {run_dir}")
     turns = set()
     calls = Counter()
+    calls_by_name = Counter()
     usage = {name: [] for name in ("prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens")}
     request_contexts = []
     pre_prune_contexts = []
@@ -89,6 +90,7 @@ def analyze_run(run_dir: Path) -> dict:
                             values.append(value)
                 elif kind == EventType.TOOL_CALLED:
                     calls[key] += 1
+                    calls_by_name[data.get("tool_name", "unknown")] += 1
                 elif kind == EventType.TOOL_STARTED:
                     started_tools += 1
                 elif kind == EventType.WORKSPACE_OBSERVED:
@@ -135,6 +137,8 @@ def analyze_run(run_dir: Path) -> dict:
         "usage_observed_totals": {name: sum(values) if values else None for name, values in usage.items()},
         "usage_coverage": {name: len(values) for name, values in usage.items()},
         "model_responses": responses, "tool_calls": sum(calls.values()),
+        "tool_calls_by_name": dict(sorted(calls_by_name.items())),
+        "search_tool_calls": sum(calls_by_name[name] for name in ("grep", "glob", "search_code")),
         "tool_call_turns": len(calls), "multi_tool_turns": multi,
         "multi_tool_rate": multi / len(calls) if calls else 0,
         "calls_per_tool_turn": sum(calls.values()) / len(calls) if calls else 0,

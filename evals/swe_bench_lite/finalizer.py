@@ -72,7 +72,7 @@ def _existing(run_dir, predictions, instance, fingerprint):
             if recorded is not None and recorded != fingerprint:
                 continue
             # Old evaluations have no digest; don't reuse after predictions changed.
-            if recorded is None and predictions.stat().st_mtime_ns > path.stat().st_mtime_ns:
+            if recorded is None and predictions.stat().st_mtime_ns >= path.stat().st_mtime_ns:
                 continue
             status, report = _verdict(path.parent, instance)
             if status != ERROR:

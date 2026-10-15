@@ -1,0 +1,18 @@
+{
+  "protocol_version": 2,
+  "objective": "Measure actual solving capability of one unchanged full TinyHarness configuration on frozen Test60",
+  "frozen_bundle": "test60-v1",
+  "frozen_sums_sha256": "ed1383ec5ee43849c3de4b332266319d6e0102bf378ca373a0fd00fada5c9a87",
+  "supersedes": "All historical A/B profile, tool-switch, ablation and paired-order instructions in the immutable phase-1 protocol/CSV are void. Those archival fields must never drive execution.",
+  "configuration": "Identical source bytes, dependencies, model/version/endpoint, unchanged Prompt, complete tools/skills, runtime defaults and execution budgets for every task; no tool filtering or runtime modifications",
+  "formal_attempts": 1,
+  "service_retry": "Preserve current Runtime recovery: at most 2 transient retries per logical request, bounded backoff; auxiliary/retry requests are accounted for",
+  "new_attempt": "Only established infrastructure failure, with a separate human approval containing operator and evidence; preserve old attempts, never choose best score",
+  "interruption": "Keep receipt and partial outputs; no implicit replay. Confirm process stopped, record manual infrastructure review, then separately approve a new attempt",
+  "selection": "Use exactly frozen 60 IDs in original order; no outcome-driven replacement, exclusion or difficulty filtering",
+  "scoring": "Official installed SWE-bench harness with explicit test split; resolved/60 primary; raw verdict and evidence-based failure category retained separately",
+  "metrics": ["tokens with coverage and retries", "tools called/started/failed", "elapsed time", "first mutation root turn with never/unknown distinction", "service request and attempt failures", "per-repository outcomes"],
+  "isolation": "Only allowlisted SweTask crosses rollout boundary; evaluator records and grading artifacts remain outside the sole temporary task workspace mount",
+  "docker": "Local pinned images only; capacity preflight on actual VHDX host drive; cleanup interface produces a human review plan and has no deletion mode",
+  "phase_gate": "This implementation phase performs offline tests only; model rollout, image preparation/deletion and official Test grading require later authorization"
+}

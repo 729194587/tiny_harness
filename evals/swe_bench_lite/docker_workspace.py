@@ -84,12 +84,14 @@ class DockerTaskEnvironment:
         *,
         command_timeout_seconds: float = 1200,
         network_mode: str | None = None,
+        require_local_image: bool = False,
     ) -> None:
         if not _COMMIT.fullmatch(task.base_commit):
             raise ValueError(f"Invalid base commit for {task.instance_id}")
         self.task = task
         self.command_timeout_seconds = command_timeout_seconds
         self.network_mode = network_mode
+        self.require_local_image = require_local_image
         suffix = uuid4().hex[:12]
         self.bootstrap_name = f"tinyharness-copy-{suffix}"
         self.container_name = f"tinyharness-agent-{suffix}"
@@ -102,7 +104,8 @@ class DockerTaskEnvironment:
         self.workspace = Path(self._temporary.name).resolve()
         try:
             _run(
-                ["docker", "create", "--name", self.bootstrap_name, self.task.image],
+                ["docker", "create", *(["--pull", "never"] if self.require_local_image else []),
+                 "--name", self.bootstrap_name, self.task.image],
                 timeout=self.command_timeout_seconds,
             )
             _run(
@@ -119,6 +122,7 @@ class DockerTaskEnvironment:
             run_argv = [
                 "docker",
                 "run",
+                *(["--pull", "never"] if self.require_local_image else []),
                 "--detach",
                 "--name",
                 self.container_name,

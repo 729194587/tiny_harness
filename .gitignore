@@ -33,3 +33,16 @@ Thumbs.db
 !.tinyharness/skills/
 !.tinyharness/skills/**
 evals/results/
+
+# Local logs and rebuildable Test60 public source data
+skill-smoke*.jsonl
+.cache/
+evals/swe_bench_lite/frozen/test60-v1/evaluator/population.jsonl
+evals/swe_bench_lite/frozen/test60-v1/evaluator/source/data/*.parquet
+
+# Local Docker and VM exports
+docker-image*.tar
+docker-image*.tar.gz
+*.vhd
+*.vhdx
+*.qcow2

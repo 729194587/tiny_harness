@@ -1,0 +1,149 @@
+{
+  "artifacts": {
+    "agent/agent_tasks.jsonl": {
+      "bytes": 101385,
+      "sha256": "88f0db9178c7ecffde6c25ec39264eb8eebdd9fc958eb409820f7a26e6257ea1"
+    },
+    "evaluator/population.jsonl": {
+      "bytes": 4411573,
+      "sha256": "133a1c43e22f9dcb3a3df5d826cc82c5cf33dc2927510080af1c8b8383051766"
+    },
+    "evaluator/selection.jsonl": {
+      "bytes": 820622,
+      "sha256": "b80ec28439e38b74df735144e2f559f09a2ab98ecbd4dd405a2b4c40d90092c4"
+    },
+    "evaluator/source/README.md": {
+      "bytes": 3862,
+      "sha256": "ec47dedb6d82aa9556d8fffed8ab6c0aa6feaae6d4bf943466d3fdbfd158ae68"
+    },
+    "evaluator/source/data/test-00000-of-00001.parquet": {
+      "bytes": 2702170,
+      "sha256": "438e281d80587aa7be470896ce410557002fde02d2ceee3e099331d308f62dd3"
+    },
+    "evaluator/source/metadata.json": {
+      "bytes": 2341,
+      "sha256": "2f6ead210835cae2831f9e93d48177debb8a4ff946405312420af593b91faf9f"
+    },
+    "evaluator/source/source.json": {
+      "bytes": 971,
+      "sha256": "54b4d0a2444cdf7b60560837636914e84242a77830e0d813a11c3ab1e904ffa5"
+    },
+    "protocol.json": {
+      "bytes": 6123,
+      "sha256": "8a204e112df6b7777cfbb140093d27d16091a9a35209dac77e5ae57ad264f646"
+    },
+    "selection.csv": {
+      "bytes": 9636,
+      "sha256": "2da977f6551eac99ed1a76531be89f45ed45d2c562f6f2b8f1696b5d50dea072"
+    }
+  },
+  "dataset": "SWE-bench/SWE-bench_Lite",
+  "execution_configuration": "Not frozen in phase 1; no rollout or grading is authorized by this data bundle",
+  "format_version": 1,
+  "generator": {
+    "path": "evals/swe_bench_lite/freeze.py",
+    "sha256": "153e965f9ff3bb44552db6d6c6fe187c61d4f2f907e964b938cba815faa5a953"
+  },
+  "parquet_decoder": {
+    "package": "pyarrow",
+    "version": "25.0.1"
+  },
+  "parquet_schemas": [
+    "base_commit: string\ncreated_at: string\ndifficulty: string\nenvironment_setup_commit: string\neval_type: string\nimage: string\ninstance_id: string\nlog_parser: string\nrepo: string\nversion: string\npatch: string\ntest_patch: string\neval_script: string\nproblem_statement: string\nhints_text: string\nFAIL_TO_PASS: list<element: string>\n  child 0, element: string\nPASS_TO_PASS: list<element: string>\n  child 0, element: string\n-- schema metadata --\nhuggingface: '{\"info\": {\"features\": {\"base_commit\": {\"dtype\": \"string\", \"' + 934"
+  ],
+  "population_count": 300,
+  "repository_population": {
+    "astropy/astropy": 6,
+    "django/django": 114,
+    "matplotlib/matplotlib": 23,
+    "mwaskom/seaborn": 4,
+    "pallets/flask": 3,
+    "psf/requests": 6,
+    "pydata/xarray": 5,
+    "pylint-dev/pylint": 6,
+    "pytest-dev/pytest": 17,
+    "scikit-learn/scikit-learn": 23,
+    "sphinx-doc/sphinx": 16,
+    "sympy/sympy": 77
+  },
+  "repository_selection": {
+    "astropy/astropy": 1,
+    "django/django": 23,
+    "matplotlib/matplotlib": 5,
+    "mwaskom/seaborn": 1,
+    "pallets/flask": 1,
+    "psf/requests": 1,
+    "pydata/xarray": 1,
+    "pylint-dev/pylint": 1,
+    "pytest-dev/pytest": 3,
+    "scikit-learn/scikit-learn": 5,
+    "sphinx-doc/sphinx": 3,
+    "sympy/sympy": 15
+  },
+  "revision": "b0dde1093fe417d83b7184254edf8199c1f0dff5",
+  "seed": "20261015",
+  "selected_count": 60,
+  "selected_instance_ids": [
+    "astropy__astropy-14182",
+    "django__django-11133",
+    "django__django-11283",
+    "django__django-11815",
+    "django__django-11848",
+    "django__django-11999",
+    "django__django-12113",
+    "django__django-12747",
+    "django__django-12856",
+    "django__django-12915",
+    "django__django-12983",
+    "django__django-13158",
+    "django__django-13230",
+    "django__django-13321",
+    "django__django-13401",
+    "django__django-13448",
+    "django__django-13660",
+    "django__django-13710",
+    "django__django-13768",
+    "django__django-14382",
+    "django__django-14915",
+    "django__django-15320",
+    "django__django-16595",
+    "django__django-17051",
+    "matplotlib__matplotlib-23913",
+    "matplotlib__matplotlib-24265",
+    "matplotlib__matplotlib-24334",
+    "matplotlib__matplotlib-24970",
+    "matplotlib__matplotlib-25079",
+    "mwaskom__seaborn-3407",
+    "pallets__flask-4045",
+    "psf__requests-2317",
+    "pydata__xarray-4094",
+    "pylint-dev__pylint-7993",
+    "pytest-dev__pytest-11143",
+    "pytest-dev__pytest-11148",
+    "pytest-dev__pytest-7432",
+    "scikit-learn__scikit-learn-10508",
+    "scikit-learn__scikit-learn-13439",
+    "scikit-learn__scikit-learn-13497",
+    "scikit-learn__scikit-learn-13584",
+    "scikit-learn__scikit-learn-25500",
+    "sphinx-doc__sphinx-8282",
+    "sphinx-doc__sphinx-8435",
+    "sphinx-doc__sphinx-8595",
+    "sympy__sympy-11870",
+    "sympy__sympy-13146",
+    "sympy__sympy-13471",
+    "sympy__sympy-13647",
+    "sympy__sympy-13773",
+    "sympy__sympy-14308",
+    "sympy__sympy-14817",
+    "sympy__sympy-15011",
+    "sympy__sympy-15609",
+    "sympy__sympy-18057",
+    "sympy__sympy-18087",
+    "sympy__sympy-18698",
+    "sympy__sympy-19487",
+    "sympy__sympy-23262",
+    "sympy__sympy-24102"
+  ],
+  "split": "test"
+}

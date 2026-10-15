@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -114,10 +115,26 @@ class FinalizerTest(unittest.TestCase):
         self.assertEqual(result["official_status"], "Evaluation Error")
         self.assertIn("docker failed", result["evaluation_error"])
 
+    def test_empty_patch_keeps_error_status_and_never_calls_model(self):
+        self.write(self.root / "predictions.jsonl", {
+            "instance_id": "one", "model_patch": "",
+        })
+        with patch("tiny_harness.models.chat_completions.ChatCompletionsProvider.complete") as model, \
+                patch("evals.swe_bench_lite.finalizer.run_official_evaluation",
+                      side_effect=self.evaluator({"empty_patch_ids": ["one"]})) as evaluate:
+            result = finalize_run(self.root)
+        self.assertEqual(result["official_status"], "Evaluation Error")
+        evaluate.assert_called_once()
+        model.assert_not_called()
+
     def test_legacy_evaluation_reuse_and_changed_prediction(self):
         self.evaluator({"one": {"resolved": True}})(
             self.root / "predictions.jsonl", self.root / "data" / "tasks.jsonl", self.root.parent,
             instance_ids=("one",))
+        # Establish a strict ordering; fast writes can share a filesystem timestamp.
+        os.utime(self.root / "predictions.jsonl", ns=(1_000_000_000, 1_000_000_000))
+        os.utime(self.root.parent / "official_evaluation" / "eval" / "metadata.json",
+                 ns=(2_000_000_000, 2_000_000_000))
         with patch("evals.swe_bench_lite.finalizer.run_official_evaluation") as evaluate:
             self.assertTrue(finalize_run(self.root)["evaluation_reused"])
             evaluate.assert_not_called()
@@ -130,3 +147,14 @@ class FinalizerTest(unittest.TestCase):
         with patch("evals.swe_bench_lite.finalizer.run_official_evaluation", side_effect=RuntimeError("new evaluation")) as evaluate:
             self.assertEqual(finalize_run(self.root)["official_status"], "Evaluation Error")
             evaluate.assert_called_once()
+
+    def test_legacy_equal_timestamps_do_not_reuse_a_verdict(self):
+        result = self.evaluator({"one": {"resolved": True}})(
+            self.root / "predictions.jsonl", self.root / "data" / "tasks.jsonl",
+            self.root.parent, instance_ids=("one",))
+        for path in (self.root / "predictions.jsonl", result.output_dir / "metadata.json"):
+            os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+        with patch("evals.swe_bench_lite.finalizer.run_official_evaluation",
+                   side_effect=RuntimeError("explicit grading required")) as evaluate:
+            self.assertEqual(finalize_run(self.root)["official_status"], "Evaluation Error")
+        evaluate.assert_called_once()

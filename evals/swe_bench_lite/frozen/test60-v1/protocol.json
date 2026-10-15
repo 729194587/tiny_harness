@@ -1,0 +1,122 @@
+{
+  "accounting": {
+    "categories": [
+      "resolved",
+      "unresolved",
+      "infrastructure_failure",
+      "official_evaluation_error",
+      "harness_or_protocol_failure",
+      "pending_or_not_run"
+    ],
+    "category_definitions": {
+      "harness_or_protocol_failure": "Harness crash or invalid model response; do not automatically classify as infrastructure",
+      "infrastructure_failure": "Evidence of environment/calibration/image availability, Docker or exhausted transient model-service failure, not an inferred agent failure",
+      "official_evaluation_error": "Evaluator nonzero exit, missing/conflicting report or grader/parser exception not established as infrastructure failure",
+      "pending_or_not_run": "No completed attempt, including interruption awaiting inspection",
+      "resolved": "Explicit official resolved verdict bound to the prediction and evaluation fingerprints",
+      "unresolved": "Valid non-resolved task outcome, including an empty patch; retain subtype and raw official verdict"
+    },
+    "classification": "Preserve raw official verdict separately. Use evidence-based exclusive analysis categories; official infra/error sets can overlap. Empty patches are non-resolved task outcomes with an explicit subtype; do not relabel the raw official status",
+    "metrics": [
+      "input/output/cache-hit/cache-miss tokens and usage coverage",
+      "physical requests vs logical turns",
+      "retries and auxiliary/child requests",
+      "tools called/started/failed by name",
+      "per-task first mutation root turn with never-mutated distinct from unknown",
+      "per-repo outcomes"
+    ],
+    "primary_denominator": 60,
+    "primary_score": "resolved / 60 per profile; pending runs are provisional",
+    "secondary_score": "resolved / validly_graded with coverage; never substitutes for fixed-denominator primary score"
+  },
+  "benchmark_label": "SWE-bench Lite Test stratified subset (60/300)",
+  "freeze_policy": "No result-driven Test tuning or membership changes. Protocol/data changes require a new versioned bundle, retaining the old bundle. SHA256SUMS covers every artifact except itself; manifest excludes itself and SHA256SUMS to avoid circular hashes",
+  "isolation": {
+    "agent_allowlist": [
+      "instance_id",
+      "repo",
+      "base_commit",
+      "problem_statement",
+      "image"
+    ],
+    "agent_directory": "agent",
+    "controller_only": [
+      "protocol.json",
+      "manifest.json",
+      "selection.csv",
+      "SHA256SUMS"
+    ],
+    "evaluator_only_directory": "evaluator",
+    "limit": "Allowlisting removes evaluator fields; original public issue text is preserved verbatim and may itself contain solution hints. This is data isolation, not an OS sandbox or a model contamination guarantee",
+    "mount_policy": "Only agent/agent_tasks.jsonl may cross the controller-to-agent input boundary. Never mount the bundle, evaluator data, calibration outputs or answer artifacts in a task workspace"
+  },
+  "paired_design": {
+    "analysis": "Report paired wins/losses, both-resolved and neither-resolved; all-task costs plus costs on common successes",
+    "attempts_per_profile": 1,
+    "controls": [
+      "same pinned model/version and endpoint",
+      "same prompts, skills, recovery and turn/context budgets",
+      "same image digest and fresh base workspace",
+      "memory disabled",
+      "profile applies to parent and children",
+      "identical safety/path constraints"
+    ],
+    "execution_gate": "Model configuration, tool profiles, image digests and Harness source must be frozen in a separately approved phase-2 execution manifest; not yet runnable",
+    "filter_scope": "Includes automatic ignored-directory behavior and new search parameters; hiding a schema argument alone does not disable filtering",
+    "pairing_key": "instance_id",
+    "profile_order": "Alternate A,B and B,A by zero-based selection_index parity",
+    "profiles": {
+      "A": {
+        "code_outline": false,
+        "new_search_filtering": false
+      },
+      "B": {
+        "code_outline": true,
+        "new_search_filtering": true
+      }
+    }
+  },
+  "population": 300,
+  "protocol_version": 1,
+  "sample_size": 60,
+  "sampling": {
+    "allocation": "Start each repo at 1; repeatedly increment the non-full repo with largest 60*n_r-300*q_r; ties by repo ascending",
+    "inputs": [
+      "repo",
+      "instance_id",
+      "original row order"
+    ],
+    "interpretation": "Repo coverage imposes unequal inclusion probabilities; report this subset, never a full 300-task score",
+    "prohibited_inputs": [
+      "difficulty",
+      "gold patch",
+      "test patch",
+      "test counts",
+      "historical results",
+      "image cache",
+      "pilot outcomes"
+    ],
+    "ranking": "Ascending SHA256(UTF8(seed + NUL + repo + NUL + instance_id)); ties by instance_id",
+    "replacement": "Never replace or drop tasks because of outcomes, difficulty, unavailable images, calibration, service or grading failures",
+    "selection_and_execution_order": "Original parquet shard order (shards sorted by filename), then row order; source_row is zero-based"
+  },
+  "seed": "20261015",
+  "service_failures": {
+    "backoff_seconds": {
+      "base": 1,
+      "jitter_ratio": 0.25,
+      "maximum": 8
+    },
+    "context_recovery": "At most one reactive compaction per logical request; identical policy across profiles; account for auxiliary calls",
+    "exhaustion": "Record failed formal attempt and stop that task; never automatically restart a rollout or replace a task",
+    "interruption": "Preserve receipts and partial artifacts. Unclear launch state requires inspection, never silent replay",
+    "later_attempts": "Any separately approved rerun must retain original attempt and reason, use a new ID, and be reported separately rather than selecting the best result",
+    "max_transient_retries_per_logical_request": 2,
+    "transient_kinds": [
+      "rate_limit",
+      "connection",
+      "server_unavailable"
+    ],
+    "usage": "Count every observed request including failures and retries; missing billed usage stays unknown, not zero"
+  }
+}

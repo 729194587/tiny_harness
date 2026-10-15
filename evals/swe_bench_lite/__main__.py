@@ -75,6 +75,7 @@ def _parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--results-root", type=Path, default=DEFAULT_RESULTS_ROOT)
     evaluate.add_argument("--instance-id", action="append", default=[])
     evaluate.add_argument("--evaluation-run-id")
+    evaluate.add_argument("--split", choices=("dev", "test"), default="dev")
     return parser
 
 
@@ -100,6 +101,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.results_root,
             instance_ids=tuple(args.instance_id),
             evaluation_run_id=args.evaluation_run_id,
+            split=args.split,
         )
         print(result.output_dir)
         return 0
@@ -110,7 +112,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         # dev.jsonl is the full Dev dataset underlying the catalog and smoke set.
         source = (
             Path(__file__).with_name("dev.jsonl")
-            if args.all_candidates or args.instance_id is not None else args.selected
+            if args.all_candidates or (args.instance_id is not None and args.selected == DEFAULT_SELECTED_TASKS)
+            else args.selected
         )
         candidates = load_agent_tasks(source)
         try:

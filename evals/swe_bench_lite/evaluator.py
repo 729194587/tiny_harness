@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
@@ -31,20 +32,24 @@ def run_official_evaluation(
     instance_ids: tuple[str, ...] = (),
     evaluation_run_id: str | None = None,
     timeout_seconds: float | None = None,
+    split: str = "dev",
+    local_images_only: bool = False,
 ) -> OfficialEvaluationResult:
     """Invoke the official harness without reproducing benchmark scoring."""
 
+    if split not in {"dev", "test"}:
+        raise ValueError("Expected dev or test split")
     run_id = evaluation_run_id or new_run_id("official")
     output_dir = (results_root / "official_evaluation" / run_id).resolve()
     output_dir.mkdir(parents=True, exist_ok=False)
     argv = [
         sys.executable,
         "-m",
-        "swebench.harness.run_evaluation",
+        "evals.swe_bench_lite.official_local" if local_images_only else "swebench.harness.run_evaluation",
         "--dataset_name",
         str(dataset_path.resolve()),
         "--split",
-        "dev",
+        split,
         "--predictions_path",
         str(predictions_path.resolve()),
         "--max_workers",
@@ -64,6 +69,8 @@ def run_official_evaluation(
         errors="replace",
         timeout=timeout_seconds,
         check=False,
+        **({"env": {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2])
+                    + os.pathsep + os.environ.get("PYTHONPATH", "")}} if local_images_only else {}),
     )
     (output_dir / "harness.log").write_text(
         completed.stdout + completed.stderr,
@@ -78,6 +85,8 @@ def run_official_evaluation(
                 "predictions_path": str(predictions_path.resolve()),
                 "dataset_path": str(dataset_path.resolve()),
                 "instance_ids": list(instance_ids),
+                "split": split,
+                "local_images_only": local_images_only,
             },
             indent=2,
         )
