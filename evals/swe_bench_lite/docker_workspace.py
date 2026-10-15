@@ -31,7 +31,10 @@ def _run(argv: list[str], *, timeout: float, check: bool = True) -> subprocess.C
 
 
 class DockerShellRunner:
-    """Execute shell commands in one container's bind-mounted /testbed."""
+    """Execute model commands in /testbed; pipefail is an explicit opt-in.
+
+    command_argv() always preserves the environment-management shell behavior.
+    """
 
     def __init__(
         self,
@@ -39,12 +42,14 @@ class DockerShellRunner:
         host_workspace: Path,
         *,
         timeout_seconds: float = DEFAULT_SHELL_TIMEOUT_SECONDS,
+        pipefail: bool = False,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("Shell runner timeout must be positive")
         self.container_name = container_name
         self.host_workspace = host_workspace.resolve()
         self.timeout_seconds = timeout_seconds
+        self.pipefail = pipefail
 
     def command_argv(self, workspace: Path, command: str) -> list[str]:
         if workspace.resolve() != self.host_workspace:
@@ -65,6 +70,10 @@ class DockerShellRunner:
         ]
 
     def run(self, workspace: Path, command: str) -> str:
+        # Apply after login startup, only for model calls. Environment.exec()
+        # shares command_argv() and must retain its existing shell semantics.
+        if self.pipefail:
+            command = "set -o pipefail\n" + command
         completed = _run(
             self.command_argv(workspace, command),
             timeout=self.timeout_seconds,
@@ -76,7 +85,7 @@ class DockerShellRunner:
 
 
 class DockerTaskEnvironment:
-    """Own a single disposable task container and its sole workspace copy."""
+    """Own a disposable task container; model_shell_pipefail affects only tools."""
 
     def __init__(
         self,
@@ -85,6 +94,7 @@ class DockerTaskEnvironment:
         command_timeout_seconds: float = 1200,
         network_mode: str | None = None,
         require_local_image: bool = False,
+        model_shell_pipefail: bool = False,
     ) -> None:
         if not _COMMIT.fullmatch(task.base_commit):
             raise ValueError(f"Invalid base commit for {task.instance_id}")
@@ -92,6 +102,7 @@ class DockerTaskEnvironment:
         self.command_timeout_seconds = command_timeout_seconds
         self.network_mode = network_mode
         self.require_local_image = require_local_image
+        self.model_shell_pipefail = model_shell_pipefail
         suffix = uuid4().hex[:12]
         self.bootstrap_name = f"tinyharness-copy-{suffix}"
         self.container_name = f"tinyharness-agent-{suffix}"
@@ -150,6 +161,7 @@ class DockerTaskEnvironment:
                 self.container_name,
                 self.workspace,
                 timeout_seconds=self.command_timeout_seconds,
+                pipefail=self.model_shell_pipefail,
             )
             self.exec(
                 "git config --global --add safe.directory /testbed && "
