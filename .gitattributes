@@ -1,2 +1,8 @@
 # Preserve byte-level fingerprints for the fixed Verified selection and evidence.
 evals/swe_bench_lite/verified/*.json* text eol=lf
+
+# Preserve immutable Test60 bytes and executable evaluation source fingerprints.
+evals/swe_bench_lite/frozen/test60-v1/** -text
+evals/swe_bench_lite/*.py text eol=lf
+evals/test_swe_*.py text eol=lf
+evals/swe_bench_lite/test60-protocol.json text eol=lf
