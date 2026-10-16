@@ -277,7 +277,10 @@ def build_run_context(config: RunConfig) -> AgentRunContext:
 
     token_meter = (config.token_meter if isinstance(config.token_meter, CalibratedTokenMeter)
                    else CalibratedTokenMeter(config.token_meter))
-    recovery = RecoveryExecutor(config.recovery_policy, event_logger=config.event_logger)
+    recovery = RecoveryExecutor(
+        config.recovery_policy, event_logger=config.event_logger,
+        tool_trace=config.tool_trace,
+    )
     context: AgentRunContext
     complete_for = _completion_router(
         config.provider,

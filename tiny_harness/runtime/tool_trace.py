@@ -8,10 +8,14 @@ class ToolTraceConfig:
 
     enabled: bool = False
     result_preview_chars: int = 200
+    # Independent of tool previews; visible main-response text can be sensitive.
+    capture_assistant_content: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
             raise ValueError("enabled must be a bool")
+        if not isinstance(self.capture_assistant_content, bool):
+            raise ValueError("capture_assistant_content must be a bool")
         if type(self.result_preview_chars) is not int or self.result_preview_chars < 0:
             raise ValueError("result_preview_chars must be a nonnegative integer")
 

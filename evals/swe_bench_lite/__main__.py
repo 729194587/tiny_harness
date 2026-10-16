@@ -57,6 +57,10 @@ def _parser() -> argparse.ArgumentParser:
     run = subparsers.choices["run"]
     run.add_argument("--max-turns", type=int, default=20)
     run.add_argument("--subagent-max-turns", type=int, default=10)
+    run.add_argument(
+        "--capture-assistant-content", action="store_true",
+        help="Record visible Assistant text in events.jsonl (may contain sensitive data)",
+    )
     context_group = run.add_mutually_exclusive_group()
     context_group.add_argument(
         "--max-context-tokens",
@@ -209,6 +213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_turns=args.max_turns,
         subagent_max_turns=args.subagent_max_turns,
         max_context_tokens=args.max_context_tokens,
+        capture_assistant_content=args.capture_assistant_content,
     )
     print(run_dir)
     return 0

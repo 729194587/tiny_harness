@@ -86,6 +86,7 @@ def rollout_task(
     max_turns: int = 20,
     subagent_max_turns: int = 10,
     max_context_tokens: int | None = DEFAULT_MAX_CONTEXT_TOKENS,
+    capture_assistant_content: bool = False,
     environment_factory: Callable[..., DockerTaskEnvironment] = DockerTaskEnvironment,
     agent_entrypoint: Callable[..., str] = run_agent,
 ) -> RolloutResult:
@@ -125,7 +126,10 @@ def rollout_task(
                     max_context_tokens=max_context_tokens,
                     permission_policy=ContainerPermissionPolicy(),
                     event_logger=WorkspaceMutationLogger(JsonlEventLogger(events_path), environment.workspace),
-                    tool_trace=ToolTraceConfig(enabled=True, result_preview_chars=200),
+                    tool_trace=ToolTraceConfig(
+                        enabled=True, result_preview_chars=200,
+                        capture_assistant_content=capture_assistant_content,
+                    ),
                     shell_runner=environment.shell_runner,
                     memory_enabled=False,
                 )
@@ -205,6 +209,7 @@ def run_selected_smoke(
     max_turns: int = 20,
     subagent_max_turns: int = 10,
     max_context_tokens: int | None = DEFAULT_MAX_CONTEXT_TOKENS,
+    capture_assistant_content: bool = False,
     calibrator: Callable[..., CalibrationResult] = calibrate_task,
     rollout: Callable[..., RolloutResult] = rollout_task,
 ) -> Path:
@@ -259,6 +264,7 @@ def run_selected_smoke(
                 max_turns=max_turns,
                 subagent_max_turns=subagent_max_turns,
                 max_context_tokens=max_context_tokens,
+                **({"capture_assistant_content": True} if capture_assistant_content else {}),
             )
         except (KeyboardInterrupt, SystemExit):
             raise

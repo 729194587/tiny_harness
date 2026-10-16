@@ -15,6 +15,7 @@ from tiny_harness.models.base import (
     complete_with_tool_choice,
 )
 from tiny_harness.runtime.events import NULL_EVENT_LOGGER, EventLogger, EventType
+from tiny_harness.runtime.tool_trace import ToolTraceConfig
 from tiny_harness.context.attribution import request_attribution
 from tiny_harness.context.token_meter import DEFAULT_TOKEN_METER, TokenMeter
 
@@ -66,11 +67,13 @@ class RecoveryExecutor:
         policy: RecoveryPolicy = RecoveryPolicy(),
         *,
         event_logger: EventLogger = NULL_EVENT_LOGGER,
+        tool_trace: ToolTraceConfig = ToolTraceConfig(),
         sleep: Callable[[float], None] = time.sleep,
         random_value: Callable[[], float] = random.random,
     ) -> None:
         self.policy = policy
         self.event_logger = event_logger
+        self.tool_trace = tool_trace
         self._sleep = sleep
         self._random_value = random_value
 
@@ -227,6 +230,9 @@ class RecoveryExecutor:
                         and response.prompt_cache_hit_tokens + response.prompt_cache_miss_tokens > 0 else {}),
                     "tool_call_count": len(response.tool_calls),
                     "content_length": len(response.content or ""),
+                    **({"content": response.content}
+                       if self.tool_trace.capture_assistant_content and purpose == "main"
+                       else {}),
                     **({"finalization": True} if finalization else {}),
                 },
             )
