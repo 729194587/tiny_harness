@@ -1,5 +1,7 @@
 # SWE-bench Lite evaluation
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 The evaluation pipeline separates environment calibration, model rollout, and
 patch grading. Calibration runs the baseline and reference patch through the
 official evaluator: expected failing tests must fail on baseline and pass with

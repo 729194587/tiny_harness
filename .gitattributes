@@ -1,0 +1,6 @@
+# Whole-file i18n hashes must be identical on Windows and Linux checkouts.
+/*.md text eol=lf
+/docs/**/*.md text eol=lf
+/docs/*.md text eol=lf
+/evals/swe_bench_lite/**/*.md text eol=lf
+/evals/swe_bench_lite/*.md text eol=lf
