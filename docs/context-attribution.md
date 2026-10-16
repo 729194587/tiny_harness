@@ -1,5 +1,7 @@
 # Model request context attribution
 
+[English](context-attribution.md) | [简体中文](context-attribution.zh-CN.md)
+
 Context attribution helps explain which parts of a model request consume space:
 conversation history, tool results, runtime guidance, or tool schemas. Use it to
 investigate request growth, not to infer billed usage or choose a pruning policy.
