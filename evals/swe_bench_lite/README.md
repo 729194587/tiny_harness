@@ -7,6 +7,12 @@ the reference patch, while regression tests must pass in both. See
 [calibration.py](calibration.py) and its
 [tests](../../tests/test_swe_batch_calibration.py).
 
+Use [reproduction instructions](#reproduce-and-retain-a-run) to run an evaluation,
+[offline reports](#inspect-existing-runs) to inspect existing traces, and
+[single-run finalization](#single-run-finalize) to grade and summarize one task.
+The [evidence table](#evidence-and-provenance) distinguishes checked-in inputs
+from unpublished results.
+
 From the repository root, install the evaluation extra and make Docker available:
 
 ```powershell
@@ -36,9 +42,7 @@ The default smoke IDs are `marshmallow-code__marshmallow-1343`,
 `sqlfluff__sqlfluff-1517`. Keep this selection unchanged when creating a separate
 development set; pass the new JSONL file with `--selected`.
 
-Local, Git-ignored `evals/results/` files are not public evidence. The complete
-historical 15-task selection, calibration records, and grading evidence remain
-unpublished; no historical aggregate score can be verified or inferred from them.
+Local, Git-ignored `evals/results/` files are not public evidence.
 
 To restore historical evidence, supply the exact selection JSONL (including
 base commits and evaluator fields), calibration records, run/task metadata,
@@ -48,7 +52,7 @@ than assigning today's values. If those artifacts cannot be recovered, calibrate
 an explicitly saved new selection and label subsequent runs as new experiments,
 not a reconstruction of the historical 15-task set.
 
-### Reproduce and retain a run
+## Reproduce and retain a run
 
 Use a clean checkout at a recorded commit. Save the exact selection file outside
 the source checkout before running, record its SHA-256, and pass that same file
@@ -126,10 +130,12 @@ It should not be compared across systems without matching workloads and usage
 accounting. See [report.py](report.py) and
 [request attribution](../../docs/context-attribution.md).
 
-Workspace observation hashes content at tool boundaries, excluding `.git` and
-`.tinyharness`. It can detect shell writes, but cannot see changes restored within
-one tool or reliably attribute background writes. Missing observations leave the
-first mutation unknown; a tool's return alone proves neither a write nor a passing
+Workspace observation hashes tracked and non-ignored untracked files at tool
+boundaries, excluding `.git` and `.tinyharness`. It includes symlink targets
+without following them, but not permissions or empty directories. It can detect
+shell writes, but cannot see changes restored within one tool or reliably
+attribute background writes. Missing observations leave the first mutation
+unknown; a tool's return alone proves neither a write nor a passing
 test. See [observability.py](observability.py).
 
 Long stretches of reads before the first mutation are useful evidence when
@@ -164,12 +170,10 @@ code 0. Evaluation exceptions, nonzero evaluator exits, and missing or conflicti
 grader verdicts produce `Evaluation Error` with exit code 2. Invalid input, such
 as multiple instances, fails without starting evaluation.
 
-Metrics reuse the offline report: logical turns exclude duplicate retries, usage
-includes auxiliary model calls, and overall cache hit rate is summed hits divided
-by summed hits plus misses, not an average of request rates. Missing fields use
+Metrics reuse the [offline report](#inspect-existing-runs): logical turns exclude
+duplicate retries and usage includes auxiliary model calls. Missing fields use
 JSON null or the display label `未知` (unknown); JSON retains observed totals and
 coverage counts for partial usage. Checkpoints count only
 `llm_task_state_checkpoint` events, excluding ordinary history-result pruning.
 Summary cache hit rate comes from model responses with `purpose="summary"`.
-Workspace mutation remains unknown without complete observations and is not
-inferred from file-tool return values.
+The workspace-observation limits described above also apply to these summaries.
