@@ -86,6 +86,37 @@ class AssistantContentTest(unittest.TestCase):
             self.assertNotIn("PRIVATE_", raw)
             self.assertNotIn('"content":', raw)
 
+    def test_subagent_does_not_capture_content_but_parent_still_does(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            class Provider:
+                def complete(self, messages, tools):
+                    return ModelResponse("visible answer", "HIDDEN_REASONING", [], "stop")
+
+            config = ToolTraceConfig(
+                enabled=True, result_preview_chars=37, capture_assistant_content=True,
+            )
+            context = create_run_context(
+                Provider(), root, event_logger=JsonlEventLogger(root / "events.jsonl"),
+                tool_trace=config,
+            )
+            self.assertEqual(context.subagent_runner("delegated work", "task-1"), "visible answer")
+            context.recovery_executor.complete(
+                context.provider, [], [], purpose="main", turn=1, state=RecoveryState(),
+            )
+            events = [json.loads(line) for line in
+                      (root / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+            responses = [event["data"] for event in events if event["event_type"] == "model_responded"]
+            self.assertEqual(len(responses), 2)
+            child, parent = responses
+            self.assertEqual(child["purpose"], "main")
+            self.assertEqual(child["parent_tool_call_id"], "task-1")
+            self.assertNotIn("content", child)
+            self.assertEqual(parent["content"], "visible answer")
+            self.assertIs(context.tool_trace, config)
+            self.assertTrue(config.capture_assistant_content)
+
     def test_rollout_cli_switch_and_config_validation(self):
         self.assertFalse(_parser().parse_args(["run"]).capture_assistant_content)
         self.assertTrue(_parser().parse_args([

@@ -254,6 +254,7 @@ class SweExperimentMetadataTest(unittest.TestCase):
                 with self.subTest(enabled=enabled, outcome=outcome), tempfile.TemporaryDirectory() as temporary:
                     options = ({
                         "max_turns": 7, "subagent_max_turns": 3, "max_context_tokens": None,
+                        "capture_assistant_content": True,
                     } if enabled else {})
                     expected = {
                         "max_turns": 7 if enabled else 20,
@@ -289,9 +290,11 @@ class SweExperimentMetadataTest(unittest.TestCase):
                     self.assertEqual(task_metadata["status"], outcome)
                     self.assertEqual(run_metadata["tasks"][0]["status"], outcome)
                     for agent_options in observed:
+                        self.assertEqual(agent_options["tool_trace"].capture_assistant_content, enabled)
                         for name in expected:
                             self.assertEqual(agent_options[name], expected[name])
                     for metadata in (run_metadata, task_metadata, run_metadata["tasks"][0]):
+                        self.assertIs(metadata["capture_assistant_content"], enabled)
                         self.assertEqual({key: metadata[key] for key in expected}, expected)
 
 

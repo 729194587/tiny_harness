@@ -52,6 +52,7 @@ def _experiment_config(
     max_turns: int,
     subagent_max_turns: int,
     max_context_tokens: int | None,
+    capture_assistant_content: bool,
 ) -> dict[str, Any]:
     """Use identical configuration fields in task and run metadata."""
     return {
@@ -60,6 +61,7 @@ def _experiment_config(
         "max_context_tokens": max_context_tokens,
         "memory_enabled": False,
         "workspace_mutation_observation_enabled": True,
+        "capture_assistant_content": capture_assistant_content,
     }
 
 
@@ -102,7 +104,7 @@ def rollout_task(
     events_path.touch(exist_ok=True)
     started_at = datetime.now(timezone.utc).isoformat()
     experiment_config = _experiment_config(
-        max_turns, subagent_max_turns, max_context_tokens,
+        max_turns, subagent_max_turns, max_context_tokens, capture_assistant_content,
     )
     experiment_config.update(provenance)
     (output_dir / "metadata.json").write_text(json.dumps({
@@ -217,7 +219,7 @@ def run_selected_smoke(
 
     active_run_id = run_id or new_run_id("smoke")
     experiment_config = _experiment_config(
-        max_turns, subagent_max_turns, max_context_tokens,
+        max_turns, subagent_max_turns, max_context_tokens, capture_assistant_content,
     )
     experiment_config.update(source_metadata())
     experiment_config["model_name_or_path"] = model_name_or_path

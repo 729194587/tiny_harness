@@ -51,6 +51,10 @@ class SubagentExecutor:
                 allow_subagent=False,
                 memory_extraction_enabled=False,
                 event_logger=child_logger,
+                # Visible response capture is limited to the parent agent.
+                tool_trace=(replace(self.config.tool_trace, capture_assistant_content=False)
+                            if self.config.tool_trace.capture_assistant_content
+                            else self.config.tool_trace),
                 # Each child calibrates independently from the shared heuristic.
                 token_meter=meter.heuristic if isinstance(meter, CalibratedTokenMeter) else meter,
             )
