@@ -2,7 +2,8 @@
 
 [English](runtime.md) | [简体中文](runtime.zh-CN.md)
 
-本文说明当前 Runtime 的机制。设计动机和实验请从[项目主页](../README.zh-CN.md)开始阅读。
+本文说明 TinyHarness 如何执行工具、处理故障和管理 Context，供配置运行或扩展 Harness 时查阅。
+安装方式和设计取舍见[项目 README](../README.zh-CN.md)。
 
 ## 执行与故障
 
@@ -39,6 +40,8 @@ Provider 瞬时错误的重试仍属于同一逻辑轮次。最后一个允许�
 
 ## 工具与运行能力
 
+### 工具发现
+
 `tiny_harness/tools/` 下的模块导出 `build_tools(context)`。发现过程按模块名排序扫描；
 各工厂返回可用的 `ToolDefinition` 对象，包含名称、描述、参数 Schema、处理函数及可选的
 安全追踪元数据。缺少能力（如 Subagent Runner、Skill Catalog 或 Test Runner）时，工厂可以不返回工具。
@@ -49,26 +52,33 @@ Provider 瞬时错误的重试仍属于同一逻辑轮次。最后一个允许�
 [工具架构方案](superpowers/plans/2026-09-04-tool-architecture-phase-1.md)记录了最初的设计；
 以当前代码为准。
 
-`code_outline(path, max_symbols=200)` 使用标准库 AST 解析工作区内的 `.py` 文件，
+### 代码读取与搜索
+
+可先用 `code_outline(path, max_symbols=200)` 定位 Python 定义，再用 `read_file` 按行读取。
+该工具使用标准库 AST 解析工作区内的 `.py` 文件，
 不导入或执行源码。按源码顺序返回类、函数、异步函数和方法，以缩进表示定义嵌套层级，
 并提供从 1 开始、包含首尾的起止行号。起始行指向 `class`/`def`，不含装饰器。
-适合先定位定义，再用 `read_file` 按行读取。输入上限为 2 MiB；输出默认最多 200 个符号，
+输入上限为 2 MiB；输出默认最多 200 个符号，
 可配置至 500 个，且最多 30,000 字符，超限有截断提示。无定义、语法错误和无效路径均有明确反馈。
 该工具经过共享分发与工作区路径校验，默认权限策略允许调用；仅支持 Python 源码，
 不做符号解析、索引或调用图分析。
 
-`search_code` 新增可选 `include` 文件 glob，与 `grep` 一样相对于 `path` 匹配：
+`search_code` 支持可选 `include` 文件 glob，与 `grep` 一样相对于 `path` 匹配：
 `**/*.py` 包含所有深度，`*.py` 仅直接子文件，`src/**/*.py` 选择子树。
-原调用的结果格式和截断限制保持不变。两种递归内容搜索均跳过 `.git`、`.venv`、`venv`、
+两种递归内容搜索均跳过 `.git`、`.venv`、`venv`、
 `node_modules`、`__pycache__`、`.pytest_cache`、`.mypy_cache`、`.ruff_cache`、`.tox`、`.nox`
 及目录符号链接。显式将 `path` 指向被忽略的目录或文件即可搜索；仅设置 `include` 不覆盖忽略规则。
 显式文件路径不受 `include` 筛选，但始终受工作区安全边界约束。
-文件发现工具 `glob` 和 `list_files` 的行为不变。
+上述按目录名排除的规则不适用于文件发现工具 `glob` 和 `list_files`。
+
+### 委派任务与 Todo
 
 `task` 同步运行子 Agent，使用全新的消息，共享工作区和 Provider。子 Agent 继承策略与能力，
 但拥有独立的轮次、恢复、Context 和 Todo 状态，不能再创建子 Agent，且跳过 Memory 提取。
 父 Agent 将子 Agent 的最终文本作为工具输出接收。`todo_write` 更新本次运行的任务状态，
 与持久化 Memory 分离。
+
+## Hooks 与事件
 
 Hooks 执行扩展逻辑；事件承载观测信息。
 [Hooks 示例](../examples/hooks_demo.py)在前置 Hook 中阻止 `write_file`，在后置 Hook 中观测结果：
@@ -121,7 +131,8 @@ Memory 存储稳定偏好、反馈、项目事实和引用，不保存当前计�
 ## CLI 与本地验证
 
 必须设置 `TINYHARNESS_API_KEY`。`TINYHARNESS_MODEL` 和 `TINYHARNESS_BASE_URL`
-可覆盖主页示例所示的默认值。省略任务参数会进入复用同一 Session 的 REPL。
+用于配置模型和服务端点，示例值见 [`.env.example`](../.env.example)。
+省略任务参数会进入复用同一 Session 的 REPL。
 
 运行 `python -m tiny_harness --help` 获取权威选项列表：
 

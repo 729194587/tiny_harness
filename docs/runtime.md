@@ -2,8 +2,9 @@
 
 [English](runtime.md) | [简体中文](runtime.zh-CN.md)
 
-These notes describe the current runtime. For the motivation and experiments,
-start with the [project homepage](../README.md).
+This reference explains how TinyHarness executes tools, handles failures, and
+manages context. Use it when configuring a run or extending the harness. For
+setup and design trade-offs, start with the [project README](../README.md).
 
 ## Execution and failure
 
@@ -47,6 +48,8 @@ answer. No further tool calls execute. See
 
 ## Tools and run capabilities
 
+### Tool discovery
+
 Modules under `tiny_harness/tools/` export `build_tools(context)`. Discovery scans
 modules in sorted order; each factory returns available `ToolDefinition` objects
 with a name, description, parameter schema, handler, and optional safe trace
@@ -60,32 +63,39 @@ entry-point plugins. New tool names require explicit permission-policy review.
 The [tool architecture plan](superpowers/plans/2026-09-04-tool-architecture-phase-1.md)
 records the original design; current code is authoritative.
 
-`code_outline(path, max_symbols=200)` reads a workspace `.py` file with the standard
+### Reading and searching code
+
+Use `code_outline(path, max_symbols=200)` to locate Python definitions before a
+ranged `read_file`. It reads a workspace `.py` file with the standard
 library AST parser, without importing or executing it. It returns classes,
 functions, async functions and methods in source order, indented by enclosing
 definitions, with inclusive 1-based start/end lines. Starts refer to `class`/`def`,
-excluding decorators. Use it to locate definitions before a ranged `read_file`.
-Input is limited to 2 MiB; output to 500 symbols (configurable up to that limit)
-and 30,000 characters, with truncation notices. Empty outlines, syntax errors and
-invalid paths receive explicit feedback. It uses shared dispatch and workspace
+excluding decorators.
+Input is limited to 2 MiB; output defaults to 200 symbols (configurable up to 500)
+and is capped at 30,000 characters, with truncation notices. Empty outlines,
+syntax errors and invalid paths receive explicit feedback. It uses shared dispatch and workspace
 path checks, and is allowed by the default permission policy. Only Python source
 is supported; there is no symbol resolution, index or call graph.
 
 `search_code` accepts an optional `include` file glob, relative to `path`, like
 `grep`: `**/*.py` includes all depths, `*.py` only direct children, and
-`src/**/*.py` a subtree. Existing calls retain their result format and limits.
-Both recursive content searches prune `.git`, `.venv`, `venv`, `node_modules`,
+`src/**/*.py` a subtree. Both recursive content searches prune
+`.git`, `.venv`, `venv`, `node_modules`,
 `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox` and `.nox`,
 and skip directory symlinks. Set `path` explicitly to an ignored directory or
 file to search it; `include` alone does not override exclusions. Explicit files
-bypass `include`. Workspace boundary checks still apply. File discovery via
-`glob` and `list_files` is unchanged.
+bypass `include`. Workspace boundary checks still apply. The directory-name
+exclusions above do not apply to file discovery via `glob` and `list_files`.
+
+### Delegated work and todos
 
 `task` runs a synchronous child with fresh messages and a shared workspace and
 provider. Children inherit policies and capabilities, have independent turn,
 recovery, context, and Todo state, cannot spawn nested children, and skip memory
 extraction. The parent receives the child's final text as tool output.
 `todo_write` updates run-scoped task state, separate from persistent memory.
+
+## Hooks and events
 
 Hooks execute extensions; events carry observations. The
 [hooks example](../examples/hooks_demo.py) blocks `write_file` in a pre hook and
@@ -149,7 +159,8 @@ facts, and references, not current plans or execution state. See the
 ## CLI and local verification
 
 `TINYHARNESS_API_KEY` is required. `TINYHARNESS_MODEL` and
-`TINYHARNESS_BASE_URL` override the defaults shown in the homepage example.
+`TINYHARNESS_BASE_URL` configure the model and provider endpoint; see
+[`.env.example`](../.env.example) for example values.
 Omitting the task enters a REPL that reuses one Session.
 
 Run `python -m tiny_harness --help` for the authoritative option list:
