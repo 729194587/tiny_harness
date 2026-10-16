@@ -35,9 +35,29 @@ Model rollout requires the provider configuration described in the
 | --- | --- | --- |
 | [Candidate pool](dev.jsonl), [catalog](task_catalog.csv), [source data](raw/dev.parquet) | Yes | Inputs for selecting and calibrating tasks; not model results. |
 | [Default smoke selection](selected_tasks.jsonl) | Yes | Four fixed tasks, selected by [this script](select_swe_tasks.py). Membership alone does not prove calibration passed. |
-| Historical calibrated 15-task development set | No complete selection or calibration bundle | Its exact membership cannot be recovered from the smoke set or inferred from candidates. |
-| Historical model results and official verdicts | No published run bundle | No verifiable aggregate score or cache improvement is claimed here. |
+| Historical calibrated 15-task development set | No | A historical local run record exists, but the complete selection and calibration bundle is not checked into Git. |
+| Historical model results and official verdicts | No published run bundle | A retained `pressure-only-15` summary records **14/15 Resolved** and the run's token/cache metrics. The result is not published as a full benchmark score. |
 | [Pipeline](../../tests/test_swe_bench_pipeline.py), [report](../../tests/test_swe_bench_report.py), and [finalizer](../../tests/test_swe_bench_finalizer.py) tests | Yes | Offline regression evidence using controlled fixtures, not real-model benchmark results. |
+
+### Historical `pressure-only-15` run
+
+A historical local summary exists for a 15-task Dev evaluation, `pressure-only-15`. It records the following run facts:
+
+- Task set: 15 tasks from `dev.jsonl`
+- Result: **14 / 15 Resolved (93.33%)**
+- `max_turns`: `40`
+- Source commit: `9a7635b5ebba3a921ce74f51523f18fad6075ef5`
+- Total turns: `443`
+- Total tool calls: `575`
+- Prompt tokens: `7,499,628`
+- Completion tokens: `161,213`
+- Cache hit tokens: `7,162,880`
+- Cache miss tokens: `336,748`
+- Weighted cache hit rate: **95.51%**
+- Peak active context: `53,424` tokens
+- Pressure compaction / reactive compaction: `0 / 0`
+
+These are historical local experiment results. They are not currently checked into Git as a complete evidence bundle, so the run should be described as a **curated 15-task SWE-bench Lite Dev evaluation**, not as an official full-benchmark score.
 
 The default smoke IDs are `marshmallow-code__marshmallow-1343`,
 `pylint-dev__astroid-1196`, `pydicom__pydicom-1139`, and
