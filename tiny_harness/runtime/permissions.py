@@ -244,10 +244,11 @@ def is_read_only_shell_command(command: object) -> bool:
 
 
 class DefaultPermissionPolicy:
-    """Allow bounded tools and clear shell inspection; ask otherwise."""
+    """Allow known tools, including shell commands; deny unknown tools."""
 
     _ALLOWED_TOOLS = frozenset(
         {
+            "bash",
             "read_file",
             "write_file",
             "edit_file",
@@ -270,12 +271,6 @@ class DefaultPermissionPolicy:
     ) -> PermissionDecision:
         if tool_name in self._ALLOWED_TOOLS:
             return PermissionDecision.ALLOW
-        if tool_name == "bash":
-            return (
-                PermissionDecision.ALLOW
-                if is_read_only_shell_command(arguments.get("command"))
-                else PermissionDecision.ASK
-            )
         return PermissionDecision.DENY
 
 

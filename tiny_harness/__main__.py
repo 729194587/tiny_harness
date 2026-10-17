@@ -1,12 +1,10 @@
 """Command-line entry point for TinyHarness."""
 
 import argparse
-import json
 import os
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
 
 from dotenv import load_dotenv
 
@@ -14,7 +12,7 @@ from tiny_harness.agent.context import DEFAULT_SUBAGENT_MAX_TURNS
 from tiny_harness.agent.session import AgentSession
 from tiny_harness.models.chat_completions import ChatCompletionsProvider
 from tiny_harness.runtime.events import CompositeEventLogger, EventLogError, JsonlEventLogger
-from tiny_harness.runtime.console import ConsoleEventLogger, short, trace_summary
+from tiny_harness.runtime.console import ConsoleEventLogger
 from tiny_harness.runtime.recovery import RecoveryPolicy
 
 DEFAULT_MODEL = "deepseek-v4-flash"
@@ -107,22 +105,6 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     return parser
-
-
-def _ask_permission(tool_name: str, arguments: Mapping[str, Any]) -> bool:
-    """Ask the CLI user to approve one tool call; default to denial."""
-
-    print("\n需要工具授权：")
-    print(f"工具：{tool_name}")
-    print("参数：")
-    print(trace_summary(arguments))
-    if "command" in arguments:
-        print(json.dumps({"command": short(arguments["command"], 240)}, ensure_ascii=False))
-    try:
-        choice = input("允许此次工具调用吗？[y/N]：").strip().lower()
-    except EOFError:
-        return False
-    return choice in {"y", "yes"}
 
 
 def _system_prompt(
@@ -248,12 +230,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     console = None
 
-    def permission_prompt(tool_name, arguments):
-        if console is None:
-            return _ask_permission(tool_name, arguments)
-        with console.suspend_live():
-            return _ask_permission(tool_name, arguments)
-
     def event_logger_factory():
         nonlocal console
         console = ConsoleEventLogger(quiet=args.quiet, verbose=args.verbose)
@@ -270,7 +246,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             memory_enabled=args.memory,
         ),
         max_turns=args.max_turns,
-        permission_prompt=permission_prompt,
         event_logger_factory=event_logger_factory,
         max_context_tokens=args.max_context_tokens,
         subagent_max_turns=args.subagent_max_turns,

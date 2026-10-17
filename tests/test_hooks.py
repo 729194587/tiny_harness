@@ -157,6 +157,7 @@ class ToolHooksTest(unittest.TestCase):
         result = dispatch(
             self.workspace,
             ToolCall("bash-1", "bash", '{"command":"python --version"}'),
+            permission_policy=AlwaysAskPolicy(),
             tool_hooks=hooks,
         )
 

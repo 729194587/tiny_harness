@@ -332,6 +332,10 @@ class ToolRegistryTest(unittest.TestCase):
         self.assertEqual(result.content, "Exit code: 7")
 
     def test_denied_bash_is_not_executed_and_preserves_call_id(self) -> None:
+        class AskPolicy:
+            def decide(self, tool_name, arguments):
+                return PermissionDecision.ASK
+
         command = (
             f'"{sys.executable}" -c '
             '"from pathlib import Path; Path(\'blocked.txt\').write_text(\'bad\')"'
@@ -341,6 +345,7 @@ class ToolRegistryTest(unittest.TestCase):
             "bash-denied",
             "bash",
             {"command": command},
+            permission_policy=AskPolicy(),
             permission_prompt=lambda *_: False,
         )
 
@@ -355,14 +360,14 @@ class ToolRegistryTest(unittest.TestCase):
 
         self.assertEqual(result.content, "Exit code: 0\nok")
 
-    def test_ambiguous_bash_without_prompt_is_denied(self) -> None:
+    def test_ambiguous_bash_without_prompt_is_allowed(self) -> None:
         result = self.call(
             "bash-no-prompt",
             "bash",
-            {"command": 'python -c "print(\'no\')"'},
+            {"command": f'"{sys.executable}" -c "print(\'ok\')"'},
         )
 
-        self.assertIn("current shell command is not allowed", result.content)
+        self.assertEqual(result.content, "Exit code: 0\nok")
 
     def test_explicit_deny_does_not_execute_handler(self) -> None:
         class DenyPolicy:

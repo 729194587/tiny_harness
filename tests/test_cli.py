@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -10,11 +11,10 @@ from tiny_harness.__main__ import (
     DEFAULT_BASE_URL,
     DEFAULT_MAX_CONTEXT_TOKENS,
     DEFAULT_MODEL,
-    _ask_permission,
     main,
 )
 from tiny_harness.agent.context import DEFAULT_SUBAGENT_MAX_TURNS
-from tiny_harness.agent.messages import ModelResponse
+from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.agent.turn import TOOL_USE_EFFICIENCY_GUIDANCE
 from tiny_harness.runtime.events import CompositeEventLogger, JsonlEventLogger
 from tiny_harness.runtime.console import ConsoleEventLogger
@@ -139,7 +139,7 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("Use compact", positional[2])
         self.assertIn("Treat TinyHarness context summaries", positional[2])
         self.assertEqual(session_class.call_args.kwargs["max_turns"], 7)
-        self.assertTrue(callable(session_class.call_args.kwargs["permission_prompt"]))
+        self.assertNotIn("permission_prompt", session_class.call_args.kwargs)
         self.assertEqual(
             session_class.call_args.kwargs["max_context_tokens"],
             DEFAULT_MAX_CONTEXT_TOKENS,
@@ -407,21 +407,34 @@ class CliTest(unittest.TestCase):
                 )
         self.assertIn("not allowed with argument", stderr.getvalue())
 
-    def test_permission_prompt_accepts_yes_and_displays_arguments(self) -> None:
-        stdout = io.StringIO()
-        with patch("builtins.input", return_value="yes"):
-            with contextlib.redirect_stdout(stdout):
-                allowed = _ask_permission("bash", {"command": "echo hello"})
-        self.assertTrue(allowed)
-        self.assertIn("需要工具授权", stdout.getvalue())
-        self.assertIn('"command": "echo hello"', stdout.getvalue())
+    def test_cli_executes_mutating_bash_without_permission_input(self) -> None:
+        command = "echo ok > created.txt"
+        responses = iter([
+            ModelResponse(None, None, [
+                ToolCall("write-shell", "bash", json.dumps({"command": command}))
+            ], "tool_calls"),
+            ModelResponse("done", None, [], "stop"),
+        ])
+        requests = []
 
-    def test_permission_prompt_defaults_to_denial(self) -> None:
-        with contextlib.redirect_stdout(io.StringIO()):
-            with patch("builtins.input", return_value=""):
-                self.assertFalse(_ask_permission("bash", {"command": "echo no"}))
-            with patch("builtins.input", side_effect=EOFError):
-                self.assertFalse(_ask_permission("bash", {"command": "echo no"}))
+        class Provider:
+            def complete(self, messages, tools):
+                requests.append(list(messages))
+                return next(responses)
+
+        stdout = io.StringIO()
+        with patch("tiny_harness.__main__.ChatCompletionsProvider", return_value=Provider()), \
+                patch("pathlib.Path.home", return_value=self.workspace), \
+                patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=False), \
+                patch("builtins.input", side_effect=AssertionError("unexpected prompt")) as user_input, \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(["create a file", "--workspace", str(self.workspace)]), 0)
+
+        user_input.assert_not_called()
+        self.assertTrue(any(message.get("role") == "tool" and
+                            "Exit code: 0" in message["content"] for message in requests[1]))
+        self.assertEqual((self.workspace / "created.txt").read_text().strip(), "ok")
+        self.assertTrue(stdout.getvalue().startswith("done\n"))
 
 
 if __name__ == "__main__":

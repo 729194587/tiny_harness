@@ -96,6 +96,10 @@ A pre hook can block a call before permission is checked. Permission decisions
 are `ALLOW`, `DENY`, or `ASK`; `ASK` without approval denies execution. Neither
 a blocked call nor a denied call reaches the handler. Setting a shell's working
 directory does not make it an OS sandbox.
+The default policy allows known tools, including mutating Bash commands, and
+denies unknown tools. The CLI does not prompt for individual tool approvals.
+Custom policies may still use `ASK`; without a prompt callback it remains denied.
+Existing tool path checks remain in effect.
 
 Calls execute sequentially in model order, and each result is appended in that
 same order. All `TOOL_CALLED` events are emitted before dispatch begins;

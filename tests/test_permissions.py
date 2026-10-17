@@ -61,21 +61,19 @@ class PermissionTest(unittest.TestCase):
                     PermissionDecision.ALLOW,
                 )
 
-    def test_windows_dir_switches_require_approval_on_posix(self) -> None:
+    def test_read_only_classifier_handles_windows_dir_switches(self) -> None:
         for platform, expected in (
-            ("nt", PermissionDecision.ALLOW),
-            ("posix", PermissionDecision.ASK),
+            ("nt", True),
+            ("posix", False),
         ):
             with self.subTest(platform=platform):
                 with patch("tiny_harness.runtime.permissions.os.name", platform):
                     self.assertIs(
-                        DEFAULT_PERMISSION_POLICY.decide(
-                            "bash", {"command": "dir /s /b *.py"},
-                        ),
+                        is_read_only_shell_command("dir /s /b *.py"),
                         expected,
                     )
 
-    def test_default_policy_asks_for_mutating_or_ambiguous_bash(self) -> None:
+    def test_default_policy_allows_mutating_or_ambiguous_bash_without_prompt(self) -> None:
         commands = (
             "rm output.txt",
             "del output.txt",
@@ -93,11 +91,10 @@ class PermissionTest(unittest.TestCase):
         for command in commands:
             with self.subTest(command=command):
                 self.assertIs(
-                    DEFAULT_PERMISSION_POLICY.decide(
-                        "bash",
-                        {"command": command},
+                    resolve_permission(
+                        DEFAULT_PERMISSION_POLICY, "bash", {"command": command}
                     ),
-                    PermissionDecision.ASK,
+                    PermissionDecision.ALLOW,
                 )
 
     def test_read_only_classifier_fails_closed_on_invalid_input(self) -> None:
@@ -105,7 +102,7 @@ class PermissionTest(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertFalse(is_read_only_shell_command(command))
 
-    def test_windows_external_path_forms_require_approval(self) -> None:
+    def test_read_only_classifier_rejects_windows_external_path_forms(self) -> None:
         commands = (
             r"type C:secret.txt",
             r"type \Windows\win.ini",
@@ -120,11 +117,10 @@ class PermissionTest(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertFalse(is_read_only_shell_command(command))
                 self.assertIs(
-                    DEFAULT_PERMISSION_POLICY.decide(
-                        "bash",
-                        {"command": command},
+                    resolve_permission(
+                        DEFAULT_PERMISSION_POLICY, "bash", {"command": command}
                     ),
-                    PermissionDecision.ASK,
+                    PermissionDecision.ALLOW,
                 )
 
     def test_default_policy_denies_unrecognized_tool(self) -> None:
