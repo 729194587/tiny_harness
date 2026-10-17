@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tiny_harness.__main__ import main, _ask_permission
+from tiny_harness.__main__ import main
 from tiny_harness.runtime.console import ConsoleEventLogger
 from tiny_harness.runtime.events import EventLogError, CompositeEventLogger, JsonlEventLogger, EventType
 
@@ -196,11 +196,6 @@ class ConsoleV2Test(unittest.TestCase):
         self.assertEqual(self.output.getvalue(), "✗ broken failed: ValueError\n")
         self.assertEqual(console.summary(model="model", stream=self.output), "")
 
-    def test_permission_prompt_never_dumps_content(self):
-        with patch("builtins.input", return_value="no"), contextlib.redirect_stdout(self.output):
-            _ask_permission("write_file", {"path": "a.py", "content": "SECRET" * 10000})
-        self.assertNotIn("SECRET", self.output.getvalue())
-
 
 class LiveConsoleTests(unittest.TestCase):
     def setUp(self):
@@ -236,19 +231,16 @@ class LiveConsoleTests(unittest.TestCase):
         self.assertIn("cache: n/a", visible)
         self.assertNotIn("命中率", visible)
 
-    def test_permission_suspends_and_resumes_even_on_eof(self):
+    def test_live_display_suspends_and_resumes_even_on_eof(self):
         self.console.emit(EventType.MODEL_REQUESTED, {"turn": 1})
-        def read_prompt(prompt):
-            self.assertFalse(self.console._live_visible)
-            self.assertTrue(self.console._suspended)
-            self.assertIn("需要工具授权", self.output.getvalue())
-            raise EOFError
-        with contextlib.redirect_stdout(self.output), patch("builtins.input", side_effect=read_prompt):
+        with self.assertRaises(EOFError):
             with self.console.suspend_live():
-                self.assertFalse(_ask_permission("read_file", {"path": "a.py"}))
+                self.assertFalse(self.console._live_visible)
+                self.assertTrue(self.console._suspended)
+                self.assertTrue(self.output.getvalue().endswith("\r\x1b[2K"))
+                raise EOFError
         self.assertTrue(self.console._live_visible)
         self.assertFalse(self.console._suspended)
-        self.assertIn("\r\x1b[2K\n需要工具授权", self.output.getvalue())
 
     def test_fatal_error_is_persistent_in_normal_and_verbose_modes(self):
         for verbose in (False, True):

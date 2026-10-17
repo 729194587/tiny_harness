@@ -41,6 +41,11 @@ class FakeProvider:
         return response
 
 
+class AskShellPolicy:
+    def decide(self, tool_name, arguments):
+        return PermissionDecision.ASK if tool_name == "bash" else PermissionDecision.ALLOW
+
+
 class AgentLoopTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
@@ -271,6 +276,7 @@ class AgentLoopTest(unittest.TestCase):
             provider,
             self.workspace,
             messages,
+            permission_policy=AskShellPolicy(),
             permission_prompt=lambda *_: False,
         )
 
@@ -306,7 +312,9 @@ class AgentLoopTest(unittest.TestCase):
             ]
         )
 
-        answer = agent_loop(provider, self.workspace, [], max_turns=2)
+        answer = agent_loop(
+            provider, self.workspace, [], max_turns=2, permission_policy=AskShellPolicy()
+        )
 
         self.assertEqual(answer, "finished after replanning")
         self.assertEqual(len(provider.calls), 2)

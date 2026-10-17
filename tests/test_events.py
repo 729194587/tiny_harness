@@ -15,6 +15,7 @@ from tiny_harness.runtime.events import (
     hash_text,
 )
 from tiny_harness.runtime.hooks import HookBlock, HookExecutionError, ToolHooks
+from tiny_harness.runtime.permissions import PermissionDecision
 
 
 FIXED_TIME = datetime(2026, 8, 17, 12, 30, tzinfo=timezone.utc)
@@ -240,6 +241,10 @@ class EventLifecycleTest(unittest.TestCase):
         )
 
     def test_denied_tool_records_called_and_result_without_started(self) -> None:
+        class AskPolicy:
+            def decide(self, tool_name, arguments):
+                return PermissionDecision.ASK
+
         logger = RecordingEventLogger()
         provider = FakeProvider(
             [
@@ -263,6 +268,7 @@ class EventLifecycleTest(unittest.TestCase):
             provider,
             self.workspace,
             [],
+            permission_policy=AskPolicy(),
             permission_prompt=lambda *_: False,
             event_logger=logger,
         )

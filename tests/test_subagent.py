@@ -14,6 +14,7 @@ from tiny_harness.models.base import ModelErrorKind, ModelProviderError
 from tiny_harness.runtime.events import EventLogError
 from tiny_harness.runtime.hooks import HookBlock, ToolHooks
 from tiny_harness.runtime.recovery import RecoveryPolicy
+from tiny_harness.runtime.permissions import PermissionDecision
 
 
 class ScriptedProvider:
@@ -519,6 +520,10 @@ class SubagentTest(unittest.TestCase):
         )
 
     def test_permission_and_hooks_are_shared_with_child_tools(self) -> None:
+        class AskShellPolicy:
+            def decide(self, tool_name, arguments):
+                return PermissionDecision.ASK if tool_name == "bash" else PermissionDecision.ALLOW
+
         command = (
             f'"{sys.executable}" -c '
             '"from pathlib import Path; Path(\'blocked.txt\').write_text(\'bad\')"'
@@ -563,6 +568,7 @@ class SubagentTest(unittest.TestCase):
                 provider,
                 self.workspace,
                 [],
+                permission_policy=AskShellPolicy(),
                 permission_prompt=lambda name, arguments: (
                     prompts.append((name, dict(arguments))) or False
                 ),
