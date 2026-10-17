@@ -121,9 +121,16 @@ def _system_prompt(
 ) -> str:
     shell_name = "cmd.exe" if os.name == "nt" else "/bin/sh"
 
+    shell_guidance = (
+        "Use Windows CMD syntax, not PowerShell or Unix Bash syntax. "
+        "Do not use Unix heredocs or assume Unix utilities are installed. "
+        if os.name == "nt" else "Use POSIX /bin/sh syntax. "
+    )
     prompt = (
         f"You are a coding agent working in {workspace}. "
         f"The bash tool executes commands through {shell_name} on this host. "
+        f"{shell_guidance}"
+        "Commands are non-interactive: standard input is closed; do not request user input. "
         "Complete the user's task using the available tools when needed. "
         "Use tools to obtain missing information or perform actions required by the task. "
         "Prefer targeted investigation over broad exploration. "

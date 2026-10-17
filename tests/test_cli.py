@@ -103,6 +103,10 @@ class CliTest(unittest.TestCase):
         self.assertEqual(requests[0].count(
             {"role": "system", "content": TOOL_USE_EFFICIENCY_GUIDANCE}), 1)
         self.assertIn("Prefer targeted investigation", requests[0][0]["content"])
+        self.assertIn("standard input is closed", requests[0][0]["content"])
+        if os.name == "nt":
+            self.assertIn("cmd.exe", requests[0][0]["content"])
+            self.assertIn("Use Windows CMD syntax", requests[0][0]["content"])
 
     @patch("tiny_harness.__main__.AgentSession")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")
