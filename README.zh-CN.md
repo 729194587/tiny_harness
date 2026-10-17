@@ -35,6 +35,10 @@ python -m tiny_harness "Inspect this project and explain its test setup" --works
 
 省略任务参数即可进入交互会话，其他选项见 `--help`。
 
+每次运行（包括交互会话中的每次提交）默认在启动目录的 `.tinyharness/events/` 下记录独立 JSONL 日志，
+文件名包含 UTC 时间戳和唯一标识。使用 `--no-event-log` 关闭文件日志，或用 `--event-log PATH`
+追加写入自定义文件；两者不能同时使用。
+
 ## 评测
 
 TinyHarness 使用 SWE-bench Lite Dev 评估 Agent 行为，流程包括环境校准、Agent 执行和官方补丁评分。

@@ -4,7 +4,9 @@ import argparse
 import os
 import sys
 from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from dotenv import load_dotenv
 
@@ -62,10 +64,14 @@ def _parser() -> argparse.ArgumentParser:
         default=2,
         help="每次逻辑模型请求的暂时性重试次数（默认：2）",
     )
-    parser.add_argument(
+    event_group = parser.add_mutually_exclusive_group()
+    event_group.add_argument(
         "--event-log",
         type=Path,
-        help="将生命周期事件追加写入 JSONL 文件",
+        help="追加写入指定 JSONL 文件（默认：启动目录 .tinyharness/events/ 下每次运行独立记录）",
+    )
+    event_group.add_argument(
+        "--no-event-log", action="store_true", help="关闭 JSONL 文件日志，保留终端输出"
     )
     output_group = parser.add_mutually_exclusive_group()
     output_group.add_argument("--quiet", action="store_true", help="只显示最终回答和必要错误")
@@ -229,13 +235,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     console = None
+    event_log_directory = Path.cwd() / ".tinyharness" / "events"
 
     def event_logger_factory():
         nonlocal console
         console = ConsoleEventLogger(quiet=args.quiet, verbose=args.verbose)
-        if args.event_log is None:
+        if args.no_event_log:
             return console
-        return CompositeEventLogger(console, JsonlEventLogger(args.event_log))
+        log_path = args.event_log
+        if log_path is None:
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S_%fZ")
+            log_path = event_log_directory / f"{timestamp}_{uuid4().hex}.jsonl"
+        return CompositeEventLogger(console, JsonlEventLogger(log_path))
 
     session = AgentSession(
         provider,

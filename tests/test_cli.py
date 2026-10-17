@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,7 +17,7 @@ from tiny_harness.__main__ import (
 from tiny_harness.agent.context import DEFAULT_SUBAGENT_MAX_TURNS
 from tiny_harness.agent.messages import ModelResponse, ToolCall
 from tiny_harness.agent.turn import TOOL_USE_EFFICIENCY_GUIDANCE
-from tiny_harness.runtime.events import CompositeEventLogger, JsonlEventLogger
+from tiny_harness.runtime.events import CompositeEventLogger, EventType, JsonlEventLogger
 from tiny_harness.runtime.console import ConsoleEventLogger
 from tiny_harness.runtime.recovery import RecoveryPolicy
 
@@ -216,6 +217,11 @@ class CliTest(unittest.TestCase):
         self.assertIsInstance(second, JsonlEventLogger)
         self.assertEqual(first.path, log_path.resolve())
         self.assertNotEqual(first.run_id, second.run_id)
+        first.emit(EventType.RUN_STARTED)
+        second.emit(EventType.RUN_STARTED)
+        records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([record["run_id"] for record in records], [first.run_id, second.run_id])
+        self.assertFalse((self.workspace / ".tinyharness" / "events").exists())
 
     @patch("tiny_harness.__main__.AgentSession")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")
@@ -223,10 +229,48 @@ class CliTest(unittest.TestCase):
         session_class.return_value.submit.return_value = "done"
         with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}, clear=True):
             with contextlib.redirect_stdout(io.StringIO()):
-                main(["task", "--workspace", str(self.workspace)])
+                main(["task", "--workspace", str(self.workspace), "--no-event-log"])
 
         factory = session_class.call_args.kwargs["event_logger_factory"]
-        self.assertIsInstance(factory(), ConsoleEventLogger)
+        logger = factory()
+        self.assertIsInstance(logger, ConsoleEventLogger)
+        logger.emit(EventType.RUN_STARTED)
+        self.assertFalse((self.workspace / ".tinyharness" / "events").exists())
+
+    @patch("tiny_harness.__main__.AgentSession")
+    @patch("tiny_harness.__main__.ChatCompletionsProvider")
+    def test_default_event_logs_are_unique_per_run_in_startup_directory(self, _, session_class):
+        session_class.return_value.submit.return_value = "done"
+        target = self.workspace / "target"
+        target.mkdir()
+        with patch.dict(os.environ, {"TINYHARNESS_API_KEY": "secret"}), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                patch("tiny_harness.__main__.datetime") as clock:
+            clock.now.return_value = datetime(2026, 10, 17, 12, 30, tzinfo=timezone.utc)
+            logs = []
+            for _ in range(2):
+                self.assertEqual(main(["task", "--workspace", str(target)]), 0)
+                factory = session_class.call_args.kwargs["event_logger_factory"]
+                for _ in range(2):
+                    composite = factory()
+                    self.assertIsInstance(composite.loggers[0], ConsoleEventLogger)
+                    composite.emit(EventType.RUN_STARTED)
+                    logs.append(composite.loggers[1])
+        directory = self.workspace / ".tinyharness" / "events"
+        self.assertEqual(len(list(directory.glob("*.jsonl"))), 4)
+        self.assertEqual(len({logger.path for logger in logs}), 4)
+        for logger in logs:
+            self.assertEqual(logger.path.parent, directory.resolve())
+            self.assertRegex(logger.path.name, r"^2026-10-17_12-30-00_000000Z_[0-9a-f]{32}\.jsonl$")
+            record = json.loads(logger.path.read_text(encoding="utf-8"))
+            self.assertEqual(record["event_type"], "run_started")
+            self.assertEqual(record["run_id"], logger.run_id)
+        self.assertFalse((target / ".tinyharness" / "events").exists())
+
+    def test_event_log_options_are_mutually_exclusive(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            main(["task", "--event-log", "custom.jsonl", "--no-event-log"])
+        self.assertEqual(error.exception.code, 2)
 
     @patch("tiny_harness.__main__.AgentSession")
     @patch("tiny_harness.__main__.ChatCompletionsProvider")

@@ -35,6 +35,11 @@ python -m tiny_harness "Inspect this project and explain its test setup" --works
 
 Omit the task argument to start an interactive session; see `--help` for other options.
 
+Each run (including each interactive submission) writes a separate JSONL log to
+`.tinyharness/events/` under the startup directory, named with a UTC timestamp and
+a unique ID. Use `--no-event-log` to disable file logging or `--event-log PATH` to
+append to a custom file; these options are mutually exclusive.
+
 ## Evaluation
 
 TinyHarness uses SWE-bench Lite Dev to evaluate agent behavior. The workflow covers environment calibration, agent execution, and patch grading with the official evaluator.
