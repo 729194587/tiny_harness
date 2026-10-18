@@ -90,7 +90,7 @@ class EventLogger(Protocol):
         event_type: EventType,
         data: Mapping[str, Any] | None = None,
     ) -> None:
-        """Handle one event synchronously, using EventLogError for sink failures."""
+        """Handle one event synchronously; exception types depend on the sink."""
         ...
 
 
@@ -134,7 +134,12 @@ def _utc_now() -> datetime:
 
 
 class JsonlEventLogger:
-    """Append ordered events to a JSON Lines file."""
+    """Append ordered events to a JSON Lines file.
+
+    Wrap OSError, TypeError, and ValueError from directory creation,
+    serialization, and file writes in EventLogError. Failures while building
+    the event occur outside that handler.
+    """
 
     def __init__(
         self,
