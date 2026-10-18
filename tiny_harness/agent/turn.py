@@ -1,4 +1,4 @@
-"""准备并执行一次可被 Agent Loop 接受的模型调用。"""
+"""Request projection, model recovery, and response validation for one turn."""
 
 from __future__ import annotations
 
@@ -57,7 +57,12 @@ def model_request_inputs(
     *,
     finalization: bool,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Build one request without committing runtime-only instructions to history."""
+    """Build one request without committing runtime-only instructions to history.
+
+    Project bounded read_file results into a copy. Add efficiency guidance
+    only when tools are available outside finalization; finalization adds
+    its answer instruction and sends no tools.
+    """
 
     request_messages = model_context_messages(messages)
     insert_at = 0
@@ -86,10 +91,19 @@ def call_model(
     finalization: bool = False,
     prepared_request: tuple[list[dict[str, Any]], list[dict[str, Any]]] | None = None,
 ) -> ModelResponse:
-    """准备上下文、执行有界恢复并返回协议合法的模型响应。
+    """Return a validated response without committing it or executing tools.
 
-    返回值尚未写入 canonical messages。调用方只有在该函数成功返回后，
-    才能提交 assistant message 或执行工具。
+    Use prepared_request when supplied, otherwise build a request projection.
+    Initial context preparation belongs to the loop. Transient retries reuse
+    the request; one context-length recovery may compact canonical history
+    in place and rebuild the request. The transient retry budget is retained
+    across that recovery, within the same logical turn.
+
+    Protocol validation precedes finalization checks and may raise directly.
+    In finalization, tool calls, tool-protocol markup, or blank text trigger
+    one answer retry, then FINALIZATION_FAILURE if still present. Rejected
+    answers are not committed and their tools are not executed. The caller
+    may commit the returned response only after this function succeeds.
     """
 
     request_messages, request_tools = (
@@ -133,8 +147,8 @@ def call_model(
             ):
                 raise
 
-            # 先占用本次逻辑请求唯一的 reactive recovery 机会，避免摘要失败
-            # 后递归触发第二次 reactive compact。
+            # Reserve the single reactive recovery attempt before compaction
+            # so a summary failure cannot reuse it.
             recovery_state.reactive_compact_used = True
             failed_request_tokens = context.token_meter.estimate_request(
                 messages, request_messages, request_tools,

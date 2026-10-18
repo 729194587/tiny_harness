@@ -89,7 +89,7 @@ def validate_model_response(response: ModelResponse) -> None:
 def assistant_message_from_response(
     response: ModelResponse,
 ) -> dict[str, Any]:
-    """把模型返回的 ModelResponse 转换成标准 assistant message"""
+    """Convert a ModelResponse into an assistant history message."""
 
     message: dict[str, Any] = {
         "role": "assistant",

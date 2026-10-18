@@ -1,4 +1,4 @@
-"""Filesystem tools constrained to a workspace directory."""
+"""Workspace file tools using resolved-path boundary checks."""
 
 from __future__ import annotations
 
@@ -13,7 +13,12 @@ if TYPE_CHECKING:
 
 
 def _resolve_path(workspace: Path, path: str) -> Path:
-    """Resolve *path* and reject targets outside *workspace*."""
+    """Resolve *path* and reject targets outside *workspace*.
+
+    Relative paths start at workspace; absolute paths inside it are accepted.
+    Existing symlinks are resolved before the containment check. This is not
+    an OS sandbox, and paths are not locked against changes before later I/O.
+    """
 
     workspace = workspace.resolve()
     candidate = Path(path)
@@ -34,7 +39,16 @@ def read_file(
     start_line: int | None = None, end_line: int | None = None,
     start_column: int | None = None,
 ) -> str:
-    """Read a UTF-8 text file inside the workspace."""
+    """Read a UTF-8 text file inside the workspace.
+
+    Line ranges are 1-based and inclusive, defaulting to the whole file.
+    start_column is a 1-based character position in the starting line only,
+    measured after newline translation, not as a byte offset.
+
+    Return bounded text with range metadata. When truncated, resume at the
+    returned start_line/start_column and keep any original end_line. The
+    full file is scanned to determine the total line count.
+    """
 
     for name, value in (("start_line", start_line), ("end_line", end_line),
                         ("start_column", start_column)):
@@ -92,7 +106,11 @@ def read_file(
 
 
 def write_file(workspace: Path, path: str, content: str) -> str:
-    """Write a UTF-8 text file inside the workspace."""
+    """Write a UTF-8 text file inside the workspace.
+
+    Create missing parent directories and overwrite existing contents
+    without newline translation. The write is not atomic.
+    """
 
     file_path = _resolve_path(workspace, path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -119,7 +137,13 @@ def _normalize_newlines(content: str, newline: str | None) -> str:
 
 
 def edit_file(workspace: Path, path: str, old_text: str, new_text: str) -> str:
-    """Replace text only when it occurs exactly once in a workspace file."""
+    """Replace text only when it occurs exactly once in a workspace file.
+
+    Normalize old_text and new_text to the detected newline style before
+    matching: prefer CRLF, then LF, then CR when mixed. Untouched text keeps
+    its original newlines. Empty, missing, or non-unique matches raise
+    ValueError before writing; the final file rewrite is not atomic.
+    """
 
     if not old_text:
         raise ValueError("old_text must not be empty")

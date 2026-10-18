@@ -1,4 +1,4 @@
-"""Agent Loop 的单次运行上下文与装配入口。"""
+"""Per-run Agent Loop dependencies, state, and composition."""
 
 from __future__ import annotations
 
@@ -45,9 +45,10 @@ DEFAULT_SUBAGENT_MAX_TURNS = 10
 
 @dataclass
 class AgentRunContext:
-    """一次 Agent 运行所需的配置、资源和可变运行状态。
+    """Configuration, resources, and mutable state for one Agent run.
 
-    这是依赖容器，不负责实现 Agent Loop，也不通过方法隐藏编排动作。
+    This dependency container leaves loop orchestration explicit in the
+    caller rather than hiding it behind methods.
     """
 
     provider: ModelProvider
@@ -86,7 +87,7 @@ class AgentRunContext:
 
 
 def run_started_data(context: AgentRunContext) -> dict[str, Any]:
-    """返回不含提示词和工具结果的运行元数据。"""
+    """Return run metadata without prompts or tool-result bodies."""
 
     data: dict[str, Any] = {
         "max_turns": context.max_turns,
@@ -108,7 +109,7 @@ def initialize_run_state(
     context: AgentRunContext,
     active_request: str,
 ) -> None:
-    """在第一次模型调用前插入可选的 run-scoped 控制状态。"""
+    """Refresh optional run-scoped control markers before the first main model request."""
 
     upsert_skill_catalog_marker(messages, context.skill_catalog)
     context.memory.initialize(messages, active_request)

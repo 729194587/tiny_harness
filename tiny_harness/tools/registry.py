@@ -117,7 +117,12 @@ def dispatch(
     tool_called_logged: bool = False,
     tool_trace: ToolTraceConfig = ToolTraceConfig(),
 ) -> ToolResult:
-    """Authorize and execute one registered Tool, converting failures to text."""
+    """Authorize and execute one registered Tool.
+
+    Ordinary lookup, argument-decoding, and handler errors become tool results.
+    Pre/Post hook failures, EventLogError, and interrupts propagate; handler
+    side effects are not rolled back.
+    """
 
     identity = {
         "turn": turn,

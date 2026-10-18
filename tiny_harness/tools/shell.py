@@ -14,7 +14,11 @@ if TYPE_CHECKING:
 
 
 def bash(workspace: Path, command: str, runner: ShellRunner = DEFAULT_SHELL_RUNNER) -> str:
-    """Run a shell command and return its combined text output."""
+    """Run the configured shell capability and return its exit/output report.
+
+    The default runner uses the host shell, regardless of the tool name.
+    Authorization belongs to shared tool dispatch, not this adapter.
+    """
     return runner.run(workspace, command)
 
 

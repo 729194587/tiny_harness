@@ -22,7 +22,12 @@ class ShellRunner(Protocol):
 
 
 def _terminate_process_tree(process: subprocess.Popen) -> bool:
-    """Attempt tree termination with bounded waits, even if cleanup fails."""
+    """Attempt tree termination with bounded waits, even if cleanup fails.
+
+    Use taskkill /T on Windows, or signal the process group elsewhere.
+    True means tree/group termination reported success and the shell wait
+    completed; detached descendants may be outside this cleanup scope.
+    """
     tree_stopped = False
     try:
         if os.name == "nt":
@@ -48,7 +53,11 @@ def _terminate_process_tree(process: subprocess.Popen) -> bool:
 
 
 class SubprocessShellRunner:
-    """Run non-interactive host-shell commands with bounded timeout cleanup."""
+    """Run non-interactive host-shell commands with bounded timeout cleanup.
+
+    Use cmd.exe on Windows and subprocess's default shell elsewhere. The
+    resolved workspace sets cwd only; it is not a filesystem sandbox.
+    """
 
     def __init__(self, timeout_seconds: float = DEFAULT_SHELL_TIMEOUT_SECONDS) -> None:
         if timeout_seconds <= 0:
@@ -56,6 +65,15 @@ class SubprocessShellRunner:
         self.timeout_seconds = timeout_seconds
 
     def run(self, workspace: Path, command: str) -> str:
+        """Return exit status and stdout followed by stderr, including nonzero exits.
+
+        Decode output as UTF-8 with replacement and normalize newlines. The
+        streams are concatenated, not interleaved in emission order.
+        Timeouts raise TimeoutError after bounded cleanup attempts;
+        interrupts also trigger cleanup before propagating. Cleanup does
+        not guarantee that every descendant has stopped.
+        """
+
         # Files avoid pipe-reader threads and EOF waits on inherited child handles.
         # Do not use Popen's context manager: its exit can wait without a timeout.
         with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:

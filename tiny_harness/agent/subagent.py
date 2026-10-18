@@ -13,7 +13,13 @@ if TYPE_CHECKING:
 
 
 class SubagentExecutor:
-    """Run one delegated prompt through an isolated child Agent Loop."""
+    """Run one delegated prompt synchronously with fresh child history and state.
+
+    Children have independent turn, recovery, Todo, and calibration state.
+    They share the workspace, provider, policies, hooks, runners, and Skill
+    catalog with the parent; workspace side effects remain visible to both.
+    Nested delegation and child Memory extraction are disabled.
+    """
 
     def __init__(self, config: RunConfig) -> None:
         self.config = config
