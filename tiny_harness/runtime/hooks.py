@@ -25,7 +25,7 @@ class HookBlock:
 
 
 class HookExecutionError(RuntimeError):
-    """Raised when a registered hook violates its contract or fails."""
+    """Raised when a registered tool hook violates its contract or fails."""
 
     def __init__(self, stage: str, hook_index: int, error: Exception) -> None:
         self.stage = stage
@@ -43,7 +43,7 @@ PostToolHook = Callable[[ToolHookContext, ToolResult], None]
 
 @dataclass(frozen=True)
 class FinalAnswerHookContext:
-    """最终回答返回前交给受信任 lifecycle observer 的运行边界。"""
+    """Run data passed to a trusted observer before returning the final answer."""
 
     messages: list[dict[str, Any]]
     final_answer: str
@@ -60,7 +60,12 @@ def run_final_answer_hook(
     *,
     turn: int,
 ) -> None:
-    """运行一个不能改变终止决定的可选 Final Answer observer。"""
+    """Run an optional observer before returning the final answer.
+
+    The hook must return None; other return values raise TypeError, and hook
+    exceptions propagate. It receives the live messages list, not a read-only
+    snapshot.
+    """
 
     if hook is None:
         return
@@ -96,7 +101,12 @@ class ToolHooks:
         self,
         context: ToolHookContext,
     ) -> tuple[int, HookBlock] | None:
-        """Run PreToolUse hooks until one explicitly blocks the call."""
+        """Run PreToolUse hooks until one explicitly blocks the call.
+
+        Callbacks return None to continue or HookBlock to stop; the returned
+        hook index is 1-based. Ordinary hook errors and invalid returns raise
+        HookExecutionError; interrupts propagate.
+        """
 
         callbacks = tuple(self._pre_tool_use)
         for hook_index, callback in enumerate(callbacks, start=1):
@@ -121,7 +131,13 @@ class ToolHooks:
         context: ToolHookContext,
         result: ToolResult,
     ) -> None:
-        """Run PostToolUse hooks in registration order as observers."""
+        """Run PostToolUse hooks in registration order as observers.
+
+        Each callback receives a deep copy of the result and must return
+        None. Ordinary hook errors and invalid returns raise
+        HookExecutionError; interrupts propagate. Handler side effects
+        are not rolled back.
+        """
 
         callbacks = tuple(self._post_tool_use)
         for hook_index, callback in enumerate(callbacks, start=1):

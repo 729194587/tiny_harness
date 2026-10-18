@@ -226,7 +226,11 @@ def create_memory_final_answer_hook(
     max_context_tokens: int | None = None,
     token_meter: TokenMeter = DEFAULT_TOKEN_METER,
 ) -> FinalAnswerHook:
-    """Create a fail-open observer that extracts before returning an answer."""
+    """Create a Memory extraction observer for the final answer.
+
+    Ordinary extraction errors are reported without blocking the answer.
+    EventLogError still propagates.
+    """
 
     def memory_final_answer_hook(context: FinalAnswerHookContext) -> None:
         event_logger.emit(

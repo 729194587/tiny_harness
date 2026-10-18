@@ -197,7 +197,12 @@ _DYNAMIC_OR_EXTERNAL_PATH = re.compile(
 
 
 def is_read_only_shell_command(command: object) -> bool:
-    """Recognize a small, conservative set of local inspection commands."""
+    """Recognize a small, conservative set of local inspection commands.
+
+    This is a text heuristic, not a shell parser or an isolation mechanism.
+    It does not resolve executables or filesystem paths. The default
+    permission policy does not use this classifier.
+    """
 
     if not isinstance(command, str) or not command.strip():
         return False
@@ -244,7 +249,11 @@ def is_read_only_shell_command(command: object) -> bool:
 
 
 class DefaultPermissionPolicy:
-    """Allow known tools, including shell commands; deny unknown tools."""
+    """Allow known tools, including shell commands; deny unknown tools.
+
+    Decisions depend only on the tool name. Shell arguments are not
+    classified or restricted here.
+    """
 
     _ALLOWED_TOOLS = frozenset(
         {
@@ -283,7 +292,12 @@ def resolve_permission(
     arguments: Mapping[str, Any],
     prompt: PermissionPrompt | None = None,
 ) -> PermissionDecision:
-    """Resolve ASK through a prompt and fail closed on ordinary errors."""
+    """Resolve ASK through a prompt and fail closed on ordinary errors.
+
+    ASK without a prompt and unrecognized policy results become DENY.
+    Policy or prompt exceptions derived from Exception also become DENY;
+    interrupts propagate.
+    """
 
     try:
         decision = policy.decide(tool_name, arguments)

@@ -71,7 +71,7 @@ class TodoManager:
         return self.render()
 
     def render(self) -> str:
-        """Render the current list in the compact s05-style format."""
+        """Render status markers and a completion count, or a notice when empty."""
 
         if not self.items:
             return "No todos."

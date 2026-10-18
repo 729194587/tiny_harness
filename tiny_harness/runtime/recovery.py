@@ -29,7 +29,11 @@ TRANSIENT_ERROR_KINDS = frozenset(
 
 @dataclass(frozen=True)
 class RecoveryPolicy:
-    """Retry limits and delay calculation for one agent run."""
+    """Retry and backoff settings, independent of per-request counters.
+
+    max_retries limits transient retries per RecoveryState, excluding the
+    initial attempt; it is not a global run limit.
+    """
 
     max_retries: int = 2
     base_delay_seconds: float = 1.0
@@ -51,7 +55,12 @@ class RecoveryPolicy:
 
 @dataclass
 class RecoveryState:
-    """Counters shared across transient and reactive attempts of one request."""
+    """Counters shared across transient and reactive attempts of one request.
+
+    Callers create fresh state for each logical request and reuse it across
+    recovery attempts. The executor updates attempt and transient retry
+    counters; the caller owns reactive_compact_used and history compaction.
+    """
 
     attempt: int = 0
     transient_retries_used: int = 0
@@ -59,7 +68,11 @@ class RecoveryState:
 
 
 class RecoveryExecutor:
-    """Execute provider attempts without knowing any context-compaction policy."""
+    """Execute provider attempts without knowing any context-compaction policy.
+
+    Reuse the supplied request without rewriting history or validating the
+    response protocol. Context-length recovery belongs to the caller.
+    """
 
     def __init__(
         self,
@@ -125,7 +138,18 @@ class RecoveryExecutor:
         tool_choice: ToolChoice | None = None,
         token_meter: TokenMeter = DEFAULT_TOKEN_METER,
     ) -> ModelResponse:
-        """Return a response or raise after bounded transient retries."""
+        """Return a response or raise after bounded transient retries.
+
+        The supplied state is not reset. attempt advances before attribution
+        and request logging; a selected transient retry consumes its counter
+        before retry logging or sleeping. Counters are not rolled back on
+        failure.
+
+        Only TRANSIENT_ERROR_KINDS are retried here. Other provider errors,
+        exhausted retries, and attribution, event, or backoff failures
+        propagate. context_recovery_available only marks expected caller
+        recovery in failure events; context-length errors still propagate.
+        """
 
         while True:
             state.attempt += 1

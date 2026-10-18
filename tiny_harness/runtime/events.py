@@ -61,7 +61,7 @@ class Event:
 
 
 class EventLogError(RuntimeError):
-    """Raised when an enabled event log cannot be written."""
+    """Raised when an enabled event sink cannot process or write an event."""
 
 
 def hash_text(value: str) -> str:
@@ -90,7 +90,7 @@ class EventLogger(Protocol):
         event_type: EventType,
         data: Mapping[str, Any] | None = None,
     ) -> None:
-        """Persist one event or raise EventLogError."""
+        """Handle one event synchronously, using EventLogError for sink failures."""
         ...
 
 
@@ -173,7 +173,10 @@ class JsonlEventLogger:
 
 
 class CompositeEventLogger:
-    """Fan out synchronously; sink failures retain the EventLogError contract."""
+    """Fan out synchronously to sinks in order, stopping at the first failure.
+
+    Sink exceptions propagate unchanged; prior deliveries are not undone.
+    """
 
     def __init__(self, *loggers: EventLogger) -> None:
         self.loggers = loggers

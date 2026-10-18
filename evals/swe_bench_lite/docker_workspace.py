@@ -47,6 +47,13 @@ class DockerShellRunner:
         self.timeout_seconds = timeout_seconds
 
     def command_argv(self, workspace: Path, command: str) -> list[str]:
+        """Build docker exec argv for login Bash in /testbed.
+
+        Require the resolved workspace to equal the configured host path.
+        Set umask 000 after login startup; this path check does not constrain
+        paths used by the shell command.
+        """
+
         if workspace.resolve() != self.host_workspace:
             raise ValueError("Shell workspace does not match the Docker bind mount")
         return [
@@ -65,6 +72,14 @@ class DockerShellRunner:
         ]
 
     def run(self, workspace: Path, command: str) -> str:
+        """Return the Docker CLI exit code with stdout followed by stderr.
+
+        Nonzero exits are returned as text. The timeout applies to the host
+        docker exec subprocess and raises TimeoutExpired; this runner does
+        not explicitly terminate or confirm termination of the command
+        inside the container.
+        """
+
         completed = _run(
             self.command_argv(workspace, command),
             timeout=self.timeout_seconds,
@@ -174,6 +189,12 @@ class DockerTaskEnvironment:
             raise
 
     def exec(self, command: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        """Execute in /testbed, raising on nonzero exit unless check is False.
+
+        The timeout applies to the host Docker CLI, not a container-side
+        command deadline.
+        """
+
         if self.workspace is None or self.shell_runner is None:
             raise RuntimeError("Docker task environment is not running")
         return _run(
@@ -202,6 +223,12 @@ class DockerTaskEnvironment:
             pass
 
     def close(self, *, suppress_errors: bool = False) -> None:
+        """Attempt ownership restoration, container removal, and workspace cleanup.
+
+        Ownership restoration and container removal are best effort. Host
+        directory cleanup errors propagate unless suppress_errors is True.
+        """
+
         # Attempt even after a failed docker run: it may have started the container.
         if self._temporary is not None and os.name == "posix":
             getuid = getattr(os, "getuid", None)

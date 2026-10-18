@@ -47,10 +47,12 @@ DEFAULT_TOKEN_METER: TokenMeter = HeuristicTokenMeter()
 
 
 class CalibratedTokenMeter:
-    """History-local anchor. Speculative measurements do not invalidate state.
+    """Calibrate estimates with observed prompt usage for one history prefix.
 
-    Request-only runtime instructions are accounted for separately; canonical
-    history and tool schemas must remain append-only to reuse actual usage.
+    Reuse the offset only while tool schemas are equal and recorded history
+    remains a prefix. estimate() does not invalidate state on a mismatch;
+    reconcile() and estimate_request() do. Request projection costs are
+    accounted for separately from canonical history.
     """
 
     def __init__(self, heuristic: TokenMeter = DEFAULT_TOKEN_METER) -> None:
@@ -58,6 +60,8 @@ class CalibratedTokenMeter:
         self.reset()
 
     def reset(self) -> None:
+        """Discard the observed history, schemas, and calibration offset."""
+
         self._messages = None
         self._tools = None
         self._offset = 0
@@ -72,16 +76,26 @@ class CalibratedTokenMeter:
             self.reset()
 
     def estimate(self, messages, tools) -> int:
+        """Use a matching offset or the heuristic without changing calibration."""
+
         estimate = self.heuristic.estimate(messages, tools)
         return max(0, estimate + self._offset) if self._matches(messages, tools) else estimate
 
     def estimate_request(self, messages, request_messages, tools) -> int:
+        """Reconcile canonical state, then add the heuristic request-projection delta."""
+
         self.reconcile(messages, tools)
         return max(0, self.estimate(messages, tools)
                    + self.heuristic.estimate(request_messages, tools)
                    - self.heuristic.estimate(messages, tools))
 
     def observe(self, messages, request_messages, tools, prompt_tokens) -> None:
+        """Record observed usage against copies of history and tool schemas.
+
+        Measure the offset against request_messages. Missing or invalid
+        prompt usage resets calibration instead.
+        """
+
         if type(prompt_tokens) is not int or prompt_tokens < 0:
             self.reset()
             return

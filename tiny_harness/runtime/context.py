@@ -1,4 +1,4 @@
-"""为有界模型请求提供保持协议合法的分层上下文压缩。"""
+"""Canonical history preparation, request projection, and context artifact storage."""
 
 import copy
 import hashlib
@@ -20,23 +20,23 @@ COMPACTION_TARGET_RATIO = 0.55
 
 
 class ContextError(RuntimeError):
-    """准备模型上下文时抛出的基础异常。"""
+    """Base error for model context preparation."""
 
 
 class ContextProtocolError(ContextError):
-    """assistant 工具调用与工具结果未正确配对时抛出。"""
+    """Context messages violate the expected structure or tool-call pairing."""
 
 
 class ContextLimitError(ContextError):
-    """必须保留的上下文无法放入配置预算时抛出。"""
+    """Required context cannot fit the applicable sizing limit."""
 
 
 class ContextArtifactError(ContextError):
-    """无法安全保存压缩产物时抛出。"""
+    """Context artifact storage or workspace-boundary validation failed."""
 
 
 class ContextSummaryError(ContextError):
-    """模型没有返回可用的事实摘要时抛出。"""
+    """The model did not return usable summary text."""
 
 
 @dataclass(frozen=True)
@@ -53,7 +53,7 @@ class CompactionConfig:
 
 @dataclass(frozen=True)
 class PreparedContext:
-    """保持协议合法的模型上下文及其压缩元数据。"""
+    """Candidate canonical history and compaction metadata for caller commit."""
 
     messages: list[dict[str, Any]]
     before_tokens: int
@@ -111,7 +111,7 @@ def _tool_result_ids(messages: list[dict[str, Any]]) -> tuple[str, ...]:
 def _split_context(
     messages: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]:
-    """将多轮会话拆分成不可再分且保持协议合法的消息块。"""
+    """Split history into indivisible blocks, validating tool-call/result order."""
 
     blocks: list[list[dict[str, Any]]] = []
     index = 0
@@ -217,7 +217,7 @@ def _is_user_turn_start(block: list[dict[str, Any]]) -> bool:
 def _turn_ranges(
     blocks: list[list[dict[str, Any]]],
 ) -> list[tuple[int, int]]:
-    """返回完整用户轮次对应的左闭右开区间。"""
+    """Return half-open block ranges grouped by user turn."""
 
     starts = [
         index for index, block in enumerate(blocks) if _is_user_turn_start(block)
@@ -238,7 +238,7 @@ def _turn_ranges(
 def _required_latest_blocks(
     blocks: list[list[dict[str, Any]]],
 ) -> list[list[dict[str, Any]]]:
-    """保留当前请求、控制标记和最新执行证据。"""
+    """Select the current request, its control markers, and latest tool block."""
 
     if not blocks:
         return []
@@ -265,7 +265,7 @@ def _protected_recent_indices(
     budget_tokens: int,
     token_meter: TokenMeter,
 ) -> set[int]:
-    """Protect required state plus a contiguous, budget-sized execution tail."""
+    """Keep required blocks, then extend the recent tail within its budget."""
 
     if not blocks:
         return set()
@@ -402,7 +402,7 @@ class ContextArtifacts:
                         created_paths.append(candidate)
                     result_file.write(content)
             except FileExistsError as error:
-                # 独占创建不会跟随已经存在的文件符号链接。
+                # Exclusive creation rejects existing file symlinks instead of following them.
                 collision = error
                 continue
             except OSError as error:
@@ -480,7 +480,12 @@ def retain_tool_result(
     event_logger: EventLogger = NULL_EVENT_LOGGER,
     config: CompactionConfig = CompactionConfig(),
 ) -> str:
-    """Spill a completed result before history commit; storage failures keep it whole."""
+    """Spill a completed result before history commit; storage failures keep it whole.
+
+    Oversized non-read_file results may spill even without a context budget.
+    Return the content or an artifact preview for the caller to append; event
+    failures still propagate.
+    """
 
     if (
         call.name == "read_file"
@@ -550,7 +555,13 @@ class SummaryCompletion(Protocol):
 
 
 class ContextCompactor(ContextArtifacts):
-    """Prepare bounded model requests with pressure-driven compaction."""
+    """Compact history using estimated message and tool-schema costs.
+
+    max_tokens is the hard sizing budget. Automatic pressure starts above
+    80% and targets compaction_target_ratio (default 0.55). Required history
+    may force an automatic summary back to the 80% limit. These estimates
+    precede request-only projections and runtime guidance.
+    """
 
     SUMMARY_SYSTEM = (
         "Summarize only factual task information from the supplied history. "
@@ -666,7 +677,14 @@ class ContextCompactor(ContextArtifacts):
         target_tokens: int,
         persisted_tool_call_ids: list[str] | None = None,
     ) -> int:
-        """Persist old/large ToolResults until the pressure target is met."""
+        """Try to reach the target by replacing tool results in place.
+
+        Try older unprotected results first, then protected results. Skip
+        small or persisted results and replacements that would not shorten
+        the content. Return the replacement count even if the target is unmet.
+        Persistence errors propagate and may leave earlier replacements and
+        artifacts.
+        """
 
         if target_tokens < 1:
             raise ValueError("target_tokens must be at least 1")
@@ -741,6 +759,8 @@ class ContextCompactor(ContextArtifacts):
         messages: list[dict[str, Any]],
         todo_state: str,
     ) -> list[dict[str, Any]]:
+        """Refresh the Todo marker in a new list, reusing other messages."""
+
         prefix, blocks = _split_context(messages)
         prefix = [message for message in prefix if message.get("name") != "tinyharness_todo_state"]
         blocks = [
@@ -772,6 +792,8 @@ class ContextCompactor(ContextArtifacts):
         *,
         max_tokens: int | None = None,
     ) -> list[dict[str, Any]]:
+        """Bound summary input to history head/tail; the full transcript is on disk."""
+
         limit = self.max_tokens if max_tokens is None else max_tokens
         serialized = json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
         input_limit = min(self.config.summary_input_chars, len(serialized))
@@ -876,7 +898,13 @@ class ContextCompactor(ContextArtifacts):
         persisted_results: int = 0,
         persisted_tool_call_ids: tuple[str, ...] = (),
     ) -> PreparedContext:
-        """Summarize the oldest eligible balanced history into one marker."""
+        """Summarize the oldest eligible balanced history into one marker.
+
+        Return replacement history without modifying the supplied messages.
+        Keep protected blocks and truncate summary text to fit when needed.
+        Artifact, provider, and event failures propagate; files already
+        written may remain.
+        """
 
         target_tokens = self.max_tokens if max_tokens is None else max_tokens
         source_messages = (
@@ -915,9 +943,9 @@ class ContextCompactor(ContextArtifacts):
             raise ContextLimitError(
                 "Context compaction has no older history that can be summarized"
             )
-        # 在消耗摘要 API 调用前，先证明必须保留的上下文能够放入预算。
-        # 自动压缩以 target 为强目标；若 protected history 本身放不下，
-        # 只退回 trigger 上限，而不牺牲最新工作证据。
+        # Check that required context fits before spending a summary request.
+        # If it cannot fit the automatic target, relax to the pressure threshold
+        # rather than drop protected evidence.
         effective_target = target_tokens
         try:
             self._fit_summary_marker(
@@ -1006,7 +1034,15 @@ class ContextCompactor(ContextArtifacts):
         *,
         failed_request_tokens: int,
     ) -> PreparedContext:
-        """将一次被 API 拒绝的上下文强制缩减至少 25%。"""
+        """Compact to the configured fraction of the failed request estimate.
+
+        The target uses reactive_target_ratio (default 0.75), capped by the
+        hard budget. Raise ContextLimitError if required context cannot fit.
+
+        Return replacement history for the caller to commit before retrying.
+        Failures leave input messages unchanged, but artifacts may remain.
+        A later failed retry does not undo the caller's history commit.
+        """
 
         if failed_request_tokens < 1:
             raise ValueError("failed_request_tokens must be at least 1")
@@ -1035,8 +1071,8 @@ class ContextCompactor(ContextArtifacts):
             message for message in prefix if not _is_generated_marker(message)
         ]
         latest_context = _flatten([], required_blocks)
-        # 如果强制保留 25% 余量后已无法容纳任务、Todo、工具 schema 和最新
-        # 完整证据，则在发起下一次 API 调用前拒绝此次恢复。
+        # Reject recovery before another model call if the target cannot hold
+        # the task, Todo, tool schemas, and latest complete evidence.
         self._fit_summary_marker(
             base_prefix,
             latest_context,
@@ -1132,7 +1168,10 @@ def validate_active_request(
     messages: list[dict[str, Any]],
     active_request: str,
 ) -> None:
-    """确认最后一个真实 user message 仍是本次运行的请求。"""
+    """Validate tool blocks and check the latest non-control user request.
+
+    An empty active_request also permits history with no user message.
+    """
 
     _split_context(messages)
     user_messages = [
@@ -1159,7 +1198,19 @@ def prepare_context(
     todo_state: str,
     active_request: str,
 ) -> PreparedContext | None:
-    """Prepare one request, compacting only after the soft limit is crossed."""
+    """Prepare candidate canonical history without modifying the input messages.
+
+    Always validate the active request; return None if no compactor exists.
+    Above the soft limit, refresh Todo state and persist tool results toward
+    the target, summarizing older history only if that is insufficient.
+    Validate the candidate against the active request and soft limit before
+    returning it for caller commit.
+
+    Request projection and runtime guidance are applied later by the turn
+    layer. Preparation failures leave input history unchanged, but artifacts
+    and events may remain. Once committed, history is not restored if a later
+    model request fails.
+    """
 
     validate_active_request(messages, active_request)
     if compactor is None:
@@ -1217,7 +1268,8 @@ def prepare_context(
                 persisted_tool_call_ids=tuple(persisted_tool_call_ids),
             )
 
-    # All stages are transactional; callers commit prepared.messages once.
+    # Callers commit prepared.messages only after validation. Artifact writes
+    # and emitted events are not rolled back if preparation fails.
     validate_active_request(prepared.messages, active_request)
     final_tokens = context_token_count(
         prepared.messages, compactor.tools, compactor.token_meter

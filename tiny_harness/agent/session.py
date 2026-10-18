@@ -40,7 +40,11 @@ class SessionFailedError(RuntimeError):
 
 
 class AgentSession:
-    """Keep canonical messages across successful in-process submissions."""
+    """Keep canonical messages across successful in-process submissions.
+
+    Each submission gets fresh run state. The Skill catalog is discovered
+    at construction and reused until a new Session is created.
+    """
 
     def __init__(
         self,
@@ -86,7 +90,15 @@ class AgentSession:
         return self._failed
 
     def submit(self, task: str) -> str:
-        """Append one user turn and run the agent against shared history."""
+        """Append one user turn and run the agent against shared history.
+
+        A failed Session rejects submissions until clear() is called. Empty
+        input leaves a healthy Session unchanged. A nonempty submission keeps
+        the failure flag set until it completes normally. Exceptions and
+        interrupts propagate; further submissions then require clear().
+        Run-scoped markers are removed before the run and after success.
+        History and external side effects are not rolled back on failure.
+        """
 
         if self._failed:
             raise SessionFailedError(
@@ -122,7 +134,13 @@ class AgentSession:
         return answer
 
     def clear(self) -> None:
-        """Forget conversation messages without deleting workspace artifacts."""
+        """Forget conversation messages without deleting workspace artifacts.
+
+        Restore only the initial system message, reset token calibration,
+        and clear the failure flag. Keep configuration and the existing
+        Skill catalog; Skills are not rediscovered and external side effects
+        are not undone.
+        """
 
         self.token_meter.reset()
         self.messages[:] = [copy.deepcopy(self.system_message)]

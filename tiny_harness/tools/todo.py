@@ -16,7 +16,10 @@ def todo_write(
     manager: TodoManager, todos: list[object] | str,
     *, event_logger: EventLogger = NULL_EVENT_LOGGER,
 ) -> str:
-    """Replace todos and report counts without exposing task contents."""
+    """Replace todos and return their rendered contents.
+
+    The TODO_UPDATED event contains counts only, not task contents.
+    """
 
     output = manager.update(todos)
     event_logger.emit(EventType.TODO_UPDATED, {

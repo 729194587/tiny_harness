@@ -337,7 +337,13 @@ def discover_skills(
     max_skills: int = MAX_SKILLS,
     max_skill_chars: int = MAX_SKILL_CHARS,
 ) -> SkillCatalog:
-    """Discover and merge the three directory-based Skill sources."""
+    """Discover Skill metadata from default or explicitly supplied sources.
+
+    Defaults are bundled, workspace, and user directories; valid same-name
+    entries override in that order. Duplicates within a source are excluded
+    as issues, so valid lower-priority entries can remain. Read frontmatter
+    only and return a catalog snapshot.
+    """
 
     if max_skills < 1:
         raise ValueError("max_skills must be at least 1")
@@ -394,7 +400,13 @@ def list_skills(catalog: SkillCatalog) -> tuple[dict[str, str], ...]:
 
 
 def load_skill(catalog: SkillCatalog, name: str) -> str:
-    """Load one complete UTF-8 SKILL.md after rechecking its source boundary."""
+    """Load one complete UTF-8 SKILL.md after rechecking its source boundary.
+
+    Check the opened file's device, inode, size, and modification time against
+    discovery; mismatches require a fresh catalog snapshot. This is a stat
+    check, not a content hash. Oversized content raises SkillTooLargeError
+    instead of returning a partial document.
+    """
 
     if not isinstance(name, str):
         raise TypeError("Skill name must be a string")

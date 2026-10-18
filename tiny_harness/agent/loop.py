@@ -1,4 +1,4 @@
-"""TinyHarness 的稳定 Agent Loop 与配置装配入口。"""
+"""Core Agent Loop orchestration and its configuration entry point."""
 
 from pathlib import Path
 from typing import Any
@@ -46,7 +46,16 @@ def agent_loop(
     context: AgentRunContext,
     active_request: str,
 ) -> str:
-    """执行循环，直到返回最终回答。"""
+    """Run logical turns while maintaining canonical history in place.
+
+    Context preparation may rewrite history. Model responses are validated
+    before their assistant message is appended or any tool is executed.
+    Fatal failures may leave incomplete history and external side effects.
+
+    An accepted final answer ends the run early; otherwise the last budgeted turn
+    is reserved for finalization without tool execution. Model retries stay
+    within the same logical turn.
+    """
 
     context.event_logger.emit(
         EventType.RUN_STARTED,
@@ -74,7 +83,8 @@ def agent_loop(
                 active_request,
             )
             if prepared is not None:
-                # 只有四层处理和最终验证全部成功后，才提交canonical history。
+                # Update canonical history only after context preparation
+                # and validation succeed.
                 messages[:] = prepared.messages
 
             request_messages, request_tools = model_request_inputs(
@@ -138,7 +148,7 @@ def agent_loop(
 
         raise RuntimeError("Agent loop ended without a final answer")
     except EventLogError:
-        # Event Logger 自身失败时直接上抛，避免再次记录同一个故障。
+        # Propagate logger failures without trying to log the same failure again.
         raise
     except Exception as error:
         context.event_logger.emit(
@@ -174,7 +184,11 @@ def run_agent(
     memory_extraction_enabled: bool = True,
     tool_trace: ToolTraceConfig = ToolTraceConfig(),
 ) -> str:
-    """兼容配置入口：装配运行上下文后进入三参数核心循环。"""
+    """Configure one run and delegate to the core loop.
+
+    Use the latest unnamed user message as the active request, or an empty
+    string if none exists. The loop updates the supplied history in place.
+    """
 
     context = create_run_context(
         provider,

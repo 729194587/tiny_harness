@@ -1,4 +1,4 @@
-"""按顺序执行一次完整的模型工具调用批次。"""
+"""Sequential tool-batch execution and result history updates."""
 
 from __future__ import annotations
 
@@ -17,10 +17,13 @@ def execute_tool_batch(
     calls: list[ToolCall],
     context: AgentRunContext,
 ) -> None:
-    """顺序执行全部工具调用并追加结果。
+    """Execute calls sequentially and append results in model order.
 
-    正常返回时保证 assistant/tool 协议闭合。致命异常保留已有历史和副作用，
-    不补造结果或重放调用；AgentSession 会禁止继续提交，直到显式 clear。
+    With the matching assistant message already appended, normal return
+    closes its tool calls. All TOOL_CALLED events precede dispatch.
+    Fatal failures retain committed history and side effects; no missing
+    results are fabricated and calls are not replayed. AgentSession then
+    requires clear() before further submissions.
     """
 
     validate_tool_call_batch(calls)
